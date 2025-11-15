@@ -2,163 +2,194 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import os
+import unicodedata
 
-# =========================
-# 1. CARGA DEL MODELO
-# =========================
-@st.cache_resource
-def load_model():
-    return joblib.load("xgb_model.pkl")
+# ----------------------------------------------------
+# 0) FUNCIÓN ROBUSTA PARA VALIDAR COLUMNAS
+# ----------------------------------------------------
+def validate_required_columns(df, required_cols):
+    """
+    Verifica columnas, y si falta alguna la agrega con NaN.
+    Esto evita que el modelo falle por columnas faltantes.
+    """
+    df_cols = list(df.columns)
+    missing = [c for c in required_cols if c not in df_cols]
 
-model = load_model()
+    if missing:
+        st.warning(f"Columnas faltantes detectadas, se agregan automáticamente: {missing}")
+        for col in missing:
+            df[col] = np.nan
 
-# =========================
-# 2. FUNCIÓN LIMPIEZA COLUMNS
-# =========================
-def normalizar_columnas(df):
-    df.columns = (
-        df.columns.str.strip()
-        .str.upper()
-        .str.normalize('NFKD')
-        .str.encode('ascii', errors='ignore')
-        .str.decode('utf-8')
-        .str.replace(" ", "_")
-        .str.replace("Á", "A")
-        .str.replace("É", "E")
-        .str.replace("Í", "I")
-        .str.replace("Ó", "O")
-        .str.replace("Ú", "U")
-        .str.replace("Ñ", "N")
-        .str.replace(r"[^A-Za-z0-9_]", "", regex=True)
-    )
     return df
 
-# =========================
-# 3. FUNCIÓN DE VALIDACIÓN
-# =========================
-def validar_columnas(df, requeridas):
-    faltantes = [c for c in requeridas if c not in df.columns]
-    return faltantes
 
-# =========================
-# 4. APP
-# =========================
-st.title("📊 Dashboard ALECO 2025 - Predicciones Mejoradas")
+# ----------------------------------------------------
+# 1) FUNCIONES DE NORMALIZACIÓN (IGUALES A COLAB)
+# ----------------------------------------------------
+def normalize_col(col):
+    col = col.strip()
+    col = col.upper()
+    col = col.replace(" ", "_")
+    col = col.replace("(", "")
+    col = col.replace(")", "")
+    col = col.replace("Ñ", "N")
+    col = ''.join(
+        c for c in unicodedata.normalize('NFD', col)
+        if unicodedata.category(c) != 'Mn'
+    )
+    return col
 
-archivo = st.file_uploader("Sube el dataset", type=["csv"])
 
-if archivo:
-    df = pd.read_csv(archivo, encoding="utf-8")
-    df = normalizar_columnas(df)
+# ----------------------------------------------------
+# 2) CARGAR CSV
+# ----------------------------------------------------
+@st.cache_data
+def load_data():
+    csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
 
-    st.write("### Columnas normalizadas detectadas")
-    st.write(df.columns.tolist())
-    st.write("Filas:", len(df))
+    if not os.path.exists(csv_file):
+        st.error(f"No se encontró el archivo: {csv_file}")
+        return pd.DataFrame()
 
-    # Columnas necesarias para predicción
-    columnas_requeridas = [
-        "NIT","RAZON_SOCIAL","SUPERVISOR","REGION","DEPARTAMENTO_DOMICILIO",
-        "CIUDAD_DOMICILIO","CIIU","MACROSECTOR","INGRESOS_OPERACIONALES",
-        "GANANCIA_PERDIDA","TOTAL_ACTIVOS","TOTAL_PASIVOS",
-        "TOTAL_PATRIMONIO","ANO_DE_CORTE"
+    df = pd.read_csv(csv_file)
+
+    # Normalizar columnas
+    df.columns = [normalize_col(c) for c in df.columns]
+
+    # Columnas requeridas para este dashboard y el modelo
+    required_cols = [
+        'NIT','RAZON_SOCIAL','SUPERVISOR','REGION','DEPARTAMENTO_DOMICILIO',
+        'CIUDAD_DOMICILIO','CIIU','MACROSECTOR',
+        'INGRESOS_OPERACIONALES','GANANCIA_PERDIDA',
+        'TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO','ANO_DE_CORTE'
     ]
 
-    faltantes = validar_columnas(df, columnas_requeridas)
-    if len(faltantes) > 0:
-        st.error(f"Faltan columnas necesarias: {faltantes}")
-        st.stop()
+    # Validación robusta
+    df = validate_required_columns(df, required_cols)
 
-    # Limpiar numéricos
-    for col in ["INGRESOS_OPERACIONALES", "TOTAL_ACTIVOS", "TOTAL_PASIVOS", "TOTAL_PATRIMONIO", "GANANCIA_PERDIDA"]:
+    # LIMPIAR columnas numéricas
+    numeric_cols = [
+        'INGRESOS_OPERACIONALES','GANANCIA_PERDIDA',
+        'TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO'
+    ]
+
+    for col in numeric_cols:
         df[col] = (
             df[col].astype(str)
-            .str.replace(",", "", regex=False)
-            .str.replace("$", "", regex=False)
-            .str.replace(" ", "", regex=False)
-            .astype(float)
+            .replace(["$", ",", ".", " ", "−", "(", ")"], "", regex=True)
+            .astype(float, errors="ignore")
         )
 
-    st.success("Dataset cargado correctamente ✔")
+    return df
 
-    # =========================
-    # 5. LISTA DESPLEGABLE DE EMPRESAS
-    # =========================
-    empresas_lista = df["RAZON_SOCIAL"].unique()
-    empresa_seleccionada = st.selectbox("Selecciona una empresa:", empresas_lista)
 
-    df_empresa = df[df["RAZON_SOCIAL"] == empresa_seleccionada]
+df = load_data()
+if df.empty:
+    st.stop()
 
-    # Mostrar filas históricas
-    st.write("### Historial de la empresa seleccionada")
-    st.dataframe(df_empresa)
 
-    # =========================
-    # 6. SELECCIONAR AÑO PARA PREDECIR
-    # =========================
-    ultimo_anio = int(df["ANO_DE_CORTE"].max())
-    anio_pred = st.number_input(
-        "Año para predecir (posterior al último año del dataset)",
-        min_value=ultimo_anio + 1,
-        max_value=ultimo_anio + 10,
-        value=ultimo_anio + 1
-    )
+# ----------------------------------------------------
+# 3) CARGAR MODELO
+# ----------------------------------------------------
+@st.cache_resource
+def load_model():
+    model_file = "model.pkl"
 
-    # =========================
-    # 7. PREPARAR INPUT PARA EL MODELO
-    # =========================
-    if st.button("🔮 Generar Predicción"):
+    if not os.path.exists(model_file):
+        st.error("No se encontró model.pkl en el repositorio.")
+        return None
 
-        try:
-            # Tomamos el registro MÁS RECIENTE de esa empresa
-            registro_actual = df_empresa.sort_values("ANO_DE_CORTE").iloc[-1].copy()
+    try:
+        return joblib.load(model_file)
+    except Exception as e:
+        st.error(f"Error al cargar model.pkl: {e}")
+        return None
 
-            # Cambiamos el año al seleccionado
-            registro_actual["ANO_DE_CORTE"] = anio_pred
 
-            # Guardamos GANANCIA_PERDIDA actual para comparar
-            ganancia_anterior = df_empresa.sort_values("ANO_DE_CORTE").iloc[-1]["GANANCIA_PERDIDA"]
+model = load_model()
+if model is None:
+    st.stop()
 
-            # Eliminamos GANANCIA para predicción
-            registro_actual = registro_actual.drop(labels=["GANANCIA_PERDIDA"])
 
-            # Convertir en DataFrame (1 fila)
-            df_pred = pd.DataFrame([registro_actual])
+# ----------------------------------------------------
+# 4) DASHBOARD
+# ----------------------------------------------------
+st.title("📊 Dashboard ALECO 2025")
+st.markdown("Explora las empresas y predice GANANCIA_PERDIDA usando el modelo XGBoost entrenado.")
 
-            # =========================
-            # 8. APLICAR ONE-HOT *CONSISTENTE*
-            # =========================
-            df_pred = pd.get_dummies(df_pred)
-            df_model_cols = model.get_booster().feature_names
+sector = st.selectbox("Filtrar por Macrosector", ["Todos"] + df["MACROSECTOR"].unique().tolist())
+region = st.selectbox("Filtrar por Región", ["Todos"] + df["REGION"].unique().tolist())
 
-            # Alinear columnas del modelo
-            for col in df_model_cols:
-                if col not in df_pred.columns:
-                    df_pred[col] = 0
+df_filtrado = df.copy()
+if sector != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["MACROSECTOR"] == sector]
+if region != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["REGION"] == region]
 
-            df_pred = df_pred[df_model_cols]
+st.subheader("Vista del conjunto filtrado")
+st.dataframe(df_filtrado.head(30))
 
-            # =========================
-            # 9. PREDICCIÓN
-            # =========================
-            prediccion = model.predict(df_pred)[0]
 
-            diferencia = prediccion - ganancia_anterior
+# ----------------------------------------------------
+# 5) KPIs
+# ----------------------------------------------------
+st.subheader("KPIs agregados")
 
-            # =========================
-            # 10. RESULTADOS
-            # =========================
-            st.success("Predicción generada con éxito ✔")
+def safe_float(x):
+    try: return float(x)
+    except: return np.nan
 
-            st.subheader("📌 Resultados de la predicción")
-            st.write(f"**Empresa:** {empresa_seleccionada}")
-            st.write(f"**Predicción Año {anio_pred}:** ${prediccion:,.0f}")
-            st.write(f"**Año anterior ({int(df_empresa['ANO_DE_CORTE'].max())}):** ${ganancia_anterior:,.0f}")
+for col in ["INGRESOS_OPERACIONALES","TOTAL_ACTIVOS","TOTAL_PASIVOS","TOTAL_PATRIMONIO"]:
+    df_filtrado[col] = df_filtrado[col].apply(safe_float)
 
-            if diferencia >= 0:
-                st.success(f"▶ Variación: +${diferencia:,.0f} (Mejora)")
-            else:
-                st.error(f"▼ Variación: {diferencia:,.0f} (Caída)")
+ingresos_total = df_filtrado["INGRESOS_OPERACIONALES"].sum()
+patrimonio_prom = df_filtrado["TOTAL_PATRIMONIO"].mean()
 
-        except Exception as e:
-            st.error(f"Error generando predicción: {str(e)}")
+st.write(f"**Ingresos totales:** ${ingresos_total:,.2f}")
+st.write(f"**Patrimonio promedio:** ${patrimonio_prom:,.2f}")
 
+
+# ----------------------------------------------------
+# 6) PREDICCIÓN ROBUSTA
+# ----------------------------------------------------
+st.subheader("🔮 Predicción GANANCIA_PERDIDA")
+
+if len(df_filtrado) == 0:
+    st.warning("No hay empresas con ese filtro.")
+    st.stop()
+
+idx = st.number_input(
+    "Selecciona índice para predecir",
+    min_value=0,
+    max_value=len(df_filtrado)-1,
+    value=0
+)
+
+FEATURE_ORDER = [
+    'NIT','RAZON_SOCIAL','SUPERVISOR','REGION','DEPARTAMENTO_DOMICILIO',
+    'CIUDAD_DOMICILIO','CIIU','MACROSECTOR',
+    'INGRESOS_OPERACIONALES','TOTAL_ACTIVOS','TOTAL_PASIVOS',
+    'TOTAL_PATRIMONIO','ANO_DE_CORTE'
+]
+
+row = df_filtrado.iloc[[idx]].copy()
+
+# VALIDAR QUE TODAS LAS FEATURES EXISTAN
+row = validate_required_columns(row, FEATURE_ORDER)
+
+# Extraer solo features del modelo
+row = row[FEATURE_ORDER]
+
+# Convertir categóricas
+for col in row.columns:
+    try:
+        row[col] = pd.to_numeric(row[col])
+    except:
+        row[col] = row[col].astype("category").cat.codes
+
+try:
+    pred = model.predict(row)[0]
+    st.success(f"Predicción de GANANCIA_PERDIDA: **${pred:,.2f}**")
+except Exception as e:
+    st.error(f"Error generando predicción: {e}")
