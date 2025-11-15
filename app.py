@@ -4,16 +4,9 @@ import joblib
 import os
 import altair as alt
 
-# Para GPT4All
-try:
-    from gpt4all import GPT4All
-except ImportError:
-    st.error("La librería 'gpt4all' no está instalada. Ejecuta 'pip install gpt4all'.")
-    GPT4All = None 
-
-# ==========================================
-# 1️⃣ Cargar datos
-# ==========================================
+# =========================================================
+# 1️⃣ CARGAR DATOS
+# =========================================================
 @st.cache_data
 def load_data():
     csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
@@ -27,150 +20,111 @@ def load_data():
         st.error(f"Error al leer el archivo CSV: {e}")
         return pd.DataFrame()
 
-    # 🛑 FIX: Limpiar y estandarizar nombres de columnas para evitar KeyErrors 🛑
-    new_columns = {}
-    for col in df.columns:
-        # 1. Eliminar espacios iniciales/finales
-        cleaned_col = col.strip()
-        # 2. Reemplazar espacios internos por guiones bajos para consistencia con el código
-        cleaned_col = cleaned_col.replace(' ', '_')
-        new_columns[col] = cleaned_col
+    # Limpiar y estandarizar nombres de columnas
+    df.columns = [c.strip().replace(" ", "_").replace("(", "").replace(")", "").replace("Ñ","N") for c in df.columns]
     
-    df = df.rename(columns=new_columns)
-    
-    # Verificar si las columnas críticas existen después de la limpieza
-    required_cols = ['MACROSECTOR', 'REGIÓN', 'INGRESOS_OPERACIONALES']
+    # Columnas críticas
+    required_cols = ['MACROSECTOR', 'REGION', 'INGRESOS_OPERACIONALES', 'GANANCIA_PERDIDA']
     missing_cols = [col for col in required_cols if col not in df.columns]
-
     if missing_cols:
-        st.error(f"Error Crítico: Las siguientes columnas clave son necesarias y no se encontraron en el CSV después de la limpieza: {missing_cols}")
-        st.markdown(f"**Columnas encontradas en el archivo CSV:** `{list(df.columns)}`")
-        return pd.DataFrame() 
-
+        st.error(f"Faltan columnas necesarias: {missing_cols}")
+        return pd.DataFrame()
+    
     return df
 
 df = load_data()
-
 if df.empty:
-    st.stop()  # Si no hay datos o la columna clave falta, detener la app
+    st.stop()
 
-# ==========================================
-# 2️⃣ Cargar modelo
-# ==========================================
+# =========================================================
+# 2️⃣ CARGAR MODELO
+# =========================================================
 @st.cache_resource
 def load_model():
     model_file = "model.pkl"
     if not os.path.exists(model_file):
-        st.error(f"No se encontró el archivo del modelo: **{model_file}**. Asegúrate de que esté en el mismo directorio.")
+        st.error(f"No se encontró el archivo del modelo: {model_file}")
         return None
     try:
         model = joblib.load(model_file)
         return model
     except Exception as e:
-        st.error(f"Error al cargar el modelo PKL: {e}")
+        st.error(f"Error al cargar el modelo: {e}")
         return None
 
 model = load_model()
 if model is None:
     st.stop()
 
-# ==========================================
-# 3️⃣ Configurar GPT4All
-# ==========================================
-@st.cache_resource
-def init_gpt():
-    if GPT4All is None:
-        return None
-    # Cambia "ggml-model.bin" por el modelo que descargaste
-    model_path = "ggml-model.bin"
-    try:
-        gpt_model = GPT4All(model_path)
-        return gpt_model
-    except Exception as e:
-        st.warning(f"Error al inicializar GPT4All. La funcionalidad de consulta en lenguaje natural no estará disponible. Asegúrate de que el modelo **{model_path}** esté disponible. Error: {e}")
-        return None
-
-gpt = init_gpt()
-
-# ==========================================
-# 4️⃣ Interfaz Streamlit
-# ==========================================
+# =========================================================
+# 3️⃣ INTERFAZ STREAMLIT
+# =========================================================
 st.title("Dashboard de Empresas")
-st.markdown("Explora los datos de las 10.000 empresas más grandes del país y genera predicciones de ganancias usando XGBoost.")
+st.markdown("Explora los datos de las 10.000 empresas más grandes del país y genera predicciones de ganancias.")
 
-# Filtros interactivos
+# Filtros
 sector = st.selectbox("Selecciona un sector (MACROSECTOR)", ["Todos"] + df["MACROSECTOR"].dropna().unique().tolist())
-region = st.selectbox("Selecciona una región (REGIÓN)", ["Todos"] + df["REGIÓN"].dropna().unique().tolist())
+region = st.selectbox("Selecciona una región (REGION)", ["Todos"] + df["REGION"].dropna().unique().tolist())
 
-# Filtrar datos
 df_filtered = df.copy()
 if sector != "Todos":
     df_filtered = df_filtered[df_filtered["MACROSECTOR"] == sector]
 if region != "Todos":
-    df_filtered = df_filtered[df_filtered["REGIÓN"] == region]
-
-st.dataframe(df_filtered.head(50))
+    df_filtered = df_filtered[df_filtered["REGION"] == region]
 
 if df_filtered.empty:
-    st.error("No hay empresas que coincidan con los filtros seleccionados.")
-    st.stop()
+    st.warning("No hay empresas que coincidan con los filtros.")
+st.dataframe(df_filtered.head(50))
 
-# ==========================================
-# 5️⃣ Visualizaciones
-# ==========================================
+# =========================================================
+# 4️⃣ VISUALIZACIONES
+# =========================================================
 st.subheader("Visualizaciones")
-
-# Agrupar por MACROSECTOR y sumar ingresos (Ahora la columna INGRESOS_OPERACIONALES debe existir)
 df_chart = df_filtered.groupby('MACROSECTOR')['INGRESOS_OPERACIONALES'].sum().reset_index()
-
-# Ejemplo: Ingresos por macrosector
 chart = alt.Chart(df_chart).mark_bar().encode(
     x=alt.X('MACROSECTOR', title='Macrosector'),
     y=alt.Y('INGRESOS_OPERACIONALES', title='Ingresos Operacionales (Suma)'),
-    tooltip=['MACROSECTOR', alt.Tooltip('INGRESOS_OPERACIONALES', format=',.0f', title='Total Ingresos')]
-).properties(
-    title='Suma de Ingresos Operacionales por Macrosector'
-)
+    tooltip=['MACROSECTOR', alt.Tooltip('INGRESOS_OPERACIONALES', format=',.0f')]
+).properties(title='Suma de Ingresos Operacionales por Macrosector')
 st.altair_chart(chart, use_container_width=True)
 
-# ==========================================
-# 6️⃣ Predicciones
-# ==========================================
+# =========================================================
+# 5️⃣ PREDICCIONES
+# =========================================================
 st.subheader("Predicciones de Ganancias")
+
+# Lista de columnas de features usadas para entrenar el modelo
+feature_cols = [c for c in df.columns if c not in ['GANANCIA_PERDIDA','RAZON_SOCIAL','NIT','SUPERVISOR','REGION','DEPARTAMENTO_DOMICILIO','CIUDAD_DOMICILIO','CIIU','MACROSECTOR','Año_de_Corte']]
+
+if df_filtered.empty:
+    st.stop()
+
 max_index = len(df_filtered) - 1
-empresa_idx = st.number_input(
-    f"Selecciona índice de empresa para predecir ganancia (0 a {max_index})", 
-    min_value=0, 
-    max_value=max_index, 
-    value=0
-)
+empresa_idx = st.number_input(f"Selecciona índice de empresa para predecir (0 a {max_index})",
+                              min_value=0, max_value=max_index, value=0)
 
-# Columnas que se deben eliminar del DataFrame para obtener solo las features del modelo
-X_pred = df_filtered.drop(columns=["GANANCIA_(PÉRDIDA)", "RAZÓN_SOCIAL", "NIT", "SUPERVISOR", "REGIÓN", "DEPARTAMENTO DOMICILIO", "CIUDAD DOMICILIO", "CIIU", "MACROSECTOR", "Año de Corte"], errors='ignore')
-
-# Realizar la predicción
 try:
+    X_pred = df_filtered[feature_cols]
     pred_value = model.predict(X_pred.iloc[[empresa_idx]])[0]
-    st.write(f"Predicción de ganancia para la empresa **{df_filtered.iloc[empresa_idx]['RAZÓN_SOCIAL']}**: **${pred_value:,.2f}**")
+    st.write(f"Predicción de ganancia para **{df_filtered.iloc[empresa_idx]['RAZON_SOCIAL']}**: **${pred_value:,.2f}**")
 except Exception as e:
-    st.error(f"Error al realizar la predicción. Asegúrate de que las columnas de features de la empresa coincidan con las que espera el modelo. Error: {e}")
+    st.error(f"Error al realizar la predicción. {e}")
 
-# ==========================================
-# 7️⃣ Preguntas con GPT4All
-# ==========================================
-st.subheader("Consulta en lenguaje natural")
-user_question = st.text_input("Hazle una pregunta a GPT4All sobre los datos o las predicciones:")
-
-if user_question:
-    if gpt:
-        # Pasamos un resumen de los datos al prompt para contexto
-        context = f"Datos de empresas (top 5):\n{df_filtered.head(5).to_string()}"
+# =========================================================
+# 6️⃣ GPT4All (opcional, comentado)
+# =========================================================
+"""
+try:
+    from gpt4all import GPT4All
+    model_path = "ggml-model.bin"  # Debes subir este archivo al repo
+    gpt = GPT4All(model_path)
+    st.subheader("Consulta en lenguaje natural")
+    user_question = st.text_input("Pregunta sobre los datos o predicciones:")
+    if user_question:
+        context = f"Top 5 empresas:\n{df_filtered.head(5).to_string()}"
         prompt = f"{context}\nPregunta: {user_question}\nRespuesta:"
-        
-        try:
-            response = gpt.chat(prompt)
-            st.markdown(f"**GPT4All:** {response}")
-        except Exception as e:
-            st.error(f"Error al generar respuesta con GPT4All: {e}")
-    else:
-        st.warning("GPT4All no se pudo inicializar. Consulta en lenguaje natural no disponible.")
+        response = gpt.chat(prompt)
+        st.markdown(f"**GPT4All:** {response}")
+except Exception as e:
+    st.warning("GPT4All no disponible: {e}")
+"""
