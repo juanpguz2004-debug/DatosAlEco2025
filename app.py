@@ -20,13 +20,39 @@ def load_data():
     if not os.path.exists(csv_file):
         st.error(f"No se encontró el archivo CSV: **{csv_file}**. Asegúrate de que esté en el mismo directorio.")
         return pd.DataFrame()
-    df = pd.read_csv(csv_file)
+    
+    try:
+        df = pd.read_csv(csv_file)
+    except Exception as e:
+        st.error(f"Error al leer el archivo CSV: {e}")
+        return pd.DataFrame()
+
+    # 🛑 FIX: Limpiar y estandarizar nombres de columnas para evitar KeyErrors 🛑
+    new_columns = {}
+    for col in df.columns:
+        # 1. Eliminar espacios iniciales/finales
+        cleaned_col = col.strip()
+        # 2. Reemplazar espacios internos por guiones bajos para consistencia con el código
+        cleaned_col = cleaned_col.replace(' ', '_')
+        new_columns[col] = cleaned_col
+    
+    df = df.rename(columns=new_columns)
+    
+    # Verificar si las columnas críticas existen después de la limpieza
+    required_cols = ['MACROSECTOR', 'REGIÓN', 'INGRESOS_OPERACIONALES']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+
+    if missing_cols:
+        st.error(f"Error Crítico: Las siguientes columnas clave son necesarias y no se encontraron en el CSV después de la limpieza: {missing_cols}")
+        st.markdown(f"**Columnas encontradas en el archivo CSV:** `{list(df.columns)}`")
+        return pd.DataFrame() 
+
     return df
 
 df = load_data()
 
 if df.empty:
-    st.stop()  # Si no hay datos, detener la app
+    st.stop()  # Si no hay datos o la columna clave falta, detener la app
 
 # ==========================================
 # 2️⃣ Cargar modelo
@@ -94,7 +120,7 @@ if df_filtered.empty:
 # ==========================================
 st.subheader("Visualizaciones")
 
-# Agrupar por MACROSECTOR y sumar ingresos
+# Agrupar por MACROSECTOR y sumar ingresos (Ahora la columna INGRESOS_OPERACIONALES debe existir)
 df_chart = df_filtered.groupby('MACROSECTOR')['INGRESOS_OPERACIONALES'].sum().reset_index()
 
 # Ejemplo: Ingresos por macrosector
