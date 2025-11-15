@@ -35,12 +35,7 @@ def load_data():
         st.error(f"No se encontró el archivo: {csv_file}")
         return pd.DataFrame()
 
-    try:
-        df = pd.read_csv(csv_file)
-    except Exception as e:
-        st.error(f"Error al leer el CSV: {e}")
-        return pd.DataFrame()
-
+    df = pd.read_csv(csv_file)
 
     # Normalizar columnas igual que en el entrenamiento
     df.columns = [normalize_col(c) for c in df.columns]
@@ -72,17 +67,13 @@ def load_data():
             .str.replace(".","",regex=False)
             .str.replace(" ","",regex=False)
             .str.replace("−","-",regex=False)
-            .str.replace("(","",regex=False)
+            .str.replace("(","-",regex=False)
             .str.replace(")","",regex=False)
             .astype(float)
         )
     
-    # REVISIÓN CLAVE: Asegurar que ANO_DE_CORTE es un entero positivo.
-    df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
-    # Rellenar NaNs y convertir a int
-    df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int) 
-    # Filtrar las filas con años no válidos (Ej. antes del año 2000)
-    df = df[df['ANO_DE_CORTE'] > 2000]
+    # Asegurar que ANO_DE_CORTE sea int (crucial para la comparación)
+    df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce').fillna(-1).astype(int)
 
     return df
 
@@ -94,10 +85,11 @@ if df.empty:
 
 
 # ----------------------------------------------------
-# 3) CARGAR MODELO (usa "model.pkl")
+# 3) CARGAR MODELO (CORREGIDO: usa "model.pkl")
 # ----------------------------------------------------
 @st.cache_resource
 def load_model():
+    # 🚨 Nombre de archivo corregido a "model.pkl"
     model_file = "model.pkl" 
     
     if not os.path.exists(model_file):
@@ -166,56 +158,30 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 6) PREDICCIÓN CON COMPARACIÓN
+# 6) PREDICCIÓN CON COMPARACIÓN (MEJORADO)
 # ----------------------------------------------------
 st.subheader("🔮 Predicción de Ganancia/Pérdida")
 
+# Determinar el año base para la predicción
 if df_filtrado.empty:
     st.warning("No hay empresas con ese filtro.")
     st.stop()
 
-# Determinar el año base más reciente en el conjunto de datos filtrado
 ano_corte_mas_reciente = df_filtrado["ANO_DE_CORTE"].max()
+ano_prediccion = ano_corte_mas_reciente + 1
+st.info(f"Se realizará la predicción para el **Año de Corte: {ano_prediccion}**")
 
-if ano_corte_mas_reciente <= 0:
-    st.warning("No se encontró un año de corte válido (> 0) en los datos filtrados.")
-    st.stop()
-
-
-# --- SELECTORES: Año y Empresa ---
-col_sel_year, col_sel_company = st.columns(2)
-
-with col_sel_year:
-    pred_years = [2026, 2027, 2028, 2029, 2030]
-    # Filtramos para que solo se pueda predecir años futuros al corte más reciente
-    años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente]
-    
-    if not años_futuros:
-        st.warning(f"El año de corte más reciente es {ano_corte_mas_reciente}. No hay años futuros disponibles para predecir en la lista.")
-        st.stop()
-
-    ano_prediccion = st.selectbox(
-        "Selecciona el Año de Predicción",
-        años_futuros,
-        index=0 
-    )
-
-# ----------------------------------------------------
-
-# Filtrar empresas disponibles (basado en el año más reciente)
+# --- MEJORA: Selector de empresa por nombre ---
 empresas_disponibles = df_filtrado[df_filtrado["ANO_DE_CORTE"] == ano_corte_mas_reciente]["RAZON_SOCIAL"].unique().tolist()
 
 if not empresas_disponibles:
     st.warning(f"No hay datos de empresas disponibles para el año {ano_corte_mas_reciente} en este filtro.")
     st.stop()
 
-with col_sel_company:
-    empresa_seleccionada = st.selectbox(
-        "Selecciona la Empresa para predecir",
-        empresas_disponibles
-    )
-
-st.info(f"Predicción para **{ano_prediccion}**, comparando contra el año de corte más reciente disponible: **{ano_corte_mas_reciente}**.")
+empresa_seleccionada = st.selectbox(
+    "Selecciona la Empresa para predecir",
+    empresas_disponibles
+)
 
 # columnas EXACTAS que usa XGBoost
 FEATURE_ORDER = [
@@ -224,43 +190,41 @@ FEATURE_ORDER = [
     'INGRESOS_OPERACIONALES','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO','ANO_DE_CORTE'
 ]
 
-# Obtener la fila BASE (del año más reciente) de la empresa seleccionada
-row_data = df_filtrado[
+# Copiar la fila más reciente (base) de la empresa seleccionada
+row = df_filtrado[
     (df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada) &
     (df_filtrado["ANO_DE_CORTE"] == ano_corte_mas_reciente)
-]
-
-if row_data.empty:
-    # Esto no debería ocurrir si empresas_disponibles es correcto
-    st.error(f"Error interno: No se encontraron datos base para {empresa_seleccionada} en el año {ano_corte_mas_reciente}.")
-    st.stop()
-    
-row = row_data.iloc[[0]].copy()
+].iloc[[0]].copy()
 
 # Preparar la fila para la predicción
+# El modelo predice el valor para el año siguiente
 row["ANO_DE_CORTE"] = ano_prediccion
 
-# Quitar columna objetivo y guardar la ganancia base (la real más reciente)
+# Quitar columna objetivo del set de predicción
 if "GANANCIA_PERDIDA" in row.columns:
-    ganancia_anterior = row["GANANCIA_PERDIDA"].iloc[0] 
+    ganancia_anterior = row["GANANCIA_PERDIDA"].iloc[0]
     row = row.drop(columns=["GANANCIA_PERDIDA"])
 else:
-    ganancia_anterior = np.nan
+    ganancia_anterior = np.nan # En caso de que la columna se haya eliminado antes
 
 # Asegurar orden correcto
 row = row[FEATURE_ORDER]
 
-# Convertir a códigos categóricos/numéricos 
+# Convertir a códigos categóricos/numéricos (replicando el entrenamiento)
 row_prediccion = row.copy()
 for col in row_prediccion.columns:
     try:
         row_prediccion[col] = pd.to_numeric(row_prediccion[col], errors='raise')
     except:
+        # Se asume que el modelo fue entrenado usando cat.codes
+        # En un entorno real, usarías el LabelEncoder/Pipeline guardado.
         row_prediccion[col] = row_prediccion[col].astype("category").cat.codes
 
 
 try:
     pred = model.predict(row_prediccion)[0]
+    
+    # --- MEJORA: Comparar con el año de corte anterior ---
     
     # Calcular la variación
     if not pd.isna(ganancia_anterior):
@@ -268,7 +232,6 @@ try:
     else:
         diferencia = 0
 
-    st.markdown("#### Resultado de la Predicción")
     col_res1, col_res2 = st.columns(2)
     
     with col_res1:
@@ -286,7 +249,8 @@ try:
         )
         
     st.success(f"Predicción generada con éxito para **{empresa_seleccionada}**.")
+    st.caption(f"La comparación muestra la variación de la predicción de **{ano_prediccion}** respecto al valor real de **{ano_corte_mas_reciente}**.")
 
 except Exception as e:
-    st.error(f"Error generando predicción: {e}")
+    st.error(f"Error generando predicción o comparación: {e}")
     st.caption("Asegúrate de que el modelo y la estructura de datos sean compatibles.")
