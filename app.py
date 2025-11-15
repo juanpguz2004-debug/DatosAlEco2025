@@ -5,6 +5,12 @@ import joblib
 import os
 import unicodedata
 
+# Configuración inicial de la página (ayuda a evitar fallos al inicio)
+st.set_page_config(
+    page_title="Dashboard ALECO", 
+    layout="wide"
+)
+
 # ----------------------------------------------------
 # 1) FUNCIONES DE NORMALIZACIÓN
 # ----------------------------------------------------
@@ -166,7 +172,7 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 6) PREDICCIÓN CON COMPARACIÓN (COMPLETAMENTE MODIFICADO)
+# 6) PREDICCIÓN CON COMPARACIÓN
 # ----------------------------------------------------
 st.subheader("🔮 Predicción de Ganancia/Pérdida")
 
@@ -177,7 +183,7 @@ if df_filtrado.empty:
 # 1. Determinar el año base más reciente
 ano_corte_mas_reciente = df_filtrado["ANO_DE_CORTE"].max()
 
-if ano_corte_mas_reciente <= 2000: # Usamos 2000 como umbral de seguridad
+if ano_corte_mas_reciente <= 2000:
     st.warning("No se encontró un año de corte válido (> 2000) en los datos filtrados.")
     st.stop()
 
@@ -187,7 +193,6 @@ col_sel_year, col_sel_company = st.columns(2)
 
 with col_sel_year:
     pred_years = [2026, 2027, 2028, 2029, 2030]
-    # Filtramos para que solo se pueda predecir años futuros al corte más reciente
     años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente]
     
     if not años_futuros:
