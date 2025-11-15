@@ -89,15 +89,18 @@ if df.empty:
 # ----------------------------------------------------
 @st.cache_resource
 def load_model():
-    model_file = "model.pkl"
+    #  Nombre CORRECTO del archivo
+    model_file = "model.pkl" 
+    
     if not os.path.exists(model_file):
-        st.error("No se encontró model.pkl en el repositorio.")
+        st.error(f"No se encontró el archivo del modelo: {model_file}")
         return None
 
     try:
+        # Cargar el modelo con el nombre correcto
         return joblib.load(model_file)
     except Exception as e:
-        st.error(f"Error al cargar model.pkl: {e}")
+        st.error(f"Error al cargar {model_file}: {e}")
         return None
 
 
@@ -255,3 +258,4 @@ try:
 except Exception as e:
     st.error(f"Error generando predicción o comparación: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos disponibles para el año anterior.")
+
