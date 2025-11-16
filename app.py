@@ -1,16 +1,22 @@
 # --- 0) FUNCIONES DE UTILIDAD ---
-# Función de Label Encoder segura (Sugerencia 4)
+
+import numpy as np
+import unicodedata
+
+
+# 1. LabelEncoder seguro (corregido)
 def safe_le_transform(encoder, val):
     """Transforma un valor usando LabelEncoder, devolviendo -1 si es desconocido."""
     s = str(val)
-    # Verifica si la clase fue vista en el entrenamiento
-    if s in encoder.classes_:
-        # Retorna el índice de la clase (el valor codificado)
-        return int(np.where(encoder.classes_ == s)[0][0])
-    # Retorna -1 si el valor no fue visto en el entrenamiento
-    return -1
+    try:
+        # Intentar transformar directamente
+        return int(encoder.transform([s])[0])
+    except ValueError:
+        # Valor no visto en entrenamiento
+        return -1
 
-# Función de formato de año (para OHE, mantenida por si es requerida por el modelo)
+
+# 2. Mantener sin cambios (el modelo lo requiere)
 def format_ano(year):
     """Convierte el año 2024 a '2,024' para la codificación OHE."""
     year_str = str(year)
@@ -18,7 +24,27 @@ def format_ano(year):
         return f'{year_str[0]},{year_str[1:]}' 
     return year_str
 
-# Función de normalización de columna (mantener tu original si es la que usaste para entrenar)
+
+# 3. Normalizador de columnas (corregido)
 def normalize_col(col):
-    col = col.strip().upper().replace(" ", "_").replace("(", "").replace(")", "").replace("Ñ", "N")
-    return ''.join(c for c in unicodedata.normalize('NFD', col) if unicodedata.category(c) != 'Mn')
+    """
+    Normaliza nombres de columnas:
+    - Quita acentos correctamente
+    - Pasa a mayúsculas
+    - Reemplaza espacios por _
+    - Elimina paréntesis
+    - Normaliza Ñ → N
+    """
+    # Quitar acentos primero
+    col = ''.join(
+        c for c in unicodedata.normalize('NFD', col)
+        if unicodedata.category(c) != 'Mn'
+    )
+
+    # Transformaciones estándar
+    col = col.strip().upper()
+    col = col.replace("Ñ", "N")
+    col = col.replace(" ", "_")
+    col = col.replace("(", "").replace(")", "")
+
+    return col
