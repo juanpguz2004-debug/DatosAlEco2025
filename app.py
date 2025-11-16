@@ -163,12 +163,20 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 6) PREDICCIÓN CON COMPARACIÓN (LÓGICA POR EMPRESA)
+# 6) PREDICCIÓN CON COMPARACIÓN (LÓGICA POR EMPRESA Y CODIFICACIÓN)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
-# --- SELECTORES: Año y Empresa ---
-col_sel_company, col_sel_year = st.columns(2) # Invertimos el orden para énfasis
+# 🟢 FIX: Aplicar la codificación categórica al DataFrame filtrado COMPLETO
+# Asumimos que se usó la codificación por defecto de pandas/sklearn (cat.codes)
+df_codificado = df_filtrado.copy()
+for col in df_codificado.columns:
+    if df_codificado[col].dtype == 'object':
+        df_codificado[col] = df_codificado[col].astype("category").cat.codes
+
+
+# --- SELECTORES: Empresa y Año ---
+col_sel_company, col_sel_year = st.columns(2) 
 
 # 2. Lista de empresas disponibles (TODAS las que pasaron el filtro)
 empresas_disponibles = df_filtrado["RAZON_SOCIAL"].unique().tolist()
@@ -186,7 +194,6 @@ with col_sel_company:
 # 1. Selector de año de predicción (utiliza el máximo global como base)
 with col_sel_year:
     pred_years = [2026, 2027, 2028, 2029, 2030]
-    # Filtramos la lista de años futuros respecto al max año que vimos en el dataset
     años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente_global]
     
     if not años_futuros:
@@ -203,10 +210,12 @@ with col_sel_year:
 # 3. Preparar datos para la predicción
 try:
     # 🟢 LÓGICA CLAVE: Encontrar el año más reciente registrado para *ESTA EMPRESA*
-    df_empresa = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada]
-    ano_corte_empresa = df_empresa["ANO_DE_CORTE"].max()
+    df_empresa = df_codificado[df_codificado["RAZON_SOCIAL_CODED"] == empresa_seleccionada_coded]
     
-    # Detener si no hay datos de corte para la empresa seleccionada (debería ser imposible)
+    # Usamos el DF original para encontrar el año (ya que el codificado no lo necesitamos)
+    df_empresa_original = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada]
+    ano_corte_empresa = df_empresa_original["ANO_DE_CORTE"].max()
+    
     if ano_corte_empresa <= 2000:
         st.error(f"Error: La empresa '{empresa_seleccionada}' no tiene un año de corte válido.")
         st.stop()
@@ -220,27 +229,25 @@ try:
         'TOTAL_PATRIMONIO','ANO_DE_CORTE'
     ]
     
-    # 🟢 Extraer la fila de datos usando el año más reciente de la empresa
-    row_data = df_empresa[
-        df_empresa["ANO_DE_CORTE"] == ano_corte_empresa
+    # 🟢 Extraer la fila de datos ya CODIFICADA usando el año más reciente de la empresa
+    row_data = df_codificado[
+        (df_codificado["RAZON_SOCIAL"] == df_empresa.iloc[0]["RAZON_SOCIAL"]) & # Usamos el NIT o un identificador único si RAZON_SOCIAL fue codificada
+        (df_codificado["ANO_DE_CORTE"] == ano_corte_empresa)
     ].iloc[[0]].copy()
 
-    # Guardar ganancia anterior y preparar fila para predicción
-    ganancia_anterior = row_data["GANANCIA_PERDIDA"].iloc[0]
-    row = row_data.drop(columns=["GANANCIA_PERDIDA"])
+    # Guardar ganancia anterior (usando el DF original que no tiene GANANCIA_PERDIDA codificada)
+    ganancia_anterior = df_filtrado[
+        (df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada) &
+        (df_filtrado["ANO_DE_CORTE"] == ano_corte_empresa)
+    ]["GANANCIA_PERDIDA"].iloc[0]
+
+    # Preparamos la fila para la predicción, eliminando la G/P
+    row_prediccion = row_data.drop(columns=["GANANCIA_PERDIDA"])
 
     # Modificar la fila para el año futuro
-    row["ANO_DE_CORTE"] = ano_prediccion
-    row = row[FEATURE_ORDER]
-
-    # Convertir a códigos categóricos/numéricos (simulando el entrenamiento)
-    row_prediccion = row.copy()
-    for col in row_prediccion.columns:
-        if row_prediccion[col].dtype == 'object':
-            row_prediccion[col] = row_prediccion[col].astype("category").cat.codes
-        else:
-            row_prediccion[col] = pd.to_numeric(row_prediccion[col], errors='coerce').fillna(0) 
-
+    row_prediccion["ANO_DE_CORTE"] = ano_prediccion
+    row_prediccion = row_prediccion[FEATURE_ORDER]
+    
     # 4. Realizar Predicción
     pred = model.predict(row_prediccion)[0]
     
@@ -254,23 +261,27 @@ try:
         st.metric(
             label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion})",
             value=f"${pred:,.2f}",
-            delta=f"${diferencia:,.2f} vs {ano_corte_empresa}" # Usa el año de la empresa
+            delta=f"${diferencia:,.2f} vs {ano_corte_empresa}" 
         )
         
     with col_res2:
-        # 🟢 MODIFICACIÓN SOLICITADA: Etiqueta de la Métrica
         st.metric(
             label=f"G/P Real (Última fecha de corte registrada)", 
             value=f"${ganancia_anterior:,.2f}",
             delta_color="off"
         )
         
-    # 🟢 MODIFICACIÓN SOLICITADA: Mensaje condicional (Rojo para Pérdidas)
+    # LÓGICA DE MENSAJE MEJORADA
+    st.markdown("---")
     if pred >= 0:
-        st.success(f"Predicción generada con éxito para **{empresa_seleccionada}**.")
+        if diferencia >= 0:
+            st.success(f"📈 Se predice un **aumento** de la ganancia (Ganancia total: ${pred:,.2f}).")
+        else:
+            st.warning(f"⚠️ Se predice una **reducción** en la ganancia respecto al año {ano_corte_empresa} (Ganancia total: ${pred:,.2f}).")
     else:
-        st.error(f"Predicción (pérdida) generada para **{empresa_seleccionada}**.")
+        st.error(f"📉 Se predice una **pérdida** neta para {ano_prediccion} (Pérdida total: ${pred:,.2f}).")
 
 except Exception as e:
-    st.error(f"❌ ERROR generando la predicción: {e}")
-    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
+    # 🚨 DEBUGGING: Si falla, podemos mostrar la fila para ver si la codificación es numérica
+    # st.write("Fila de predicción:", row_prediccion) 
+    st.error(f"❌ ERROR generando la predicción: {e}. Revisa la codificación y la alineación de las características.")
