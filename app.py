@@ -173,7 +173,7 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED ROBUSTO)
+# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED RECURSIVO)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -191,13 +191,14 @@ with col_sel_company:
     )
 
 with col_sel_year:
+    # Aseguramos que los años futuros sean válidos
     pred_years = [2026, 2027, 2028, 2029, 2030]
     años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente_global]
     if not años_futuros:
         st.warning(f"El año de corte base es {ano_corte_mas_reciente_global}.")
         st.stop()
-    ano_prediccion = st.selectbox(
-        "Selecciona el Año de Predicción", años_futuros, index=0 
+    ano_prediccion_final = st.selectbox(
+        "Selecciona el Año de Predicción (Target)", años_futuros, index=0 
     )
 
 # --- Lógica de Predicción ---
@@ -209,95 +210,107 @@ try:
         st.error(f"Error: La empresa '{empresa_seleccionada}' no tiene un año de corte válido.")
         st.stop()
 
-    st.info(f"Predicción para **{ano_prediccion}**, comparando contra la última fecha de corte ({ano_corte_empresa}). Tasa de Crecimiento Asumida (AGR): **{AGR:.2f}**")
+    st.info(f"Predicción recursiva hasta **{ano_prediccion_final}**, iniciando desde la última fecha de corte ({ano_corte_empresa}). Tasa de Crecimiento Asumida (AGR): **{AGR:.2f}**")
 
+    # 1. PREPARACIÓN INICIAL (Base para la recursividad)
     row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
+    ganancia_anterior = ganancia_anterior / 100.0 # Parche de escala
     
-    # --- PARCHE DE CORRECCIÓN DE ESCALA (ACTIVO) ---
-    ganancia_anterior = ganancia_anterior / 100.0 
+    # Inicializar la base para la recursividad (Será modificada en cada iteración)
+    row_base_recursiva = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0].copy() 
     
-    # --- 1. PRE-PROCESAMIENTO, PROYECCIÓN Y CODIFICACIÓN ---
-    row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').iloc[0].copy() 
-    row_prediccion = row_prediccion.drop(labels=['NIT', 'RAZON_SOCIAL'], errors='ignore')
-
-    # A. Asegurar tipo numérico y Proyección de Features Numéricos (FIX CRÍTICO)
-    delta_anos_prediccion = ano_prediccion - ano_corte_empresa
-    if delta_anos_prediccion > 0:
+    
+    # 2. BUCLE DE PREDICCIÓN RECURSIVA
+    
+    años_a_predecir = range(ano_corte_empresa + 1, ano_prediccion_final + 1)
+    
+    # Esta variable almacenará el resultado del último paso del bucle
+    pred_real_final = 0.0
+    
+    for ano_actual in años_a_predecir:
+        
+        # --- A. Proyección de Features Numéricos para el año actual ---
+        
+        # El delta siempre es 1 año, ya que se proyecta recursivamente desde el año anterior
+        delta_anos_prediccion = 1 
+        
         for col in COLS_TO_PROJECT:
-            # FIX: Asegurar que el feature es numérico para la multiplicación
-            # Esto evita el error si el tipo de dato se hereda como object/string.
-            row_prediccion[col] = pd.to_numeric(row_prediccion[col], errors='coerce', downcast='float')
-            # Proyección
-            row_prediccion[col] = row_prediccion[col] * (AGR ** delta_anos_prediccion)
+            # Asegurar que el feature es numérico para la multiplicación
+            row_base_recursiva[col] = pd.to_numeric(row_base_recursiva[col], errors='coerce', downcast='float')
+            # Proyección: Valor_Actual * AGR (para un paso)
+            row_base_recursiva[col] = row_base_recursiva[col] * (AGR ** delta_anos_prediccion)
             
-    # B. Seteamos el Año de Predicción y aplicamos formato OHE
-    row_prediccion["ANO_DE_CORTE"] = ano_prediccion 
-    row_prediccion['ANO_DE_CORTE'] = format_ano(row_prediccion['ANO_DE_CORTE'])
-    
-    # C. Aplicar Label Encoding (LE)
-    for col in LE_COLS:
-        try:
-            encoder = label_encoders[col]
-            row_prediccion[col] = encoder.transform([str(row_prediccion[col])])[0]
-        except ValueError:
-             row_prediccion[col] = -1 # Valor desconocido
-    
-    # D. Aplicar One-Hot Encoding (OHE) y Alineación
-    row_prediccion_df = row_prediccion.to_frame().T
-    # Se asegura que las columnas OHE sean string para que get_dummies funcione
-    for col in OHE_COLS:
-        row_prediccion_df[col] = row_prediccion_df[col].astype(str)
+        # --- B. Codificación (LE y OHE) para el año actual ---
+        row_prediccion = row_base_recursiva.copy()
+        
+        # Setear el Año de Predicción y aplicar formato OHE
+        row_prediccion["ANO_DE_CORTE"] = ano_actual
+        row_prediccion['ANO_DE_CORTE'] = format_ano(row_prediccion['ANO_DE_CORTE'])
+        
+        # Aplicar Label Encoding (LE)
+        for col in LE_COLS:
+            try:
+                encoder = label_encoders[col]
+                row_prediccion[col] = encoder.transform([str(row_prediccion[col])])[0]
+            except ValueError:
+                 row_prediccion[col] = -1 
+        
+        # Aplicar One-Hot Encoding (OHE)
+        row_prediccion_df = row_prediccion.to_frame().T
+        for col in OHE_COLS:
+            row_prediccion_df[col] = row_prediccion_df[col].astype(str)
 
-    row_prediccion_ohe = pd.get_dummies(
-        row_prediccion_df, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
-    )
-    
-    # Alinear y ordenar las columnas (CRÍTICO)
-    missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion_ohe.columns)
-    for c in missing_cols:
-        row_prediccion_ohe[c] = 0 
-    
-    # Preparación final del DataFrame de predicción
-    X_pred = row_prediccion_ohe[MODEL_FEATURE_NAMES].copy()
-    
-    # FIX FINAL: Forzar el tipo de dato de X_pred a float, eliminando cualquier rastro de string/object
-    X_pred = X_pred.astype(float)
-    X_pred = X_pred.fillna(0)
-    
-    
-    # --- 2. LÓGICA DE PREDICCIÓN CONDICIONAL ---
-    
-    # Paso A: Clasificar (0 = Pérdida/Cero, 1 = Ganancia)
-    pred_cls = model_cls.predict(X_pred)[0]
-    
-    if pred_cls == 1:
-        # Ganancia: Reversión: e^x - 1
-        pred_log = model_reg_gan.predict(X_pred)[0]
-        pred_real = np.expm1(pred_log) 
-    else:
-        # Pérdida/Cero: Reversión: -(e^x - 1)
-        pred_log = model_reg_per.predict(X_pred)[0]
-        magnitud_perdida_real = np.expm1(pred_log)
-        pred_real = -magnitud_perdida_real
+        row_prediccion_ohe = pd.get_dummies(
+            row_prediccion_df, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
+        )
+        
+        # Alinear y ordenar las columnas (CRÍTICO)
+        missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion_ohe.columns)
+        for c in missing_cols:
+            row_prediccion_ohe[c] = 0 
+        
+        # Preparación final del DataFrame de predicción para el modelo
+        X_pred = row_prediccion_ohe[MODEL_FEATURE_NAMES].copy()
+        X_pred = X_pred.astype(float).fillna(0)
+        
+        
+        # --- C. Lógica de Predicción Condicional (Clasificación + Regresión) ---
+        
+        pred_cls = model_cls.predict(X_pred)[0]
+        
+        if pred_cls == 1:
+            pred_log = model_reg_gan.predict(X_pred)[0]
+            pred_g_p_actual = np.expm1(pred_log) 
+        else:
+            pred_log = model_reg_per.predict(X_pred)[0]
+            magnitud_perdida_real = np.expm1(pred_log)
+            pred_g_p_actual = -magnitud_perdida_real
+            
+        # ALMACENAMIENTO (El resultado final es el que se muestra al usuario)
+        if ano_actual == ano_prediccion_final:
+            pred_real_final = pred_g_p_actual
+            # Nota: No retroalimentamos la Ganancia/Pérdida, solo los features financieros proyectados por AGR.
+        
+        # IMPORTANTE: La base recursiva ya fue proyectada en el paso A, no necesita más actualización para el siguiente bucle.
         
     
-    # --- 3. MOSTRAR RESULTADOS (Cálculo Delta Robusto y Formato) ---
-    diferencia = pred_real - ganancia_anterior
+    # --- 3. MOSTRAR RESULTADOS (Usando pred_real_final) ---
+    diferencia = pred_real_final - ganancia_anterior
 
     delta_metric_value = diferencia 
 
     # --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
     if ganancia_anterior == 0:
-        if pred_real > 0:
-            delta_display = f"Ganó ${pred_real:,.2f} vs 0"
-        elif pred_real < 0:
-            delta_display = f"Perdió ${abs(pred_real):,.2f} vs 0"
+        if pred_real_final > 0:
+            delta_display = f"Ganó ${pred_real_final:,.2f} vs 0"
+        elif pred_real_final < 0:
+            delta_display = f"Perdió ${abs(pred_real_final):,.2f} vs 0"
         else:
             delta_display = "Sin cambio vs 0"
     elif ganancia_anterior < 0:
-        if pred_real >= 0:
-            delta_abs = pred_real - ganancia_anterior
+        if pred_real_final >= 0:
+            delta_abs = pred_real_final - ganancia_anterior
             delta_display = f"Mejoró ${delta_abs:,.2f} (Cambio Absoluto)"
         else:
             delta_percent_mag = (diferencia / abs(ganancia_anterior)) * 100
@@ -315,8 +328,8 @@ try:
 
     with col_res1:
         st.metric(
-            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", 
-            value=f"${pred_real:,.2f}",
+            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion_final}) (Billones COP)", 
+            value=f"${pred_real_final:,.2f}",
             delta=delta_metric_value, 
             delta_color="normal"
         )
@@ -329,21 +342,21 @@ try:
             delta_color="off"
         )
         
-    # Mensaje condicional final (Lógica detallada - Restaurada)
+    # Mensaje condicional final (Lógica detallada)
     st.markdown("---") 
 
-    if pred_real >= 0.01: 
+    if pred_real_final >= 0.01: 
         if ganancia_anterior > 0 and diferencia >= 0:
-            st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **AUMENTO** en la magnitud de la ganancia (Resultado: ${pred_real:,.2f} Billones COP).")
+            st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **AUMENTO** en la magnitud de la ganancia (Resultado: ${pred_real_final:,.2f} Billones COP).")
         elif ganancia_anterior < 0:
-            st.success(f"🚀 El modelo predice una **RECUPERACIÓN TOTAL** al pasar de pérdida a **GANANCIA** (Resultado: ${pred_real:,.2f} Billones COP).")
+            st.success(f"🚀 El modelo predice una **RECUPERACIÓN TOTAL** al pasar de pérdida a **GANANCIA** (Resultado: ${pred_real_final:,.2f} Billones COP).")
         elif ganancia_anterior == 0:
-            st.success(f"📈 El modelo predice que la empresa pasa a **GANANCIA** desde equilibrio (Resultado: ${pred_real:,.2f} Billones COP).")
+            st.success(f"📈 El modelo predice que la empresa pasa a **GANANCIA** desde equilibrio (Resultado: ${pred_real_final:,.2f} Billones COP).")
         else: 
-            st.warning(f"⚠️ El modelo clasifica la operación como **GANANCIA**, pero predice una **REDUCCIÓN** en su magnitud (Resultado: ${pred_real:,.2f} Billones COP).")
+            st.warning(f"⚠️ El modelo clasifica la operación como **GANANCIA**, pero predice una **REDUCCIÓN** en su magnitud (Resultado: ${pred_real_final:,.2f} Billones COP).")
 
-    elif pred_real < -0.01: 
-        st.error(f"📉 El modelo clasifica la operación como **PÉRDIDA** neta (Resultado: **${abs(pred_real):,.2f} Billones COP**).")
+    elif pred_real_final < -0.01: 
+        st.error(f"📉 El modelo clasifica la operación como **PÉRDIDA** neta (Resultado: **${abs(pred_real_final):,.2f} Billones COP**).")
     else:
         st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
 
