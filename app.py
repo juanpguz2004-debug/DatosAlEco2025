@@ -18,15 +18,14 @@ st.set_page_config(
 TARGET_COL = 'GANANCIA_PERDIDA'
 OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR', 'ANO_DE_CORTE'] 
 LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU'] 
-# Columnas financieras que se proyectarán usando AGR
+# NUEVA CONSTANTE: Columnas financieras que se proyectarán usando AGR
 COLS_TO_PROJECT = ['INGRESOS_OPERACIONALES','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO']
 
+
 # Función de formato de año (CRÍTICO: debe ser la misma que en el entrenamiento)
-# Convierte 2024 -> '2,024'
 def format_ano(year):
     year_str = str(year)
     if len(year_str) == 4:
-        # Asegura que siempre tenga el formato 2,XXX
         return f'{year_str[0]},{year_str[1:]}' 
     return year_str
 
@@ -43,7 +42,7 @@ def normalize_col(col):
 def load_data():
     csv_file = "10.000_Empresas_mas_Grandes_del País_20251115.csv"
     if not os.path.exists(csv_file):
-        st.error(f"❌ ERROR: Archivo CSV no encontrado: {csv_file}")
+        st.error(f"❌ ERROR: Archivo CSV no encontrado: {csv_file}. Asegúrate de que el nombre y la ubicación sean correctos.")
         return pd.DataFrame()
 
     try:
@@ -65,10 +64,9 @@ def load_data():
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
         if 'ANO_DE_CORTE' in df.columns:
-            # FIX: Limpieza robusta del año
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
             df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
-            # Asegura que sea un entero antes de filtrar
+            # FIX: Asegura un entero limpio para el año
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].round(0).fillna(-1).astype(int)
             
         df = df[df['ANO_DE_CORTE'] > 2000].copy()
@@ -81,7 +79,7 @@ def load_data():
         return pd.DataFrame()
 
 # ----------------------------------------------------
-# 2) CARGAR SIETE MODELOS Y REFERENCIAS 
+# 2) CARGAR SIETE MODELOS Y REFERENCIAS (ACTUALIZADO)
 # ----------------------------------------------------
 @st.cache_resource
 def load_assets():
@@ -91,8 +89,8 @@ def load_assets():
     reg_per_file = "model_reg_perdida.pkl" 
     features_file = "model_features.pkl"
     encoders_file = "label_encoders.pkl"
-    growth_file = "growth_rate.pkl"   
-    base_year_file = "base_year.pkl"  
+    growth_file = "growth_rate.pkl"   # NECESARIO para la proyección
+    base_year_file = "base_year.pkl"  # NECESARIO para la proyección
     
     # Comprobar existencia de 7 archivos
     files_exist = (os.path.exists(cls_file) and os.path.exists(reg_gan_file) and 
@@ -101,7 +99,7 @@ def load_assets():
                    os.path.exists(base_year_file)) 
 
     if not files_exist:
-        st.error("❌ Error: Faltan archivos .pkl del modelo. Asegúrate de que los 7 archivos estén en la misma carpeta.")
+        st.error("❌ Error: Faltan archivos .pkl del modelo. Asegúrate de que los 7 archivos (incluyendo growth_rate y base_year) estén en la misma carpeta.")
         return None, None, None, None, None, None, None
 
     try:
@@ -128,13 +126,18 @@ def load_assets():
 df = load_data()
 loaded_assets = load_assets()
 
+# Verificar carga del CSV y assets
+if df.empty:
+    st.error("❌ ERROR FATAL: No se encontraron datos válidos en el CSV.")
+    st.stop()
+    
 # Desempaquetar los 7 resultados de load_assets
 if loaded_assets and all(asset is not None for asset in loaded_assets):
     model_cls, model_reg_gan, model_reg_per, MODEL_FEATURE_NAMES, label_encoders, AGR, BASE_YEAR = loaded_assets
 else:
-    # Si la carga falló (y no es solo por CSV vacío)
-    if not df.empty and None in loaded_assets:
-        st.error("❌ ERROR FATAL: No se pudieron cargar los 7 activos del modelo. Verifica los archivos .pkl.")
+    # Esto ya fue manejado dentro de load_assets, pero lo repetimos para detener aquí.
+    if None in loaded_assets:
+         st.error("❌ ERROR FATAL: No se pudieron cargar los 7 activos del modelo. Verifica los archivos .pkl.")
     st.stop()
 
 
@@ -188,7 +191,7 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS (CRÍTICO)
+# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -207,10 +210,9 @@ with col_sel_company:
 
 with col_sel_year:
     pred_years = [2026, 2027, 2028, 2029, 2030]
-    # Filtra años para que solo muestre el futuro
     años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente_global]
     if not años_futuros:
-        st.warning(f"El año de corte base ({ano_corte_mas_reciente_global}) es demasiado alto para predecir.")
+        st.warning(f"El año de corte base es {ano_corte_mas_reciente_global}.")
         st.stop()
     ano_prediccion = st.selectbox(
         "Selecciona el Año de Predicción", años_futuros, index=0 
@@ -233,7 +235,7 @@ try:
     # --- PARCHE DE CORRECCIÓN DE ESCALA (ACTIVO) ---
     ganancia_anterior = ganancia_anterior / 100.0 
     
-    # --- 1. PRE-PROCESAMIENTO PARA LOS TRES MODELOS (CON PROYECCIÓN) ---
+    # --- 1. PRE-PROCESAMIENTO PARA LOS TRES MODELOS (CON PROYECCIÓN ACTIVA) ---
     row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').copy()
     row_prediccion = row_prediccion.drop(columns=['NIT', 'RAZON_SOCIAL'], errors='ignore')
 
@@ -267,7 +269,7 @@ try:
     
     # D. FIX CRÍTICO: Formato de Año para OHE (Ej: 2026 -> '2,026')
     row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
-    
+
     # Convertir la fila en un DataFrame para el One-Hot Encoding
     row_prediccion_df = pd.DataFrame([row_prediccion.iloc[0]])
     
@@ -339,7 +341,6 @@ try:
                 delta_display = f"Pérdida PROFUNDIZADA {abs(delta_percent_mag):,.2f}%"
                 
     else:
-        # Caso: Ganancia a Ganancia o Ganancia a Pérdida
         delta_percent = (diferencia / ganancia_anterior) * 100
         delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
 
