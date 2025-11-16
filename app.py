@@ -215,16 +215,51 @@ with col_kpi2:
 # ----------------------------------------------------
 # 6) PREDICCIÓN CON COMPARACIÓN (LÓGICA POR EMPRESA - CORREGIDA FINAL)
 # ----------------------------------------------------
-# ... [Código anterior de Selectores y Headers] ...
+st.header("3. Predicción de Ganancia/Pérdida")
+
+# --- SELECTORES: Año y Empresa (Sección donde se definen las variables) ---
+col_sel_company, col_sel_year = st.columns(2) 
+
+empresas_disponibles = df_filtrado["RAZON_SOCIAL"].unique().tolist()
+
+if not empresas_disponibles:
+    st.warning("No hay empresas disponibles después de aplicar los filtros. Ajusta tus selecciones.")
+    st.stop()
+
+with col_sel_company:
+    empresa_seleccionada = st.selectbox(
+        "Selecciona la Empresa para predecir",
+        empresas_disponibles
+    )
+
+with col_sel_year:
+    pred_years = [2026, 2027, 2028, 2029, 2030]
+    años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente_global]
+    
+    if not años_futuros:
+        st.warning(f"El año de corte base es {ano_corte_mas_reciente_global}. Ajusta la lista de años futuros en el código.")
+        st.stop()
+
+    ano_prediccion = st.selectbox(
+        "Selecciona el Año de Predicción (2026 por defecto)",
+        años_futuros,
+        index=0 
+    )
+
 
 # 3. Preparar datos para la predicción
+# 🚨 IMPORTANTE: Solo la lógica de pre-procesamiento y predicción va dentro del try/except
 try:
     # LÓGICA CLAVE: Encontrar el año más reciente registrado para *ESTA EMPRESA*
     df_empresa = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada]
     ano_corte_empresa = df_empresa["ANO_DE_CORTE"].max()
     
-    # ... [Validación de año de corte] ...
+    if ano_corte_empresa <= 2000:
+        st.error(f"Error: La empresa '{empresa_seleccionada}' no tiene un año de corte válido.")
+        st.stop()
 
+    # 🚨 NOTA: st.info() y st.stop() deben estar fuera del try/except si definen el flujo.
+    # Pero aquí lo dejamos para que se ejecute solo si la empresa es válida.
     st.info(f"Predicción para **{ano_prediccion}**, comparando contra la última fecha de corte registrada de la empresa: **{ano_corte_empresa}**.")
 
     # Extraer la fila de datos
@@ -250,16 +285,13 @@ try:
     for col in LE_COLS:
         try:
             encoder = st.session_state['LABEL_ENCODERS'][col]
-            # Aplica transform y CONVIERTE EXPLÍCITAMENTE A ENTERO (FIX CRÍTICO)
             row_prediccion[col] = encoder.transform(row_prediccion[col].astype(str))[0]
-            row_prediccion[col] = int(row_prediccion[col]) # Asegura que sea un entero nativo
+            row_prediccion[col] = int(row_prediccion[col]) 
         except ValueError:
-             # Valor no visto, se asigna 0 o -1
              row_prediccion[col] = 0 
     
     # 4. Aplicar One-Hot Encoding (OHE) - FIX DE FORMATO DE COLUMNA
     
-    # 🚨 FIX CRÍTICO 1: Reintroducir la coma en el año de corte antes de OHE
     def format_ano(year):
         year_str = str(year)
         # Formato '2,02X'
@@ -267,7 +299,6 @@ try:
 
     row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
 
-    # Ahora sí, aplicar OHE
     row_prediccion = pd.get_dummies(
         row_prediccion, 
         columns=OHE_COLS, 
@@ -277,16 +308,13 @@ try:
     )
     
     # 5. Alinear las columnas (CRÍTICO para XGBoost)
-    # Rellenar con 0 las columnas OHE que faltan
     missing_cols = set(st.session_state['MODEL_COLS']) - set(row_prediccion.columns)
     for c in missing_cols:
         row_prediccion[c] = 0 
     
-    # Eliminar columnas extra y ordenar la fila de predicción según el modelo
     row_prediccion = row_prediccion[st.session_state['MODEL_COLS']].copy()
     
-    # 🚨 FIX CRÍTICO 2: Convertir TODAS las columnas a tipo numérico antes de predecir
-    # Esto asegura que no quede ningún 'object' residual.
+    # Convertir TODAS las columnas a tipo numérico antes de predecir
     row_prediccion = row_prediccion.apply(pd.to_numeric, errors='coerce').fillna(0)
     
     # -----------------------------------------------------------------
@@ -297,13 +325,51 @@ try:
     # 7. Revertir la transformación logarítmica (e^x - 1)
     pred_real = np.expm1(pred_log)
     
+    # ... [Cálculo de delta y métricas] ...
+
     # 8. Mostrar la comparación
     diferencia = pred_real - ganancia_anterior
     
-    # ... [Cálculo de delta y métricas] ...
+    delta_percent = 0.0
+    if ganancia_anterior != 0:
+        delta_percent = (diferencia / ganancia_anterior) * 100
     
-    # ... [Mostrar resultados] ...
+    delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
+
+
+    st.markdown("#### Resultado de la Predicción")
+    col_res1, col_res2 = st.columns(2)
+    
+    with col_res1:
+        st.metric(
+            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", 
+            value=f"${pred_real:,.2f}",
+            delta=delta_display
+        )
+        
+    with col_res2:
+        st.metric(
+            label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
+            value=f"${ganancia_anterior:,.2f}",
+            delta_color="off"
+        )
+        
+    # Mensaje condicional más claro
+    st.markdown("---") 
+    if pred_real >= 0:
+        if diferencia >= 0:
+            st.success(f"📈 Se predice un **aumento** de la ganancia del {delta_percent:,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred_real:,.2f} Billones COP).")
+        else:
+            st.warning(f"⚠️ Se predice una **reducción** en la ganancia del {abs(delta_percent):,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred_real:,.2f} Billones COP).")
+    else:
+        st.error(f"📉 Se predice una **pérdida** neta para {ano_prediccion} (Pérdida total: ${pred_real:,.2f} Billones COP).")
+
+    # Invitación a la encuesta
+    st.markdown("---")
+    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
+
 
 except Exception as e:
+    # 🚨 FIX: Aquí usamos una f-string para capturar el error sin necesitar variables
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
