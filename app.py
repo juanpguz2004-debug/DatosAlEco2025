@@ -37,51 +37,52 @@ def normalize_col(col):
 def load_data():
     csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
 
-    # ... (omitiendo la carga y verificación de columnas) ...
+    if not os.path.exists(csv_file):
+        st.error(f"❌ ERROR: Archivo CSV no encontrado: {csv_file}")
+        return pd.DataFrame()
 
     try:
         df = pd.read_csv(csv_file)
         df.columns = [normalize_col(c) for c in df.columns]
 
-        # ... (omitiendo la verificación de columnas requeridas) ...
+        required_cols = [
+            'NIT','RAZON_SOCIAL','SUPERVISOR','REGION','DEPARTAMENTO_DOMICILIO',
+            'CIUDAD_DOMICILIO','CIIU','MACROSECTOR','INGRESOS_OPERACIONALES',
+            'GANANCIA_PERDIDA','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO','ANO_DE_CORTE'
+        ]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            st.error(f"❌ ERROR: Faltan columnas necesarias: {missing}")
+            return pd.DataFrame()
 
         # Limpieza de columnas numéricas (Ingresos, Activos, etc.)
         numeric_cols = ['INGRESOS_OPERACIONALES','GANANCIA_PERDIDA','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO']
         for col in numeric_cols:
+            # 1. Limpieza estándar (eliminar $, espacios, paréntesis)
             df[col] = (
                 df[col].astype(str)
-                .str.replace("$","",regex=False).str.replace(",","",regex=False)
-                .str.replace(".","",regex=False).str.replace(" ","",regex=False)
+                .str.replace("$","",regex=False).str.replace(" ","",regex=False)
                 .str.replace("−","-",regex=False).str.replace("(","",regex=False)
-                .str.replace(")","",regex=False).astype(float)
+                .str.replace(")","",regex=False)
             )
 
-        # 🟢 FIX FINAL PARA ANO_DE_CORTE (Eliminar la coma y convertir)
+            # 2. FIX CRÍTICO: Estandarizar el separador decimal a punto (`.`)
+            # Esto asume: punto = separador de miles, coma = separador decimal.
+            df[col] = df[col].str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+            
+            # 3. Convertir a float
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # FIX FINAL PARA ANO_DE_CORTE
         if 'ANO_DE_CORTE' in df.columns:
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
             df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int)
         
-        # 🟢 FIX CRÍTICO: Descartar filas con años de corte inválidos o faltantes.
+        # Descartar filas con años de corte inválidos o faltantes.
         df = df[df['ANO_DE_CORTE'] > 2000].copy()
         
-        # 🟢 NUEVO FIX: Filtrar valores de G/P que son exageradamente altos o nulos.
-        # Esto previene que datos mal formateados que resultaron en valores extremos
-        # (ej. 1,493.00 en lugar de 33.41) afecten el resultado.
-        # Definimos un umbral: si el 99% de los datos es menor a X, descartamos valores muy por encima.
-        
-        # Primero, rellenamos cualquier NaN en Ganancia/Pérdida con 0 para calcular el umbral
-        gp_temp = df['GANANCIA_PERDIDA'].fillna(0)
-        
-        # Calculamos el percentil 99 para identificar outliers extremos
-        # Si la mayoría de tus valores están en billones, este umbral debe ser ajustado.
-        umbral_outlier = gp_temp.quantile(0.999) 
-        
-        if umbral_outlier > 0:
-             # Solo filtramos valores que están MUY por encima de casi todos los demás
-             df = df[df['GANANCIA_PERDIDA'] < (umbral_outlier * 2)].copy()
-        
-        # Finalmente, eliminamos cualquier NaN que pueda haber quedado en las columnas numéricas clave
+        # Eliminar cualquier NaN que haya quedado en las columnas numéricas clave
         df.dropna(subset=numeric_cols, inplace=True)
         
         return df
@@ -310,4 +311,5 @@ try:
 except Exception as e:
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
+
 
