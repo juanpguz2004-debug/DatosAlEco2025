@@ -200,103 +200,104 @@ try:
     row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
     # Sección 5: PREDICCIÓN CON COMPARACIÓN (LÓGICA FINAL Y ROBUSTA)
 
-# ... (código de predicción y diferencia) ...
-ganancia_anterior = row_data[TARGET_COL].iloc[0] # <--- DATO REAL ORIGINAL
-
-# 🚨 APLICAR EL FIX DE ESCALA AQUÍ 🚨
-# Si la carga del CSV tiene un problema de escala donde el dato se multiplicó por 100,
-# lo corregimos justo al extraerlo, antes de usarlo en el cálculo de delta.
-
-# Si 1493.00 es realmente 14.93, divide por 100:
-# ganancia_anterior = ganancia_anterior / 100.0 
-
-# ... (cálculo de delta) ...
-
-with col_res2:
-    st.metric(
-        label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
-        value=f"${ganancia_anterior:,.2f}", # <--- Aquí se muestra el valor formateado
-        delta_color="off"
-    )
+    # ... (código de predicción y diferencia) ...
+    ganancia_anterior = row_data[TARGET_COL].iloc[0] # <--- DATO REAL ORIGINAL
     
-    # --- PRE-PROCESAMIENTO IDÉNTICO AL ENTRENAMIENTO ---
-    row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').copy()
-    row_prediccion = row_prediccion.drop(columns=['NIT', 'RAZON_SOCIAL'], errors='ignore')
-    row_prediccion["ANO_DE_CORTE"] = ano_prediccion
+    # 🚨 APLICAR EL FIX DE ESCALA AQUÍ 🚨
+    # Si la carga del CSV tiene un problema de escala donde el dato se multiplicó por 100,
+    # lo corregimos justo al extraerlo, antes de usarlo en el cálculo de delta.
     
-    # 1. Aplicar Label Encoding (Usando los encoders cargados)
-    for col in LE_COLS:
-        try:
-            encoder = label_encoders[col]
-            row_prediccion[col] = encoder.transform(row_prediccion[col].astype(str))[0]
-            row_prediccion[col] = int(row_prediccion[col]) 
-        except ValueError:
-             # Valor no visto: se asigna 0 o un valor por defecto
-             row_prediccion[col] = 0 
+    # Si 1493.00 es realmente 14.93, divide por 100:
+    # ganancia_anterior = ganancia_anterior / 100.0 
     
-    # 2. FIX CRÍTICO: Formato de Año para OHE (Asegura la coincidencia de nombre de columna)
-    row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
-
-    # 3. Aplicar One-Hot Encoding
-    row_prediccion = pd.get_dummies(
-        row_prediccion, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
-    )
+    # ... (cálculo de delta) ...
     
-    # 4. Alinear y ordenar las columnas (CRÍTICO)
-    missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion.columns)
-    for c in missing_cols:
-        row_prediccion[c] = 0 
-    
-    row_prediccion = row_prediccion[MODEL_FEATURE_NAMES].copy()
-    
-    # 5. Conversión final a numérico (prevención de errores de dtype)
-    row_prediccion = row_prediccion.apply(pd.to_numeric, errors='coerce').fillna(0)
-    
-    # --- PREDICCIÓN Y REVERSIÓN ---
-    pred_log = model.predict(row_prediccion)[0]
-    pred_real = np.expm1(pred_log) # Reversión np.log1p(x) -> e^x - 1
-    
-    # --- MOSTRAR RESULTADOS ---
-    diferencia = pred_real - ganancia_anterior
-    
-    delta_percent = 0.0
-    if ganancia_anterior != 0:
-        delta_percent = (diferencia / ganancia_anterior) * 100
-    
-    delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
-
-    st.markdown("#### Resultado de la Predicción")
-    col_res1, col_res2 = st.columns(2)
-    
-    with col_res1:
-        st.metric(
-            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", 
-            value=f"${pred_real:,.2f}",
-            delta=delta_display
-        )
-        
     with col_res2:
         st.metric(
             label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
-            value=f"${ganancia_anterior:,.2f}",
+            value=f"${ganancia_anterior:,.2f}", # <--- Aquí se muestra el valor formateado
             delta_color="off"
         )
         
-    # Mensaje condicional
-    st.markdown("---") 
-    if pred_real >= 0:
-        if diferencia >= 0:
-            st.success(f"📈 Se predice un **aumento** de la ganancia del {delta_percent:,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred_real:,.2f} Billones COP).")
+        # --- PRE-PROCESAMIENTO IDÉNTICO AL ENTRENAMIENTO ---
+        row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').copy()
+        row_prediccion = row_prediccion.drop(columns=['NIT', 'RAZON_SOCIAL'], errors='ignore')
+        row_prediccion["ANO_DE_CORTE"] = ano_prediccion
+        
+        # 1. Aplicar Label Encoding (Usando los encoders cargados)
+        for col in LE_COLS:
+            try:
+                encoder = label_encoders[col]
+                row_prediccion[col] = encoder.transform(row_prediccion[col].astype(str))[0]
+                row_prediccion[col] = int(row_prediccion[col]) 
+            except ValueError:
+                 # Valor no visto: se asigna 0 o un valor por defecto
+                 row_prediccion[col] = 0 
+        
+        # 2. FIX CRÍTICO: Formato de Año para OHE (Asegura la coincidencia de nombre de columna)
+        row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
+    
+        # 3. Aplicar One-Hot Encoding
+        row_prediccion = pd.get_dummies(
+            row_prediccion, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
+        )
+        
+        # 4. Alinear y ordenar las columnas (CRÍTICO)
+        missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion.columns)
+        for c in missing_cols:
+            row_prediccion[c] = 0 
+        
+        row_prediccion = row_prediccion[MODEL_FEATURE_NAMES].copy()
+        
+        # 5. Conversión final a numérico (prevención de errores de dtype)
+        row_prediccion = row_prediccion.apply(pd.to_numeric, errors='coerce').fillna(0)
+        
+        # --- PREDICCIÓN Y REVERSIÓN ---
+        pred_log = model.predict(row_prediccion)[0]
+        pred_real = np.expm1(pred_log) # Reversión np.log1p(x) -> e^x - 1
+        
+        # --- MOSTRAR RESULTADOS ---
+        diferencia = pred_real - ganancia_anterior
+        
+        delta_percent = 0.0
+        if ganancia_anterior != 0:
+            delta_percent = (diferencia / ganancia_anterior) * 100
+        
+        delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
+    
+        st.markdown("#### Resultado de la Predicción")
+        col_res1, col_res2 = st.columns(2)
+        
+        with col_res1:
+            st.metric(
+                label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", 
+                value=f"${pred_real:,.2f}",
+                delta=delta_display
+            )
+            
+        with col_res2:
+            st.metric(
+                label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
+                value=f"${ganancia_anterior:,.2f}",
+                delta_color="off"
+            )
+            
+        # Mensaje condicional
+        st.markdown("---") 
+        if pred_real >= 0:
+            if diferencia >= 0:
+                st.success(f"📈 Se predice un **aumento** de la ganancia del {delta_percent:,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred_real:,.2f} Billones COP).")
+            else:
+                st.warning(f"⚠️ Se predice una **reducción** en la ganancia del {abs(delta_percent):,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred_real:,.2f} Billones COP).")
         else:
-            st.warning(f"⚠️ Se predice una **reducción** en la ganancia del {abs(delta_percent):,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred_real:,.2f} Billones COP).")
-    else:
-        st.error(f"📉 Se predice una **pérdida** neta para {ano_prediccion} (Pérdida total: ${pred_real:,.2f} Billones COP).")
-
-    st.markdown("---")
-    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
-
-
-except Exception as e:
-    st.error(f"❌ ERROR generando la predicción: {e}")
-    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
-
+            st.error(f"📉 Se predice una **pérdida** neta para {ano_prediccion} (Pérdida total: ${pred_real:,.2f} Billones COP).")
+    
+        st.markdown("---")
+        st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
+    
+    
+    except Exception as e:
+        st.error(f"❌ ERROR generando la predicción: {e}")
+        st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
+    
+    
