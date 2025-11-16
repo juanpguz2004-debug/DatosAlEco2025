@@ -266,7 +266,20 @@ try:
         # Preparación final del DataFrame de predicción para el modelo
         X_pred = row_prediccion_ohe[MODEL_FEATURE_NAMES].copy()
         X_pred = X_pred.astype(float).fillna(0)
-        
+        # ... después de X_pred = X_pred.astype(float).fillna(0)
+
+# DEBUG: Verificar el valor de la columna OHE del año actual
+col_ohe_name = f'ANO_DE_CORTE_{format_ano(ano_actual)}'
+
+# Esta verificación es la clave:
+if col_ohe_name in X_pred.columns:
+    st.write(f"DEBUG: Año {ano_actual} | Valor del Feature OHE '{col_ohe_name}': {X_pred[col_ohe_name].iloc[0]}")
+else:
+    st.write(f"DEBUG: ¡Alerta! Columna OHE esperada '{col_ohe_name}' NO ENCONTRADA en X_pred.")
+
+# ... luego sigue la lógica de predicción
+# pred_cls = model_cls.predict(X_pred)[0]
+# ...
         
         # C. Lógica de Predicción Condicional
         pred_cls = model_cls.predict(X_pred)[0]
@@ -358,3 +371,4 @@ try:
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que todos los SIETE archivos .pkl son correctos.")
+
