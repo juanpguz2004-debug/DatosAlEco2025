@@ -33,6 +33,9 @@ def normalize_col(col):
 # ----------------------------------------------------
 # 2) CARGAR CSV Y LIMPIEZA DE COLUMNAS (CRÍTICA)
 # ----------------------------------------------------
+# ----------------------------------------------------
+# 2) CARGAR CSV Y LIMPIEZA (CON EL FIX CRÍTICO)
+# ----------------------------------------------------
 @st.cache_data
 def load_data():
     csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
@@ -43,34 +46,55 @@ def load_data():
 
     try:
         df = pd.read_csv(csv_file)
-        
         df.columns = [normalize_col(c) for c in df.columns]
 
-        # Aplicar limpieza básica a las columnas necesarias
+        # Columnas requeridas... (se mantiene igual)
+        required_cols = [
+            'NIT','RAZON_SOCIAL','SUPERVISOR','REGION','DEPARTAMENTO_DOMICILIO',
+            'CIUDAD_DOMICILIO','CIIU','MACROSECTOR','INGRESOS_OPERACIONALES',
+            'GANANCIA_PERDIDA','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO','ANO_DE_CORTE'
+        ]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            st.error(f"❌ ERROR: Faltan columnas necesarias: {missing}")
+            return pd.DataFrame()
+
+
+        # Aplicar limpieza básica a las columnas necesarias (Ingresos, Activos, etc.)
         numeric_cols = ['INGRESOS_OPERACIONALES','GANANCIA_PERDIDA','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO']
         for col in numeric_cols:
-            if col in df.columns:
-                 df[col] = (
-                    df[col].astype(str)
-                    .str.replace("$","",regex=False)
-                    .str.replace(",","",regex=False)
-                    .str.replace(".","",regex=False)
-                    .str.replace(" ","",regex=False)
-                    .str.replace("−","-",regex=False)
-                    .str.replace("(","",regex=False)
-                    .str.replace(")","",regex=False)
-                    .astype(float)
-                )
+            df[col] = (
+                df[col].astype(str)
+                .str.replace("$","",regex=False).str.replace(",","",regex=False)
+                .str.replace(".","",regex=False).str.replace(" ","",regex=False)
+                .str.replace("−","-",regex=False).str.replace("(","",regex=False)
+                .str.replace(")","",regex=False).astype(float)
+            )
 
-        # Asegurar que ANO_DE_CORTE sea int (para la lógica del dashboard)
+        # ----------------------------------------------------------------------
+        # 🟢 FIX FINAL: Limpiar formato de la columna ANO_DE_CORTE
+        # ----------------------------------------------------------------------
         if 'ANO_DE_CORTE' in df.columns:
-            df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce').fillna(-1).astype(int)
+            # 1. Convertir a string y eliminar la coma (,)
+            df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
+            
+            # 2. Convertir a número (los errores se vuelven NaN)
+            df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
+            
+            # 3. Rellenar NaNs con -1 y convertir a int
+            df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int)
+        
+        # 🟢 FIX CRÍTICO: Descartar filas con años de corte inválidos o faltantes.
+        df = df[df['ANO_DE_CORTE'] > 2000].copy()
         
         return df
 
     except Exception as e:
         st.error(f"❌ ERROR al leer o limpiar el CSV: {e}")
         return pd.DataFrame()
+
+
+# (El resto del código de la app.py se mantiene igual)
 
 
 # ----------------------------------------------------
@@ -158,3 +182,4 @@ else:
         st.metric(label="Patrimonio Promedio", value=f"${patrimonio_prom:,.2f}")
         
 st.success("🎉 Paso 2 completado. Pasemos a la Predicción.")
+
