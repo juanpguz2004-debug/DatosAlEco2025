@@ -205,14 +205,21 @@ with col_sel_year:
     )
 
 
+# ... (código previo del try/except) ...
+
 # 3. Preparar datos para la predicción
 try:
-    # 🟢 LÓGICA CLAVE: Usar el NIT como identificador
-    df_empresa_original = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada]
+    # 🟢 LÓGICA CLAVE: Encontrar la FILA más reciente de la empresa en AMBOS DataFrames
+
+    # 1. Encontrar el índice de la fila MÁS RECIENTE de la empresa en el DataFrame original.
+    df_empresa_original = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada].copy()
     
-    # 1. Encontrar el NIT y el año de corte de la empresa seleccionada
-    nit_empresa = df_empresa_original["NIT"].iloc[0]
-    ano_corte_empresa = df_empresa_original["ANO_DE_CORTE"].max()
+    # Ordenar por año de corte y obtener la fila más reciente
+    fila_mas_reciente = df_empresa_original.sort_values(by='ANO_DE_CORTE', ascending=False).iloc[0]
+    
+    # Obtener el Año y el NIT de la fila más reciente (deberían ser seguros)
+    nit_empresa = fila_mas_reciente["NIT"]
+    ano_corte_empresa = fila_mas_reciente["ANO_DE_CORTE"]
     
     if ano_corte_empresa <= 2000:
         st.error(f"Error: La empresa '{empresa_seleccionada}' no tiene un año de corte válido.")
@@ -227,19 +234,15 @@ try:
         'TOTAL_PATRIMONIO','ANO_DE_CORTE'
     ]
     
-    # 2. Extraer la fila de datos ya CODIFICADA usando el NIT
-    # Este filtro debería ser seguro
-    row_data_all = df_codificado[df_codificado["NIT"] == nit_empresa]
+    # 2. Extraer la fila de datos CODIFICADA usando el NIT y el año más reciente
+    # 🚨 FIX: Esto garantiza que la fila existe y está perfectamente alineada con la original.
+    row_data = df_codificado[
+        (df_codificado["NIT"] == nit_empresa) &
+        (df_codificado["ANO_DE_CORTE"] == ano_corte_empresa)
+    ].iloc[[0]].copy()
 
-    # 3. Filtramos por el año más reciente de esa empresa y tomamos la primera fila
-    row_data = row_data_all[
-        row_data_all["ANO_DE_CORTE"] == ano_corte_empresa
-    ].iloc[[0]].copy() # 🚨 FIX: Esto ahora tiene más garantía de encontrar una fila
-
-    # 4. Guardar ganancia anterior (usando el DF original)
-    ganancia_anterior = df_empresa_original[
-        df_empresa_original["ANO_DE_CORTE"] == ano_corte_empresa
-    ]["GANANCIA_PERDIDA"].iloc[0]
+    # 3. Guardar ganancia anterior (usando la fila_mas_reciente ya extraída del DF original)
+    ganancia_anterior = fila_mas_reciente["GANANCIA_PERDIDA"]
 
     # Preparamos la fila para la predicción, eliminando la G/P
     row_prediccion = row_data.drop(columns=["GANANCIA_PERDIDA"])
@@ -252,6 +255,7 @@ try:
     pred = model.predict(row_prediccion)[0]
     
     # 5. Mostrar la comparación
+# ... (el resto del código de métricas y mensaje sigue igual) ...
     diferencia = pred - ganancia_anterior
 
     st.markdown("#### Resultado de la Predicción")
@@ -283,3 +287,4 @@ try:
 
 except Exception as e:
     st.error(f"❌ ERROR generando la predicción: {e}. Revisa la codificación y la alineación de las características.")
+
