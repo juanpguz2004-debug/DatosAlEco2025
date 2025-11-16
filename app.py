@@ -146,9 +146,9 @@ with col2:
 
 df_filtrado = df.copy()
 if sector != "Todos":
-    df_filtrado = df_filtrado[df_filtrado["MACROSECTOR"] == sector]
+    df_filtrado = df_filtrado[df["MACROSECTOR"] == sector]
 if region != "Todos":
-    df_filtrado = df_filtrado[df_filtrado["REGION"] == region]
+    df_filtrado = df_filtrado[df["REGION"] == region]
 
 if df_filtrado.empty:
     st.error(f"❌ ERROR: Los filtros eliminaron todos los datos válidos.")
@@ -158,7 +158,7 @@ st.info(f"✅ Año de corte máximo global: **{ano_corte_mas_reciente_global}**"
 st.dataframe(df_filtrado.head(5))
 
 # ----------------------------------------------------
-# 4) KPIs AGREGADOS
+# 4) KPIs AGREGADOS (Restaurados)
 # ----------------------------------------------------
 st.header("2. KPIs Agregados")
 
@@ -173,7 +173,7 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED)
+# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED ROBUSTO)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -226,6 +226,7 @@ try:
     if delta_anos_prediccion > 0:
         for col in COLS_TO_PROJECT:
             # FIX: Asegurar que el feature es numérico para la multiplicación
+            # Esto evita el error si el tipo de dato se hereda como object/string.
             row_prediccion[col] = pd.to_numeric(row_prediccion[col], errors='coerce', downcast='float')
             # Proyección
             row_prediccion[col] = row_prediccion[col] * (AGR ** delta_anos_prediccion)
@@ -244,6 +245,7 @@ try:
     
     # D. Aplicar One-Hot Encoding (OHE) y Alineación
     row_prediccion_df = row_prediccion.to_frame().T
+    # Se asegura que las columnas OHE sean string para que get_dummies funcione
     for col in OHE_COLS:
         row_prediccion_df[col] = row_prediccion_df[col].astype(str)
 
@@ -256,9 +258,12 @@ try:
     for c in missing_cols:
         row_prediccion_ohe[c] = 0 
     
-    # FIX: La alineación debe ocurrir antes de la preparación final del DF
+    # Preparación final del DataFrame de predicción
     X_pred = row_prediccion_ohe[MODEL_FEATURE_NAMES].copy()
-    X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0)
+    
+    # FIX FINAL: Forzar el tipo de dato de X_pred a float, eliminando cualquier rastro de string/object
+    X_pred = X_pred.astype(float)
+    X_pred = X_pred.fillna(0)
     
     
     # --- 2. LÓGICA DE PREDICCIÓN CONDICIONAL ---
@@ -324,7 +329,7 @@ try:
             delta_color="off"
         )
         
-    # Mensaje condicional final (Lógica detallada)
+    # Mensaje condicional final (Lógica detallada - Restaurada)
     st.markdown("---") 
 
     if pred_real >= 0.01: 
