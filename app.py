@@ -9,12 +9,12 @@ import unicodedata
 # 0) CONFIGURACIÓN INICIAL
 # ----------------------------------------------------
 st.set_page_config(
-    page_title="Dashboard ALECO Base", 
+    page_title="Dashboard ALECO", 
     layout="wide"
 )
 
 # ----------------------------------------------------
-# 1) FUNCIÓN DE NORMALIZACIÓN (Necesaria para cargar datos)
+# 1) FUNCIÓN DE NORMALIZACIÓN
 # ----------------------------------------------------
 def normalize_col(col):
     col = col.strip()
@@ -31,10 +31,7 @@ def normalize_col(col):
 
 
 # ----------------------------------------------------
-# 2) CARGAR CSV Y LIMPIEZA DE COLUMNAS (CRÍTICA)
-# ----------------------------------------------------
-# ----------------------------------------------------
-# 2) CARGAR CSV Y LIMPIEZA (CON EL FIX CRÍTICO)
+# 2) CARGAR CSV Y LIMPIEZA (CON LOS FIXES FINALES)
 # ----------------------------------------------------
 @st.cache_data
 def load_data():
@@ -48,7 +45,6 @@ def load_data():
         df = pd.read_csv(csv_file)
         df.columns = [normalize_col(c) for c in df.columns]
 
-        # Columnas requeridas... (se mantiene igual)
         required_cols = [
             'NIT','RAZON_SOCIAL','SUPERVISOR','REGION','DEPARTAMENTO_DOMICILIO',
             'CIUDAD_DOMICILIO','CIIU','MACROSECTOR','INGRESOS_OPERACIONALES',
@@ -59,8 +55,7 @@ def load_data():
             st.error(f"❌ ERROR: Faltan columnas necesarias: {missing}")
             return pd.DataFrame()
 
-
-        # Aplicar limpieza básica a las columnas necesarias (Ingresos, Activos, etc.)
+        # Limpieza de columnas numéricas
         numeric_cols = ['INGRESOS_OPERACIONALES','GANANCIA_PERDIDA','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO']
         for col in numeric_cols:
             df[col] = (
@@ -71,17 +66,10 @@ def load_data():
                 .str.replace(")","",regex=False).astype(float)
             )
 
-        # ----------------------------------------------------------------------
-        # 🟢 FIX FINAL: Limpiar formato de la columna ANO_DE_CORTE
-        # ----------------------------------------------------------------------
+        # 🟢 FIX FINAL PARA ANO_DE_CORTE (Eliminar la coma y convertir)
         if 'ANO_DE_CORTE' in df.columns:
-            # 1. Convertir a string y eliminar la coma (,)
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
-            
-            # 2. Convertir a número (los errores se vuelven NaN)
             df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
-            
-            # 3. Rellenar NaNs con -1 y convertir a int
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int)
         
         # 🟢 FIX CRÍTICO: Descartar filas con años de corte inválidos o faltantes.
@@ -92,9 +80,6 @@ def load_data():
     except Exception as e:
         st.error(f"❌ ERROR al leer o limpiar el CSV: {e}")
         return pd.DataFrame()
-
-
-# (El resto del código de la app.py se mantiene igual)
 
 
 # ----------------------------------------------------
@@ -123,25 +108,26 @@ def load_model():
 df = load_data()
 model = load_model()
 
-if df.empty or model is None:
-    st.error("⚠️ La aplicación no puede continuar debido a errores de carga.")
+if df.empty:
+    st.error("❌ ERROR FATAL: No se encontraron datos válidos (con año > 2000) en el CSV.")
+    st.stop()
+    
+if model is None:
+    st.error("❌ ERROR FATAL: El modelo no está cargado.")
     st.stop()
 
 
 # ----------------------------------------------------
 # 4) DASHBOARD PRINCIPAL Y FILTROS
 # ----------------------------------------------------
-st.title("📊 Dashboard ALECO: Paso 2 (Filtros y KPIs)")
+st.title("📊 Dashboard ALECO: Paso 3 (Predicción Final)")
 
 st.header("1. Filtros y Datos")
 col1, col2 = st.columns(2)
 with col1:
-    # Obtener opciones únicas del DataFrame cargado
-    sector_options = ["Todos"] + df["MACROSECTOR"].unique().tolist()
-    sector = st.selectbox("Filtrar por Macrosector", sector_options)
+    sector = st.selectbox("Filtrar por Macrosector", ["Todos"] + df["MACROSECTOR"].unique().tolist())
 with col2:
-    region_options = ["Todos"] + df["REGION"].unique().tolist()
-    region = st.selectbox("Filtrar por Región", region_options)
+    region = st.selectbox("Filtrar por Región", ["Todos"] + df["REGION"].unique().tolist())
 
 # Aplicar filtros
 df_filtrado = df.copy()
@@ -150,17 +136,14 @@ if sector != "Todos":
 if region != "Todos":
     df_filtrado = df_filtrado[df_filtrado["REGION"] == region]
 
-
 # Diagnóstico del año de corte
 ano_corte_mas_reciente = df_filtrado["ANO_DE_CORTE"].max()
 
-if ano_corte_mas_reciente <= 2000:
-    st.error(f"❌ ERROR CRÍTICO: El año de corte más reciente es inválido ({ano_corte_mas_reciente}).")
-    st.dataframe(df_filtrado["ANO_DE_CORTE"].value_counts()) # Muestra los valores defectuosos
-    st.warning("⚠️ Debes corregir los datos de 'ANO_DE_CORTE' en el CSV original o el error de limpieza de datos.")
+if df_filtrado.empty or ano_corte_mas_reciente <= 2000:
+    st.error(f"❌ ERROR: Los filtros eliminaron todos los datos válidos. Año de corte: {ano_corte_mas_reciente}.")
     st.stop()
 
-st.info(f"✅ Año de corte más reciente encontrado: **{ano_corte_mas_reciente}**")
+st.info(f"✅ Año de corte base encontrado: **{ano_corte_mas_reciente}**")
 st.dataframe(df_filtrado.head(5))
 
 
@@ -169,17 +152,26 @@ st.dataframe(df_filtrado.head(5))
 # ----------------------------------------------------
 st.header("2. KPIs Agregados")
 
-if df_filtrado.empty:
-    st.warning("No hay datos para los filtros seleccionados.")
-else:
-    ingresos_total = df_filtrado["INGRESOS_OPERACIONALES"].sum()
-    patrimonio_prom = df_filtrado["TOTAL_PATRIMONIO"].mean()
+ingresos_total = df_filtrado["INGRESOS_OPERACIONALES"].sum()
+patrimonio_prom = df_filtrado["TOTAL_PATRIMONIO"].mean()
 
-    col_kpi1, col_kpi2 = st.columns(2)
-    with col_kpi1:
-        st.metric(label="Ingresos Operacionales Totales", value=f"${ingresos_total:,.2f}")
-    with col_kpi2:
-        st.metric(label="Patrimonio Promedio", value=f"${patrimonio_prom:,.2f}")
-        
-st.success("🎉 Paso 2 completado. Pasemos a la Predicción.")
+col_kpi1, col_kpi2 = st.columns(2)
+with col_kpi1:
+    st.metric(label="Ingresos Operacionales Totales", value=f"${ingresos_total:,.2f}")
+with col_kpi2:
+    st.metric(label="Patrimonio Promedio", value=f"${patrimonio_prom:,.2f}")
 
+
+# ----------------------------------------------------
+# 6) PREDICCIÓN CON COMPARACIÓN
+# ----------------------------------------------------
+st.header("3. Predicción de Ganancia/Pérdida")
+
+# --- SELECTORES: Año y Empresa ---
+col_sel_year, col_sel_company = st.columns(2)
+
+with col_sel_year:
+    # Selector de año de predicción (ej. 2026, 2027...)
+    pred_years = [2026, 2027, 2028, 2029, 2030]
+    # Aseguramos que el año sea superior al año de corte base
+    años_futuros = [y for y in pred_years if y > ano_corte_mas_
