@@ -277,22 +277,24 @@ try:
     # 1. Eliminar columnas de Leakage
     row_prediccion = row_prediccion.drop(columns=['NIT', 'RAZON_SOCIAL'], errors='ignore')
     
-    # 2. Modificar el año de corte a predecir
+   # 2. Modificar el año de corte a predecir
     row_prediccion["ANO_DE_CORTE"] = ano_prediccion
     
     # 3. Aplicar Label Encoding (Usando los encoders de referencia)
-    for col in LE_COLS:
-        try:
-            # Transforma el valor único en la fila usando el encoder ya ajustado
-            encoder = st.session_state['LABEL_ENCODERS'][col]
-            # Convertir la columna a tipo string para la transformación
-            row_prediccion[col] = encoder.transform(row_prediccion[col].astype(str))[0]
-        except ValueError:
-             # Si el valor (ej. una ciudad nueva) no fue visto en el entrenamiento, se usa el código de la etiqueta más frecuente (o -1)
-             # En este caso, usaremos el valor de la categoría 'unknown' (si el encoder lo permite) o simplemente 0.
-             row_prediccion[col] = 0 
+    # ... (código LE) ...
     
-    # 4. Aplicar One-Hot Encoding (OHE)
+    # 4. Aplicar One-Hot Encoding (OHE) - CORRECCIÓN CRÍTICA DE FORMATO
+    # Convertir 'ANO_DE_CORTE' a string con formato '2,02X' antes de OHE para forzar la coincidencia de nombre
+    
+    # 🚨 FIX CRÍTICO: Reintroducir la coma en el año de corte antes de OHE
+    def format_ano(year):
+        year_str = str(year)
+        # Formato '2,02X'
+        return f'{year_str[0]},{year_str[1:]}' 
+
+    row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
+
+    # Ahora sí, aplicar OHE
     row_prediccion = pd.get_dummies(
         row_prediccion, 
         columns=OHE_COLS, 
@@ -365,3 +367,4 @@ try:
 except Exception as e:
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
+
