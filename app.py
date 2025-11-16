@@ -198,154 +198,93 @@ with col_sel_year:
         "Selecciona el Año de Predicción", años_futuros, index=0 
     )
 
+# ... (Código anterior: LÓGICA DE PREDICCIÓN CONDICIONAL) ...
 
-# --- Lógica de Predicción ---
-# --- Lógica de Predicción ---
-try:
-    df_empresa = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada]
-    ano_corte_empresa = df_empresa["ANO_DE_CORTE"].max()
-    
-    if ano_corte_empresa <= 2000:
-        st.error(f"Error: La empresa '{empresa_seleccionada}' no tiene un año de corte válido.")
-        st.stop()
+# --- 3. MOSTRAR RESULTADOS (Cálculo Delta Robusto y Formato) ---
+diferencia = pred_real - ganancia_anterior
 
-    st.info(f"Predicción para **{ano_prediccion}**, comparando contra la última fecha de corte registrada de la empresa: **{ano_corte_empresa}**.")
+# --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
+delta_display = ""
+delta_metric_value = diferencia # Usaremos la diferencia absoluta para el delta de la métrica
 
-    row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
-    ganancia_anterior = row_data[TARGET_COL].iloc[0]
-    
-    # --- PARCHE DE CORRECCIÓN DE ESCALA (ACTIVO) ---
-    ganancia_anterior = ganancia_anterior / 100.0 
-    
-    # --- 1. PRE-PROCESAMIENTO PARA LOS TRES MODELOS ---
-    row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').copy()
-    row_prediccion = row_prediccion.drop(columns=['NIT', 'RAZON_SOCIAL'], errors='ignore')
-    row_prediccion["ANO_DE_CORTE"] = ano_prediccion
-    
-    # Aplicar Label Encoding (Usando los encoders cargados)
-    for col in LE_COLS:
-        try:
-            encoder = label_encoders[col]
-            row_prediccion[col] = encoder.transform(row_prediccion[col].astype(str))[0]
-            row_prediccion[col] = int(row_prediccion[col]) 
-        except ValueError:
-             row_prediccion[col] = 0 
-    
-    # FIX CRÍTICO: Formato de Año para OHE
-    row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
+# 1. Base Cero (Anterior fue CERO)
+if ganancia_anterior == 0:
+    if pred_real > 0:
+        delta_display = f"Ganó ${pred_real:,.2f} vs 0"
+    elif pred_real < 0:
+        delta_display = f"Perdió ${abs(pred_real):,.2f} vs 0"
+    else:
+        delta_display = "Sin cambio vs 0"
 
-    # Aplicar One-Hot Encoding
-    row_prediccion = pd.get_dummies(
-        row_prediccion, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
+# 2. Base Negativa (Anterior fue una PÉRDIDA)
+elif ganancia_anterior < 0:
+    if pred_real >= 0:
+        # Pasó de Negativo a Positivo/Cero
+        delta_abs = pred_real - ganancia_anterior
+        delta_display = f"Mejoró ${delta_abs:,.2f} (Cambio Absoluto)"
+        
+    else:
+        # Siguió en Pérdida
+        delta_percent_mag = (diferencia / abs(ganancia_anterior)) * 100
+        
+        if delta_percent_mag > 0:
+            delta_display = f"Pérdida REDUCIDA {delta_percent_mag:,.2f}%"
+        else:
+            delta_display = f"Pérdida PROFUNDIZADA {abs(delta_percent_mag):,.2f}%"
+            
+# 3. Base Positiva (Anterior fue una GANANCIA)
+else:
+    # Caso de Ganancia a Ganancia (o a Pérdida)
+    delta_percent = (diferencia / ganancia_anterior) * 100
+    delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
+
+
+st.markdown("#### Resultado de la Predicción")
+col_res1, col_res2 = st.columns(2)
+
+with col_res1:
+    st.metric(
+        label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", 
+        value=f"${pred_real:,.2f}",
+        delta=delta_metric_value, 
+        delta_color="normal"
+    )
+    # 🎯 FIX: Mostramos el texto formateado en el caption
+    st.caption(f"Cambio vs {ano_corte_empresa}: **{delta_display}**") 
+
+with col_res2:
+    st.metric(
+        label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
+        value=f"${ganancia_anterior:,.2f}",
+        delta_color="off"
     )
     
-    # Alinear y ordenar las columnas (CRÍTICO)
-    missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion.columns)
-    for c in missing_cols:
-        row_prediccion[c] = 0 
-    
-    X_pred = row_prediccion[MODEL_FEATURE_NAMES].copy()
-    
-    # Conversión final a numérico
-    X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0)
-    
-    
-    # --- 2. LÓGICA DE PREDICCIÓN CONDICIONAL ---
-    
-    # Paso A: Clasificar (0 = Pérdida/Cero, 1 = Ganancia)
-    # Se usa predict_proba para más suavidad, aunque predict simple es 0 o 1
-    pred_cls = model_cls.predict(X_pred)[0]
-    
-    pred_log = 0.0
-    
-    if pred_cls == 1:
-        # Ganancia: Usar Modelo de Regresión de Ganancias
-        pred_log = model_reg_gan.predict(X_pred)[0]
-        # Reversión: e^x - 1
-        pred_real = np.expm1(pred_log) 
-        
-    else:
-        # Pérdida/Cero: Usar Modelo de Regresión de Pérdidas
-        pred_log = model_reg_per.predict(X_pred)[0]
-        # Reversión: e^x - 1 (nos da la magnitud positiva de la pérdida)
-        magnitud_perdida_real = np.expm1(pred_log)
-        # CRÍTICO: Convertir la magnitud a valor negativo (pérdida)
-        pred_real = -magnitud_perdida_real
-        
-    
-    # --- 3. MOSTRAR RESULTADOS (Cálculo Delta Robusto) ---
-    diferencia = pred_real - ganancia_anterior
+# Mensaje condicional final (Reintroducimos la lógica de Ganancia Aumento/Reducción)
+st.markdown("---") 
 
-    # --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
-    delta_percent = 0.0
-    delta_display = ""
-    delta_metric_value = diferencia # Usaremos la diferencia absoluta para el delta de la métrica
-
-    if ganancia_anterior == 0:
-        # Caso 1: Anterior fue CERO (0). El cambio no puede ser % pero puede ser absoluto.
-        if pred_real > 0:
-            delta_display = f"Ganó ${pred_real:,.2f} vs 0"
-        elif pred_real < 0:
-            delta_display = f"Perdió ${abs(pred_real):,.2f} vs 0"
-        else:
-            delta_display = "Sin cambio vs 0"
-
+if pred_real >= 0.01: 
+    # Predicción: GANANCIA
+    if ganancia_anterior > 0 and diferencia >= 0:
+        st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **AUMENTO** en la magnitud de la ganancia (Resultado: ${pred_real:,.2f} Billones COP).")
     elif ganancia_anterior < 0:
-        # Caso 2: Anterior fue una PÉRDIDA (Negativo). Usamos el cambio absoluto o % sobre la magnitud.
-        if pred_real >= 0:
-            # Mejora: Pasó de negativo a positivo o cero.
-            delta_abs = pred_real - ganancia_anterior
-            delta_display = f"Mejoró ${delta_abs:,.2f} (Cambio Absoluto)" # Reportamos mejora absoluta
-            
-        else:
-            # Empeoró o Siguió en Pérdida: Calculamos porcentaje sobre la magnitud de la pérdida.
-            delta_percent_mag = (diferencia / abs(ganancia_anterior)) * 100
-            
-            if delta_percent_mag > 0:
-                # Pérdida se redujo (ej: -100 a -50). Delta positivo.
-                delta_display = f"Pérdida REDUCIDA {delta_percent_mag:,.2f}%"
-            else:
-                # Pérdida se profundizó (ej: -50 a -100). Delta negativo.
-                delta_display = f"Pérdida PROFUNDIZADA {abs(delta_percent_mag):,.2f}%"
-                
-    else:
-        # Caso 3: Anterior fue una GANANCIA (Positivo). Usamos el cálculo normal.
-        delta_percent = (diferencia / ganancia_anterior) * 100
-        delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
+        st.success(f"🚀 El modelo predice una **RECUPERACIÓN TOTAL** al pasar de pérdida a **GANANCIA** (Resultado: ${pred_real:,.2f} Billones COP).")
+    elif ganancia_anterior == 0:
+        st.success(f"📈 El modelo predice que la empresa pasa a **GANANCIA** desde equilibrio (Resultado: ${pred_real:,.2f} Billones COP).")
+    else: # pred_real >= 0.01 and diferencia < 0 (Ganancia a Ganancia, pero menor)
+        st.warning(f"⚠️ El modelo clasifica la operación como **GANANCIA**, pero predice una **REDUCCIÓN** en su magnitud (Resultado: ${pred_real:,.2f} Billones COP).")
 
+elif pred_real < -0.01: 
+    # Predicción: PÉRDIDA
+    st.error(f"📉 El modelo clasifica la operación como **PÉRDIDA** neta (Resultado: **${abs(pred_real):,.2f} Billones COP**).")
+else:
+    # Predicción: CERO (Equilibrio)
+    st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
 
-    st.markdown("#### Resultado de la Predicción")
-    col_res1, col_res2 = st.columns(2)
-
-    with col_res1:
-        st.metric(
-            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", 
-            value=f"${pred_real:,.2f}",
-            delta=delta_metric_value, 
-            delta_color="normal"
-        )
-        st.caption(f"Cambio vs {ano_corte_empresa}: {delta_display}") 
-
-    with col_res2:
-        st.metric(
-            label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
-            value=f"${ganancia_anterior:,.2f}",
-            delta_color="off"
-        )
-        
-    # Mensaje condicional final
-    st.markdown("---") 
-    if pred_real >= 0.01: 
-        st.success(f"📈 El modelo clasifica la operación como **GANANCIA** (Resultado: ${pred_real:,.2f} Billones COP).")
-    elif pred_real < -0.01: 
-        st.error(f"📉 El modelo clasifica la operación como **PÉRDIDA** neta (Resultado: ${abs(pred_real):,.2f} Billones COP).")
-    else:
-        st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
-
-    st.markdown("---")
-    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
+st.markdown("---")
+st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
 
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que los CINCO archivos .pkl son correctos.")
+
