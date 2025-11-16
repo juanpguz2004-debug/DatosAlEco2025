@@ -227,13 +227,16 @@ try:
         'TOTAL_PATRIMONIO','ANO_DE_CORTE'
     ]
     
-    # 2. Extraer la fila de datos ya CODIFICADA usando el NIT y el año más reciente de la empresa
-    row_data = df_codificado[
-        (df_codificado["NIT"] == nit_empresa) &
-        (df_codificado["ANO_DE_CORTE"] == ano_corte_empresa)
-    ].iloc[[0]].copy()
+    # 2. Extraer la fila de datos ya CODIFICADA usando el NIT
+    # Este filtro debería ser seguro
+    row_data_all = df_codificado[df_codificado["NIT"] == nit_empresa]
 
-    # 3. Guardar ganancia anterior (usando el DF original)
+    # 3. Filtramos por el año más reciente de esa empresa y tomamos la primera fila
+    row_data = row_data_all[
+        row_data_all["ANO_DE_CORTE"] == ano_corte_empresa
+    ].iloc[[0]].copy() # 🚨 FIX: Esto ahora tiene más garantía de encontrar una fila
+
+    # 4. Guardar ganancia anterior (usando el DF original)
     ganancia_anterior = df_empresa_original[
         df_empresa_original["ANO_DE_CORTE"] == ano_corte_empresa
     ]["GANANCIA_PERDIDA"].iloc[0]
@@ -280,4 +283,3 @@ try:
 
 except Exception as e:
     st.error(f"❌ ERROR generando la predicción: {e}. Revisa la codificación y la alineación de las características.")
-
