@@ -275,10 +275,10 @@ try:
 
     # --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
     delta_display = ""
-    delta_metric_value = diferencia # Usaremos la diferencia absoluta para el delta de la métrica
+    delta_metric_value = diferencia # Usaremos la diferencia para el indicador de Streamlit (flecha)
 
     if ganancia_anterior == 0:
-        # Caso 1: Anterior fue CERO (0). El cambio no puede ser % pero puede ser absoluto.
+        # Caso 1: Anterior fue CERO (0).
         if pred_real > 0:
             delta_display = f"Ganó ${pred_real:,.2f} vs 0"
         elif pred_real < 0:
@@ -287,7 +287,7 @@ try:
             delta_display = "Sin cambio vs 0"
 
     elif ganancia_anterior < 0:
-        # Caso 2: Anterior fue una PÉRDIDA (Negativo). Usamos el cambio absoluto o % sobre la magnitud.
+        # Caso 2: Anterior fue una PÉRDIDA (Negativo).
         if pred_real >= 0:
             # Pasó de Negativo a Positivo/Cero
             delta_abs = pred_real - ganancia_anterior
@@ -328,7 +328,7 @@ try:
             delta_color="off"
         )
         
-    # Mensaje condicional final (Reintroducimos la lógica detallada)
+    # Mensaje condicional final (Lógica detallada)
     st.markdown("---") 
 
     if pred_real >= 0.01: 
@@ -336,7 +336,6 @@ try:
         if ganancia_anterior > 0 and diferencia >= 0:
             st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **AUMENTO** en la magnitud de la ganancia (Resultado: ${pred_real:,.2f} Billones COP).")
         elif ganancia_anterior < 0:
-            # Línea Corregida con el } final
             st.success(f"🚀 El modelo predice una **RECUPERACIÓN TOTAL** al pasar de pérdida a **GANANCIA** (Resultado: ${pred_real:,.2f} Billones COP).")
         elif ganancia_anterior == 0:
             st.success(f"📈 El modelo predice que la empresa pasa a **GANANCIA** desde equilibrio (Resultado: ${pred_real:,.2f} Billones COP).")
@@ -351,4 +350,9 @@ try:
         st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
 
     st.markdown("---")
-    
+    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
+
+
+except Exception as e: 
+    st.error(f"❌ ERROR generando la predicción: {e}")
+    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que los CINCO archivos .pkl son correctos.")
