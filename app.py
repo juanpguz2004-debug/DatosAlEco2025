@@ -12,12 +12,10 @@ st.set_page_config(
     page_title="Dashboard ALECO Base", 
     layout="wide"
 )
-st.title("Paso 1: Diagnóstico de Carga de Archivos")
 
 # ----------------------------------------------------
 # 1) FUNCIÓN DE NORMALIZACIÓN (Necesaria para cargar datos)
 # ----------------------------------------------------
-# Esta función debe coincidir con la usada en tu Colab
 def normalize_col(col):
     col = col.strip()
     col = col.upper()
@@ -46,10 +44,9 @@ def load_data():
     try:
         df = pd.read_csv(csv_file)
         
-        # Normalizar columnas
         df.columns = [normalize_col(c) for c in df.columns]
 
-        # Aplicar limpieza básica a las columnas necesarias (para evitar errores de tipo de dato)
+        # Aplicar limpieza básica a las columnas necesarias
         numeric_cols = ['INGRESOS_OPERACIONALES','GANANCIA_PERDIDA','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO']
         for col in numeric_cols:
             if col in df.columns:
@@ -65,11 +62,10 @@ def load_data():
                     .astype(float)
                 )
 
-        # Asegurar que ANO_DE_CORTE sea int (para evitar errores en la predicción)
+        # Asegurar que ANO_DE_CORTE sea int (para la lógica del dashboard)
         if 'ANO_DE_CORTE' in df.columns:
             df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce').fillna(-1).astype(int)
         
-        st.success("✅ CSV cargado y columnas principales limpiadas.")
         return df
 
     except Exception as e:
@@ -90,7 +86,6 @@ def load_model():
 
     try:
         model = joblib.load(model_file)
-        st.success("✅ Modelo cargado correctamente.")
         return model
     except Exception as e:
         st.error(f"❌ ERROR al cargar el modelo: {e}. Revisa las versiones de joblib/XGBoost.")
@@ -98,21 +93,68 @@ def load_model():
 
 
 # ----------------------------------------------------
-# --- INICIO DE LA EJECUCIÓN ---
+# --- INICIO DE LA APLICACIÓN ---
 # ----------------------------------------------------
 
 df = load_data()
 model = load_model()
 
-st.header("1. Resultado de Carga de Datos")
-if not df.empty:
-    st.dataframe(df.head())
-    st.write(f"Filas cargadas: **{len(df)}**")
-else:
-    st.warning("⚠️ No se pudo cargar el DataFrame.")
+if df.empty or model is None:
+    st.error("⚠️ La aplicación no puede continuar debido a errores de carga.")
+    st.stop()
 
-st.header("2. Resultado de Carga del Modelo")
-if model is not None:
-    st.info("El modelo está listo. Podemos pasar al Paso 2: Filtrado y KPIs.")
+
+# ----------------------------------------------------
+# 4) DASHBOARD PRINCIPAL Y FILTROS
+# ----------------------------------------------------
+st.title("📊 Dashboard ALECO: Paso 2 (Filtros y KPIs)")
+
+st.header("1. Filtros y Datos")
+col1, col2 = st.columns(2)
+with col1:
+    # Obtener opciones únicas del DataFrame cargado
+    sector_options = ["Todos"] + df["MACROSECTOR"].unique().tolist()
+    sector = st.selectbox("Filtrar por Macrosector", sector_options)
+with col2:
+    region_options = ["Todos"] + df["REGION"].unique().tolist()
+    region = st.selectbox("Filtrar por Región", region_options)
+
+# Aplicar filtros
+df_filtrado = df.copy()
+if sector != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["MACROSECTOR"] == sector]
+if region != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["REGION"] == region]
+
+
+# Diagnóstico del año de corte
+ano_corte_mas_reciente = df_filtrado["ANO_DE_CORTE"].max()
+
+if ano_corte_mas_reciente <= 2000:
+    st.error(f"❌ ERROR CRÍTICO: El año de corte más reciente es inválido ({ano_corte_mas_reciente}).")
+    st.dataframe(df_filtrado["ANO_DE_CORTE"].value_counts()) # Muestra los valores defectuosos
+    st.warning("⚠️ Debes corregir los datos de 'ANO_DE_CORTE' en el CSV original o el error de limpieza de datos.")
+    st.stop()
+
+st.info(f"✅ Año de corte más reciente encontrado: **{ano_corte_mas_reciente}**")
+st.dataframe(df_filtrado.head(5))
+
+
+# ----------------------------------------------------
+# 5) KPIs AGREGADOS
+# ----------------------------------------------------
+st.header("2. KPIs Agregados")
+
+if df_filtrado.empty:
+    st.warning("No hay datos para los filtros seleccionados.")
 else:
-    st.warning("⚠️ El modelo no está cargado. No se podrá predecir.")
+    ingresos_total = df_filtrado["INGRESOS_OPERACIONALES"].sum()
+    patrimonio_prom = df_filtrado["TOTAL_PATRIMONIO"].mean()
+
+    col_kpi1, col_kpi2 = st.columns(2)
+    with col_kpi1:
+        st.metric(label="Ingresos Operacionales Totales", value=f"${ingresos_total:,.2f}")
+    with col_kpi2:
+        st.metric(label="Patrimonio Promedio", value=f"${patrimonio_prom:,.2f}")
+        
+st.success("🎉 Paso 2 completado. Pasemos a la Predicción.")
