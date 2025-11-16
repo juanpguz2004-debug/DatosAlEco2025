@@ -174,4 +174,17 @@ with col_sel_year:
     # Selector de año de predicción (ej. 2026, 2027...)
     pred_years = [2026, 2027, 2028, 2029, 2030]
     # Aseguramos que el año sea superior al año de corte base
-    años_futuros = [y for y in pred_years if y > ano_corte_mas_
+    # 🟢 CORRECCIÓN: Asegurar que el corchete de la lista se cierre (])
+    años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente] 
+    
+    if not años_futuros:
+        st.warning(f"El año de corte base es {ano_corte_mas_reciente}. Ajusta la lista de años futuros en el código.")
+        st.stop()
+
+    ano_prediccion = st.selectbox(
+        "Selecciona el Año de Predicción",
+        años_futuros,
+        index=0 
+    )
+
+
