@@ -116,11 +116,17 @@ if model is None:
     st.error("❌ ERROR FATAL: El modelo no está cargado.")
     st.stop()
 
+# 🟢 CAMBIO 1: Encabezado y unidades
+st.title("📊 Dashboard ALECO: Final")
+st.markdown("""
+**Reporte de las diez mil empresas más grandes del país.**
+Todas las cifras en este reporte se muestran en **Billones de Pesos**.
+""")
+st.markdown("---") # Separador para el encabezado
 
 # ----------------------------------------------------
 # 4) DASHBOARD PRINCIPAL Y FILTROS
 # ----------------------------------------------------
-st.title("📊 Dashboard ALECO: Final")
 
 # Determinar el año máximo global (para establecer los límites de predicción)
 ano_corte_mas_reciente_global = df["ANO_DE_CORTE"].max()
@@ -157,9 +163,11 @@ patrimonio_prom = df_filtrado["TOTAL_PATRIMONIO"].mean()
 
 col_kpi1, col_kpi2 = st.columns(2)
 with col_kpi1:
-    st.metric(label="Ingresos Operacionales Totales", value=f"${ingresos_total:,.2f}")
+    # 🟢 Etiqueta KPI con unidades
+    st.metric(label="Ingresos Operacionales Totales (Billones COP)", value=f"${ingresos_total:,.2f}")
 with col_kpi2:
-    st.metric(label="Patrimonio Promedio", value=f"${patrimonio_prom:,.2f}")
+    # 🟢 Etiqueta KPI con unidades
+    st.metric(label="Patrimonio Promedio (Billones COP)", value=f"${patrimonio_prom:,.2f}")
 
 
 # ----------------------------------------------------
@@ -168,7 +176,7 @@ with col_kpi2:
 st.header("3. Predicción de Ganancia/Pérdida")
 
 # --- SELECTORES: Año y Empresa ---
-col_sel_company, col_sel_year = st.columns(2) # Invertimos el orden para énfasis
+col_sel_company, col_sel_year = st.columns(2) 
 
 # 2. Lista de empresas disponibles (TODAS las que pasaron el filtro)
 empresas_disponibles = df_filtrado["RAZON_SOCIAL"].unique().tolist()
@@ -246,30 +254,50 @@ try:
     
     # 5. Mostrar la comparación
     diferencia = pred - ganancia_anterior
+    
+    # 🟢 CAMBIO 2: Cálculo del porcentaje de cambio (delta_percent)
+    delta_percent = 0.0
+    if ganancia_anterior != 0:
+        # Usamos abs(ganancia_anterior) para evitar divisiones por cero si es muy cercano, 
+        # aunque si es 0 el resultado no es un porcentaje significativo.
+        # El cálculo de cambio porcentual se basa en el valor real: (Predicción - Real) / Real
+        delta_percent = (diferencia / ganancia_anterior) * 100
+    
+    # Formatear el delta como porcentaje
+    delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
+
 
     st.markdown("#### Resultado de la Predicción")
     col_res1, col_res2 = st.columns(2)
     
     with col_res1:
         st.metric(
-            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion})",
+            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", # 🟢 Unidades
             value=f"${pred:,.2f}",
-            delta=f"${diferencia:,.2f} vs {ano_corte_empresa}" # Usa el año de la empresa
+            delta=delta_display # 🟢 Mostrar el porcentaje
         )
         
     with col_res2:
-        # 🟢 MODIFICACIÓN SOLICITADA: Etiqueta de la Métrica
         st.metric(
-            label=f"G/P Real (Última fecha de corte registrada)", 
+            label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", # 🟢 Unidades
             value=f"${ganancia_anterior:,.2f}",
             delta_color="off"
         )
         
-    # 🟢 MODIFICACIÓN SOLICITADA: Mensaje condicional (Rojo para Pérdidas)
+    # 🟢 CAMBIO 3: Mensaje condicional más claro y enlace a encuesta
+    st.markdown("---") 
     if pred >= 0:
-        st.success(f"Predicción generada con éxito para **{empresa_seleccionada}**.")
+        if diferencia >= 0:
+            st.success(f"📈 Se predice un **aumento** de la ganancia del {delta_percent:,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred:,.2f} Billones COP).")
+        else:
+            st.warning(f"⚠️ Se predice una **reducción** en la ganancia del {abs(delta_percent):,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred:,.2f} Billones COP).")
     else:
-        st.error(f"Predicción (pérdida) generada para **{empresa_seleccionada}**.")
+        st.error(f"📉 Se predice una **pérdida** neta para {ano_prediccion} (Pérdida total: ${pred:,.2f} Billones COP).")
+
+    # 🟢 CAMBIO 4: Invitación a la encuesta
+    st.markdown("---")
+    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
+
 
 except Exception as e:
     st.error(f"❌ ERROR generando la predicción: {e}")
