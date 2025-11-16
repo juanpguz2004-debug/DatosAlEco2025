@@ -200,6 +200,7 @@ with col_sel_year:
 
 
 # --- Lógica de Predicción ---
+# --- Lógica de Predicción ---
 try:
     df_empresa = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada]
     ano_corte_empresa = df_empresa["ANO_DE_CORTE"].max()
@@ -214,7 +215,6 @@ try:
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     
     # --- PARCHE DE CORRECCIÓN DE ESCALA (ACTIVO) ---
-    # Divide por 100 para corregir el error de $1,493.00 a $14.93
     ganancia_anterior = ganancia_anterior / 100.0 
     
     # --- 1. PRE-PROCESAMIENTO PARA LOS TRES MODELOS ---
@@ -229,7 +229,6 @@ try:
             row_prediccion[col] = encoder.transform(row_prediccion[col].astype(str))[0]
             row_prediccion[col] = int(row_prediccion[col]) 
         except ValueError:
-             # Asignar 0 o el valor más común si es un valor no visto
              row_prediccion[col] = 0 
     
     # FIX CRÍTICO: Formato de Año para OHE
@@ -254,6 +253,7 @@ try:
     # --- 2. LÓGICA DE PREDICCIÓN CONDICIONAL ---
     
     # Paso A: Clasificar (0 = Pérdida/Cero, 1 = Ganancia)
+    # Se usa predict_proba para más suavidad, aunque predict simple es 0 o 1
     pred_cls = model_cls.predict(X_pred)[0]
     
     pred_log = 0.0
@@ -273,14 +273,79 @@ try:
         pred_real = -magnitud_perdida_real
         
     
-File "/mount/src/datosaleco2025/app.py", line 277
-  diferencia = pred_real - ganancia_anterior
-  ^
-SyntaxError: expected 'except' or 'finally' block
+    # --- 3. MOSTRAR RESULTADOS (Cálculo Delta Robusto) ---
+    diferencia = pred_real - ganancia_anterior
+
+    # --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
+    delta_percent = 0.0
+    delta_display = ""
+    delta_metric_value = diferencia # Usaremos la diferencia absoluta para el delta de la métrica
+
+    if ganancia_anterior == 0:
+        # Caso 1: Anterior fue CERO (0). El cambio no puede ser % pero puede ser absoluto.
+        if pred_real > 0:
+            delta_display = f"Ganó ${pred_real:,.2f} vs 0"
+        elif pred_real < 0:
+            delta_display = f"Perdió ${abs(pred_real):,.2f} vs 0"
+        else:
+            delta_display = "Sin cambio vs 0"
+
+    elif ganancia_anterior < 0:
+        # Caso 2: Anterior fue una PÉRDIDA (Negativo). Usamos el cambio absoluto o % sobre la magnitud.
+        if pred_real >= 0:
+            # Mejora: Pasó de negativo a positivo o cero.
+            delta_abs = pred_real - ganancia_anterior
+            delta_display = f"Mejoró ${delta_abs:,.2f} (Cambio Absoluto)" # Reportamos mejora absoluta
+            
+        else:
+            # Empeoró o Siguió en Pérdida: Calculamos porcentaje sobre la magnitud de la pérdida.
+            delta_percent_mag = (diferencia / abs(ganancia_anterior)) * 100
+            
+            if delta_percent_mag > 0:
+                # Pérdida se redujo (ej: -100 a -50). Delta positivo.
+                delta_display = f"Pérdida REDUCIDA {delta_percent_mag:,.2f}%"
+            else:
+                # Pérdida se profundizó (ej: -50 a -100). Delta negativo.
+                delta_display = f"Pérdida PROFUNDIZADA {abs(delta_percent_mag):,.2f}%"
+                
+    else:
+        # Caso 3: Anterior fue una GANANCIA (Positivo). Usamos el cálculo normal.
+        delta_percent = (diferencia / ganancia_anterior) * 100
+        delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
+
+
+    st.markdown("#### Resultado de la Predicción")
+    col_res1, col_res2 = st.columns(2)
+
+    with col_res1:
+        st.metric(
+            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", 
+            value=f"${pred_real:,.2f}",
+            delta=delta_metric_value, 
+            delta_color="normal"
+        )
+        st.caption(f"Cambio vs {ano_corte_empresa}: {delta_display}") 
+
+    with col_res2:
+        st.metric(
+            label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
+            value=f"${ganancia_anterior:,.2f}",
+            delta_color="off"
+        )
+        
+    # Mensaje condicional final
+    st.markdown("---") 
+    if pred_real >= 0.01: 
+        st.success(f"📈 El modelo clasifica la operación como **GANANCIA** (Resultado: ${pred_real:,.2f} Billones COP).")
+    elif pred_real < -0.01: 
+        st.error(f"📉 El modelo clasifica la operación como **PÉRDIDA** neta (Resultado: ${abs(pred_real):,.2f} Billones COP).")
+    else:
+        st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
+
+    st.markdown("---")
+    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
 
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que los CINCO archivos .pkl son correctos.")
-
-
