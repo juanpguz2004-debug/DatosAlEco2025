@@ -5,7 +5,9 @@ import joblib
 import os
 import unicodedata
 
-# Configuración inicial de la página (ayuda a evitar fallos al inicio)
+# ----------------------------------------------------
+# 0) CONFIGURACIÓN DE PÁGINA
+# ----------------------------------------------------
 st.set_page_config(
     page_title="Dashboard ALECO", 
     layout="wide"
@@ -38,7 +40,7 @@ def load_data():
     csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
 
     if not os.path.exists(csv_file):
-        st.error(f"No se encontró el archivo: {csv_file}")
+        st.error(f"Archivo no encontrado: {csv_file}")
         return pd.DataFrame()
 
     try:
@@ -46,7 +48,6 @@ def load_data():
     except Exception as e:
         st.error(f"Error al leer el CSV: {e}")
         return pd.DataFrame()
-
 
     # Normalizar columnas
     df.columns = [normalize_col(c) for c in df.columns]
@@ -61,7 +62,7 @@ def load_data():
 
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
-        st.error(f"Faltan columnas necesarias: {missing}")
+        st.error(f"Faltan columnas necesarias en el CSV: {missing}")
         return pd.DataFrame()
 
     # LIMPIAR columnas numéricas
@@ -83,20 +84,18 @@ def load_data():
             .astype(float)
         )
     
-    # REVISIÓN CLAVE: Asegurar que ANO_DE_CORTE es un entero válido (> 2000)
+    # -----------------------------------------------------------------
+    # FIX: CORRECCIÓN CRÍTICA PARA EL AÑO DE CORTE
+    # -----------------------------------------------------------------
+    # Convertir a numérico, los errores (texto) se vuelven NaN
     df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
-    # Rellenar NaNs y convertir a int
+    # Rellenar NaNs con -1 y convertir a entero
     df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int) 
-    # Filtrar filas con años no válidos
-    df = df[df['ANO_DE_CORTE'] > 2000]
+    # Filtrar todas las filas con años no válidos INMEDIATAMENTE
+    df = df[df['ANO_DE_CORTE'] > 2000].copy()
+    # -----------------------------------------------------------------
 
     return df
-
-
-df = load_data()
-
-if df.empty:
-    st.stop()
 
 
 # ----------------------------------------------------
@@ -107,38 +106,54 @@ def load_model():
     model_file = "model.pkl" 
     
     if not os.path.exists(model_file):
-        st.error(f"No se encontró el archivo del modelo: {model_file}")
+        st.error(f"Archivo de modelo no encontrado: {model_file}")
         return None
 
     try:
-        return joblib.load(model_file)
+        model = joblib.load(model_file)
+        return model
     except Exception as e:
         st.error(f"Error al cargar {model_file}: {e}")
         return None
 
 
-model = load_model()
-if model is None:
+# ----------------------------------------------------
+# --- INICIO DE LA APLICACIÓN ---
+# ----------------------------------------------------
+
+st.title("📊 Dashboard ALECO 2025")
+
+# --- Carga segura de datos y modelo ---
+try:
+    df = load_data()
+    model = load_model()
+except Exception as e:
+    st.error(f"Error fatal al iniciar la app: {e}")
     st.stop()
 
+# Si los datos o el modelo no se cargaron, detener la app.
+if df.empty or model is None:
+    st.warning("La aplicación no puede iniciar. Revisa los archivos (CSV y model.pkl) y los errores anteriores.")
+    st.stop()
 
 # ----------------------------------------------------
-# 4) DASHBOARD PRINCIPAL
+# 4) FILTROS DEL DASHBOARD
 # ----------------------------------------------------
-st.title("📊 Dashboard ALECO 2025")
 st.markdown("Explora las empresas y predice **GANANCIA_PERDIDA** usando el modelo XGBoost entrenado.")
 
-# --- Filtros ---
 col1, col2 = st.columns(2)
 with col1:
-    sector = st.selectbox("Filtrar por Macrosector", ["Todos"] + df["MACROSECTOR"].unique().tolist())
+    # Usar .unique() sobre el df ya cargado y filtrado por año
+    sector_options = ["Todos"] + df["MACROSECTOR"].unique().tolist()
+    sector = st.selectbox("Filtrar por Macrosector", sector_options)
 with col2:
-    region = st.selectbox("Filtrar por Región", ["Todos"] + df["REGION"].unique().tolist())
+    region_options = ["Todos"] + df["REGION"].unique().tolist()
+    region = st.selectbox("Filtrar por Región", region_options)
 
+# Aplicar filtros
 df_filtrado = df.copy()
 if sector != "Todos":
     df_filtrado = df_filtrado[df_filtrado["MACROSECTOR"] == sector]
-
 if region != "Todos":
     df_filtrado = df_filtrado[df_filtrado["REGION"] == region]
 
@@ -147,28 +162,30 @@ st.dataframe(df_filtrado.head(30))
 
 
 # ----------------------------------------------------
-# 5) KPIs SEGUROS
+# 5) KPIs AGREGADOS
 # ----------------------------------------------------
 st.subheader("📊 KPIs agregados")
 
-def safe_float(x):
-    try:
-        return float(x)
-    except:
-        return np.nan
+if df_filtrado.empty:
+    st.warning("No hay datos para los filtros seleccionados.")
+else:
+    def safe_float(x):
+        try:
+            return float(x)
+        except:
+            return np.nan
 
-# Asegurar la conversión a float para suma/media
-for col in ["INGRESOS_OPERACIONALES","TOTAL_ACTIVOS","TOTAL_PASIVOS","TOTAL_PATRIMONIO"]:
-    df_filtrado[col] = df_filtrado[col].apply(safe_float)
+    for col in ["INGRESOS_OPERACIONALES", "TOTAL_PATRIMONIO"]:
+        df_filtrado[col] = df_filtrado[col].apply(safe_float)
 
-ingresos_total = df_filtrado["INGRESOS_OPERACIONALES"].sum()
-patrimonio_prom = df_filtrado["TOTAL_PATRIMONIO"].mean()
+    ingresos_total = df_filtrado["INGRESES_OPERACIONALES"].sum()
+    patrimonio_prom = df_filtrado["TOTAL_PATRIMONIO"].mean()
 
-col_kpi1, col_kpi2 = st.columns(2)
-with col_kpi1:
-    st.metric(label="Ingresos Operacionales Totales", value=f"${ingresos_total:,.2f}")
-with col_kpi2:
-    st.metric(label="Patrimonio Promedio", value=f"${patrimonio_prom:,.2f}")
+    col_kpi1, col_kpi2 = st.columns(2)
+    with col_kpi1:
+        st.metric(label="Ingresos Operacionales Totales", value=f"${ingresos_total:,.2f}")
+    with col_kpi2:
+        st.metric(label="Patrimonio Promedio", value=f"${patrimonio_prom:,.2f}")
 
 
 # ----------------------------------------------------
@@ -177,16 +194,12 @@ with col_kpi2:
 st.subheader("🔮 Predicción de Ganancia/Pérdida")
 
 if df_filtrado.empty:
-    st.warning("No hay empresas con ese filtro.")
+    st.warning("No hay empresas con ese filtro para realizar predicciones.")
     st.stop()
 
-# 1. Determinar el año base más reciente
+# 1. Determinar el año base (¡Esto ahora SÍ funcionará!)
 ano_corte_mas_reciente = df_filtrado["ANO_DE_CORTE"].max()
-
-if ano_corte_mas_reciente <= 2000:
-    st.warning("No se encontró un año de corte válido (> 2000) en los datos filtrados.")
-    st.stop()
-
+# (La comprobación de <= 2000 ya no es necesaria aquí, porque load_data() ya lo hizo)
 
 # --- SELECTORES: Año y Empresa ---
 col_sel_year, col_sel_company = st.columns(2)
@@ -220,47 +233,54 @@ with col_sel_company:
 
 st.info(f"Predicción para **{ano_prediccion}**, comparando contra el año de corte más reciente disponible: **{ano_corte_mas_reciente}**.")
 
-# columnas EXACTAS que usa XGBoost
-FEATURE_ORDER = [
-    'NIT','RAZON_SOCIAL','SUPERVISOR','REGION','DEPARTAMENTO_DOMICILIO',
-    'CIUDAD_DOMICILIO','CIIU','MACROSECTOR',
-    'INGRESOS_OPERACIONALES','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO','ANO_DE_CORTE'
-]
-
-# Obtener la fila BASE (del año más reciente) de la empresa seleccionada
-row_data = df_filtrado[
-    (df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada) &
-    (df_filtrado["ANO_DE_CORTE"] == ano_corte_mas_reciente)
-]
-    
-row = row_data.iloc[[0]].copy()
-
-# 3. Preparar la fila para la predicción
-row["ANO_DE_CORTE"] = ano_prediccion
-
-# Quitar columna objetivo y guardar la ganancia base (la real más reciente)
-if "GANANCIA_PERDIDA" in row.columns:
-    ganancia_anterior = row["GANANCIA_PERDIDA"].iloc[0] 
-    row = row.drop(columns=["GANANCIA_PERDIDA"])
-else:
-    ganancia_anterior = np.nan
-
-# Asegurar orden correcto
-row = row[FEATURE_ORDER]
-
-# Convertir a códigos categóricos/numéricos 
-row_prediccion = row.copy()
-for col in row_prediccion.columns:
-    try:
-        row_prediccion[col] = pd.to_numeric(row_prediccion[col], errors='raise')
-    except:
-        row_prediccion[col] = row_prediccion[col].astype("category").cat.codes
-
-
+# 3. Preparar datos para la predicción
 try:
+    # Obtener la fila BASE (del año más reciente)
+    row_data = df_filtrado[
+        (df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada) &
+        (df_filtrado["ANO_DE_CORTE"] == ano_corte_mas_reciente)
+    ]
+        
+    row = row_data.iloc[[0]].copy()
+
+    # Guardar ganancia anterior y preparar fila para predicción
+    if "GANANCIA_PERDIDA" in row.columns:
+        ganancia_anterior = row["GANANCIA_PERDIDA"].iloc[0] 
+        row = row.drop(columns=["GANANCIA_PERDIDA"])
+    else:
+        ganancia_anterior = np.nan
+
+    # Modificar la fila para el año futuro
+    row["ANO_DE_CORTE"] = ano_prediccion
+
+    # Ordenar columnas EXACTAMENTE como en el entrenamiento
+    FEATURE_ORDER = [
+        'NIT','RAZON_SOCIAL','SUPERVISOR','REGION','DEPARTAMENTO_DOMICILIO',
+        'CIUDAD_DOMICILIO','CIIU','MACROSECTOR',
+        'INGRESOS_OPERACIONALES','TOTAL_ACTIVOS','TOTAL_PASIVOS',
+        'TOTAL_PATRIMONIO','ANO_DE_CORTE'
+    ]
+    # Asegurarse de que solo estas columnas estén y en este orden
+    row = row[FEATURE_ORDER]
+
+    # Convertir a códigos categóricos/numéricos
+    row_prediccion = row.copy()
+    for col in row_prediccion.columns:
+        if row_prediccion[col].dtype == 'object':
+            # Si es categórica (texto)
+            row_prediccion[col] = row_prediccion[col].astype("category").cat.codes
+        else:
+            # Si ya es numérica (NIT, Ingresos, etc.)
+            try:
+                row_prediccion[col] = pd.to_numeric(row_prediccion[col], errors='raise')
+            except:
+                # Fallback por si algo se coló
+                row_prediccion[col] = 0
+
+    # 4. Realizar Predicción
     pred = model.predict(row_prediccion)[0]
     
-    # 4. Calcular y mostrar la comparación
+    # 5. Calcular y mostrar la comparación
     if not pd.isna(ganancia_anterior):
         diferencia = pred - ganancia_anterior
     else:
@@ -286,5 +306,5 @@ try:
     st.success(f"Predicción generada con éxito para **{empresa_seleccionada}**.")
 
 except Exception as e:
-    st.error(f"Error generando predicción: {e}")
-    st.caption("Asegúrate de que el modelo y la estructura de datos sean compatibles.")
+    st.error(f"Error generando la predicción: {e}")
+    st.caption("Esto puede ocurrir si la empresa seleccionada tiene datos incompatibles con el modelo.")
