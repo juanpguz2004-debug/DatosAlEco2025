@@ -172,7 +172,7 @@ with col_kpi2:
     st.metric(label="Patrimonio Promedio (Billones COP)", value=f"${patrimonio_prom:,.2f}")
 
 # ----------------------------------------------------
-# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED RECURSIVO y OHE/LE)
+# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED FINAL)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -215,7 +215,7 @@ try:
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     ganancia_anterior = ganancia_anterior / 100.0 # Parche de escala
     
-    # Inicializar la base para la recursividad
+    # Inicializar la base para la recursividad (Contiene features numéricos y categóricos no modificados)
     row_current_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0].copy() 
     for col in COLS_TO_PROJECT:
          row_current_base[col] = pd.to_numeric(row_current_base[col], errors='coerce').astype(float)
@@ -231,62 +231,55 @@ try:
         for col in COLS_TO_PROJECT:
             row_current_base[col] = row_current_base[col] * AGR
             
-        # B. Codificación (LE y OHE) para el año actual
-        row_prediccion = row_current_base.copy() 
+        # B. Creación de la fila de predicción y codificación
+        row_prediccion = row_current_base.to_frame().T.copy() # DataFrame de 1 fila
         
-        # FIX: Seteamos el año como entero, asumiendo que el modelo lo espera como variable continua/entera.
+        # 1. Seteamos el año (como número entero)
         row_prediccion["ANO_DE_CORTE"] = ano_actual 
         
-        # Aplicar Label Encoding (LE) para variables que deben ser numéricas
+        # 2. Aplicar Label Encoding (LE)
         for col in LE_COLS:
             try:
                 encoder = label_encoders[col]
-                row_prediccion[col] = encoder.transform([str(row_prediccion[col])])[0]
+                row_prediccion[col] = encoder.transform([str(row_prediccion[col].iloc[0])])[0]
             except ValueError:
-                 row_prediccion[col] = -1 # Asignar valor por defecto para desconocido
+                 row_prediccion[col] = -1 
         
-        # Aplicar One-Hot Encoding (OHE) a las categóricas
-        # Aquí manejamos el OHE solo para SUPERVISOR, REGION, MACROSECTOR
+        # 3. Aplicar One-Hot Encoding (OHE)
+        ohe_cols_to_use = [c for c in OHE_COLS] # Incluye ANO_DE_CORTE por si usa OHE
         
-        # Crear DataFrame para OHE
-        row_prediccion_df = row_prediccion.to_frame().T
-        ohe_cols_to_use = [c for c in OHE_COLS if c != 'ANO_DE_CORTE'] 
-
         for col in ohe_cols_to_use:
-            row_prediccion_df[col] = row_prediccion_df[col].astype(str)
+            # Si el modelo espera OHE para ANO_DE_CORTE, el formato es CRÍTICO
+            if col == 'ANO_DE_CORTE' and any(f.startswith('ANO_DE_CORTE_') for f in MODEL_FEATURE_NAMES):
+                row_prediccion[col] = format_ano(row_prediccion[col].iloc[0])
+            row_prediccion[col] = row_prediccion[col].astype(str)
 
         row_prediccion_ohe = pd.get_dummies(
-            row_prediccion_df.drop(columns=LE_COLS, errors='ignore'), 
+            row_prediccion, 
             columns=ohe_cols_to_use, prefix=ohe_cols_to_use, drop_first=True, dtype=int
         )
         
-        # C. ALINEACIÓN FINAL DE X_PRED (FIX CRÍTICO para asegurar que es float)
+        # C. ALINEACIÓN FINAL DE X_PRED (FIX CRÍTICO)
         
-        # 1. Crear DataFrame base con ceros
+        # 1. Crear DataFrame base con ceros basado en features del modelo
         X_pred = pd.DataFrame(0, index=[0], columns=MODEL_FEATURE_NAMES)
         
-        # 2. Inyectar features OHE
+        # 2. Copiar los valores calculados/codificados a X_pred
         for col in row_prediccion_ohe.columns:
             if col in X_pred.columns:
                  X_pred[col] = row_prediccion_ohe[col].iloc[0]
-                 
-        # 3. Inyectar features Numéricos/Continuos (COLS_TO_PROJECT)
-        for col in COLS_TO_PROJECT:
-            if col in X_pred.columns:
-                 X_pred[col] = row_current_base[col]
-                 
-        # 4. Inyectar features Label Encoded (LE)
-        for col in LE_COLS:
-            if col in X_pred.columns:
-                 X_pred[col] = row_prediccion[col]
+        
+        # 3. Inyectar los features numéricos que no fueron OHE (COLS_TO_PROJECT y LE)
+        # Esto asegura que los features numéricos base (no OHE) estén presentes, incluso si no pasaron por get_dummies
+        for col in (COLS_TO_PROJECT + LE_COLS):
+             if col in X_pred.columns:
+                  X_pred[col] = row_prediccion[col].iloc[0] # Usar el valor codificado/proyectado
 
-        # 5. Inyectar el Año (como número continuo/entero)
-        if 'ANO_DE_CORTE' in X_pred.columns:
-             X_pred['ANO_DE_CORTE'] = ano_actual
-        # DEBUG: Verificar el valor del año (debe ser un número entero)
-        st.write(f"DEBUG: ✅ Año {ano_actual} | Valor de 'ANO_DE_CORTE': {X_pred['ANO_DE_CORTE'].iloc[0]}")
+        # 4. Debugging: Verificar si el año es continuo (número) y el valor
+        if 'ANO_DE_CORTE' in X_pred.columns and not any(f.startswith('ANO_DE_CORTE_') for f in MODEL_FEATURE_NAMES):
+            st.write(f"DEBUG: ✅ Año {ano_actual} | 'ANO_DE_CORTE' (Continuo): {X_pred['ANO_DE_CORTE'].iloc[0]}")
             
-        # Finalizar la preparación, asegurando todo es float/numérico
+        # 5. Finalizar la preparación, asegurando todo es float/numérico
         X_pred = X_pred.astype(float).fillna(0)
         
         
