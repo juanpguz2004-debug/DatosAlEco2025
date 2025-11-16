@@ -31,7 +31,7 @@ def normalize_col(col):
 
 
 # ----------------------------------------------------
-# 2) CARGAR CSV Y LIMPIEZA (CON LOS FIXES FINALES)
+# 2) CARGAR CSV Y LIMPIEZA (FIX DE FORMATO Y UNIDAD)
 # ----------------------------------------------------
 @st.cache_data
 def load_data():
@@ -66,12 +66,20 @@ def load_data():
                 .str.replace(")","",regex=False)
             )
 
-            # 2. FIX CRÍTICO: Estandarizar el separador decimal a punto (`.`)
-            # Esto asume: punto = separador de miles, coma = separador decimal.
+            # 2. Estandarizar el separador decimal a punto (`.`)
+            # Asume: punto = separador de miles, coma = separador decimal.
             df[col] = df[col].str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             
             # 3. Convertir a float
             df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # 🟢 FIX CRÍTICO DE UNIDAD: Dividir la columna de Ganancia/Pérdida por 100.
+        # Esto corrige el factor de 100 que está leyendo 219.00 en lugar de 2.19.
+        # Solo lo aplicamos si el valor no es NaN después de la conversión.
+        df['GANANCIA_PERDIDA'] = df['GANANCIA_PERDIDA'].apply(
+            lambda x: x / 100 if pd.notna(x) and x > 10 else x
+        )
+
 
         # FIX FINAL PARA ANO_DE_CORTE
         if 'ANO_DE_CORTE' in df.columns:
@@ -311,5 +319,6 @@ try:
 except Exception as e:
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
+
 
 
