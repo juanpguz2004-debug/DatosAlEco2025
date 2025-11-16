@@ -146,9 +146,9 @@ with col2:
 
 df_filtrado = df.copy()
 if sector != "Todos":
-    df_filtrado = df_filtrado[df["MACROSECTOR"] == sector]
+    df_filtrado = df_filtrado[df_filtrado["MACROSECTOR"] == sector]
 if region != "Todos":
-    df_filtrado = df_filtrado[df["REGION"] == region]
+    df_filtrado = df_filtrado[df_filtrado["REGION"] == region]
 
 if df_filtrado.empty:
     st.error(f"❌ ERROR: Los filtros eliminaron todos los datos válidos.")
@@ -158,7 +158,7 @@ st.info(f"✅ Año de corte máximo global: **{ano_corte_mas_reciente_global}**"
 st.dataframe(df_filtrado.head(5))
 
 # ----------------------------------------------------
-# 4) KPIs AGREGADOS (Restaurados)
+# 4) KPIs AGREGADOS
 # ----------------------------------------------------
 st.header("2. KPIs Agregados")
 
@@ -173,7 +173,7 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED RECURSIVO)
+# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED RECURSIVO FINAL)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -191,7 +191,6 @@ with col_sel_company:
     )
 
 with col_sel_year:
-    # Aseguramos que los años futuros sean válidos
     pred_years = [2026, 2027, 2028, 2029, 2030]
     años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente_global]
     if not años_futuros:
@@ -212,39 +211,33 @@ try:
 
     st.info(f"Predicción recursiva hasta **{ano_prediccion_final}**, iniciando desde la última fecha de corte ({ano_corte_empresa}). Tasa de Crecimiento Asumida (AGR): **{AGR:.2f}**")
 
-    # 1. PREPARACIÓN INICIAL (Base para la recursividad)
+    # 1. PREPARACIÓN INICIAL
     row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     ganancia_anterior = ganancia_anterior / 100.0 # Parche de escala
     
-    # Inicializar la base para la recursividad (Será modificada en cada iteración)
-    row_base_recursiva = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0].copy() 
+    # Inicializar la base para la recursividad
+    # Aseguramos que los features a proyectar sean float desde el inicio.
+    row_current_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0].copy() 
+    for col in COLS_TO_PROJECT:
+         row_current_base[col] = pd.to_numeric(row_current_base[col], errors='coerce').astype(float)
     
     
     # 2. BUCLE DE PREDICCIÓN RECURSIVA
-    
     años_a_predecir = range(ano_corte_empresa + 1, ano_prediccion_final + 1)
-    
-    # Esta variable almacenará el resultado del último paso del bucle
-    pred_real_final = 0.0
+    pred_real_final = 0.0 # Almacena el resultado del último paso
     
     for ano_actual in años_a_predecir:
         
-        # --- A. Proyección de Features Numéricos para el año actual ---
-        
-        # El delta siempre es 1 año, ya que se proyecta recursivamente desde el año anterior
-        delta_anos_prediccion = 1 
-        
+        # A. Proyección de Features Numéricos (Recursiva: Valor Anterior * AGR)
         for col in COLS_TO_PROJECT:
-            # Asegurar que el feature es numérico para la multiplicación
-            row_base_recursiva[col] = pd.to_numeric(row_base_recursiva[col], errors='coerce', downcast='float')
-            # Proyección: Valor_Actual * AGR (para un paso)
-            row_base_recursiva[col] = row_base_recursiva[col] * (AGR ** delta_anos_prediccion)
+            # Multiplicamos el valor del año anterior (almacenado en row_current_base) por AGR
+            row_current_base[col] = row_current_base[col] * AGR
             
-        # --- B. Codificación (LE y OHE) para el año actual ---
-        row_prediccion = row_base_recursiva.copy()
+        # B. Codificación (LE y OHE) para el año actual
+        row_prediccion = row_current_base.copy() # Copia de los features proyectados
         
-        # Setear el Año de Predicción y aplicar formato OHE
+        # CRÍTICO: Actualizar el feature del año para el OHE
         row_prediccion["ANO_DE_CORTE"] = ano_actual
         row_prediccion['ANO_DE_CORTE'] = format_ano(row_prediccion['ANO_DE_CORTE'])
         
@@ -256,7 +249,7 @@ try:
             except ValueError:
                  row_prediccion[col] = -1 
         
-        # Aplicar One-Hot Encoding (OHE)
+        # Aplicar One-Hot Encoding (OHE) y Alineación
         row_prediccion_df = row_prediccion.to_frame().T
         for col in OHE_COLS:
             row_prediccion_df[col] = row_prediccion_df[col].astype(str)
@@ -275,8 +268,7 @@ try:
         X_pred = X_pred.astype(float).fillna(0)
         
         
-        # --- C. Lógica de Predicción Condicional (Clasificación + Regresión) ---
-        
+        # C. Lógica de Predicción Condicional
         pred_cls = model_cls.predict(X_pred)[0]
         
         if pred_cls == 1:
@@ -287,12 +279,11 @@ try:
             magnitud_perdida_real = np.expm1(pred_log)
             pred_g_p_actual = -magnitud_perdida_real
             
-        # ALMACENAMIENTO (El resultado final es el que se muestra al usuario)
+        # D. ALMACENAMIENTO: El resultado final es el que se muestra al usuario
         if ano_actual == ano_prediccion_final:
             pred_real_final = pred_g_p_actual
-            # Nota: No retroalimentamos la Ganancia/Pérdida, solo los features financieros proyectados por AGR.
-        
-        # IMPORTANTE: La base recursiva ya fue proyectada en el paso A, no necesita más actualización para el siguiente bucle.
+            
+        # Nota: row_current_base ya contiene los valores proyectados para el año actual y es la base para la siguiente iteración.
         
     
     # --- 3. MOSTRAR RESULTADOS (Usando pred_real_final) ---
