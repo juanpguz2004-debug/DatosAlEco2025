@@ -273,34 +273,49 @@ try:
         pred_real = -magnitud_perdida_real
         
     
-    # --- 3. MOSTRAR RESULTADOS ---
-    diferencia = pred_real - ganancia_anterior
-    
-    delta_percent = 0.0
-    if ganancia_anterior != 0:
-        delta_percent = (diferencia / ganancia_anterior) * 100
-    
+   # --- 3. MOSTRAR RESULTADOS ---
+diferencia = pred_real - ganancia_anterior
+
+# --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
+delta_percent = 0.0
+delta_display = ""
+
+if ganancia_anterior == 0:
+    # Caso 1: Anterior fue CERO (0). El cambio no puede ser % pero puede ser absoluto.
+    if pred_real > 0:
+        delta_display = f"Ganó ${pred_real:,.2f} vs 0"
+    elif pred_real < 0:
+        delta_display = f"Perdió ${abs(pred_real):,.2f} vs 0"
+    else:
+        delta_display = "Sin cambio vs 0"
+
+elif ganancia_anterior < 0:
+    # Caso 2: Anterior fue una PÉRDIDA (Negativo). Usamos el cambio absoluto.
+    if pred_real >= 0:
+        # Mejora: Pasó de negativo a positivo o cero.
+        delta_abs = pred_real - ganancia_anterior
+        delta_display = f"Mejoró ${delta_abs:,.2f}" # Reportamos mejora absoluta
+        
+    else:
+        # Empeoró o Siguió en Pérdida: Calculamos porcentaje sobre la magnitud de la pérdida.
+        # Esto indica si la pérdida se profundizó o redujo.
+        # Usamos la magnitud positiva del año anterior para la división.
+        delta_percent = (diferencia / abs(ganancia_anterior)) * 100
+        
+        if delta_percent > 0:
+            # Ejemplo: -100 a -50. Delta es +50. % es +50%. La pérdida mejoró (se redujo).
+            delta_display = f"Pérdida reducida {delta_percent:,.2f}%"
+        else:
+            # Ejemplo: -50 a -100. Delta es -50. % es -100%. La pérdida se profundizó.
+            delta_display = f"Pérdida PROFUNDIZADA {abs(delta_percent):,.2f}%"
+            
+else:
+    # Caso 3: Anterior fue una GANANCIA (Positivo). Usamos el cálculo normal.
+    delta_percent = (diferencia / ganancia_anterior) * 100
     delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
 
-    st.markdown("#### Resultado de la Predicción")
-    col_res1, col_res2 = st.columns(2)
-    
-    with col_res1:
-        st.metric(
-            label=f"GANANCIA/PÉRDIDA Predicha ({ano_prediccion}) (Billones COP)", 
-            value=f"${pred_real:,.2f}",
-            delta=delta_display
-        )
-        
-    with col_res2:
-        st.metric(
-            label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
-            value=f"${ganancia_anterior:,.2f}",
-            delta_color="off"
-        )
-        
-    # Mensaje condicional
-    st.markdown("---") 
+# El valor 'delta' del st.metric solo acepta números, por lo que lo fijamos a la diferencia real.
+# El valor 'label' (delta_display) es lo que realmente informará al usuario.
     if pred_real >= 0.01: # Considerar 0.01 como el umbral de ganancia
         if diferencia >= 0:
             st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **aumento** de {delta_percent:,.2f}% (Ganancia total: ${pred_real:,.2f} Billones COP).")
@@ -312,9 +327,10 @@ try:
         st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
 
     st.markdown("---")
-    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
+    
 
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que los CINCO archivos .pkl son correctos.")
+
