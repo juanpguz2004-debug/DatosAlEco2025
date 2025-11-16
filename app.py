@@ -8,6 +8,7 @@ import unicodedata
 # ----------------------------------------------------
 # 0) CONFIGURACIÓN DE PÁGINA
 # ----------------------------------------------------
+# Esto ayuda a evitar algunos problemas de renderizado inicial
 st.set_page_config(
     page_title="Dashboard ALECO", 
     layout="wide"
@@ -33,14 +34,14 @@ def normalize_col(col):
 
 
 # ----------------------------------------------------
-# 2) CARGAR CSV (CORREGIDO: Robustez en ANO_DE_CORTE)
+# 2) CARGAR CSV (CON CORRECCIÓN CRÍTICA)
 # ----------------------------------------------------
 @st.cache_data
 def load_data():
     csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
 
     if not os.path.exists(csv_file):
-        st.error(f"Archivo no encontrado: {csv_file}")
+        st.error(f"No se encontró el archivo: {csv_file}")
         return pd.DataFrame()
 
     try:
@@ -48,6 +49,7 @@ def load_data():
     except Exception as e:
         st.error(f"Error al leer el CSV: {e}")
         return pd.DataFrame()
+
 
     # Normalizar columnas
     df.columns = [normalize_col(c) for c in df.columns]
@@ -62,7 +64,7 @@ def load_data():
 
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
-        st.error(f"Faltan columnas necesarias en el CSV: {missing}")
+        st.error(f"Faltan columnas necesarias: {missing}")
         return pd.DataFrame()
 
     # LIMPIAR columnas numéricas
@@ -106,16 +108,14 @@ def load_model():
     model_file = "model.pkl" 
     
     if not os.path.exists(model_file):
-        st.error(f"Archivo de modelo no encontrado: {model_file}")
+        st.error(f"No se encontró el archivo del modelo: {model_file}")
         return None
 
     try:
-        model = joblib.load(model_file)
-        return model
+        return joblib.load(model_file)
     except Exception as e:
         st.error(f"Error al cargar {model_file}: {e}")
         return None
-
 
 # ----------------------------------------------------
 # --- INICIO DE LA APLICACIÓN ---
@@ -136,21 +136,18 @@ if df.empty or model is None:
     st.warning("La aplicación no puede iniciar. Revisa los archivos (CSV y model.pkl) y los errores anteriores.")
     st.stop()
 
+
 # ----------------------------------------------------
-# 4) FILTROS DEL DASHBOARD
+# 4) DASHBOARD PRINCIPAL (FILTROS)
 # ----------------------------------------------------
 st.markdown("Explora las empresas y predice **GANANCIA_PERDIDA** usando el modelo XGBoost entrenado.")
 
 col1, col2 = st.columns(2)
 with col1:
-    # Usar .unique() sobre el df ya cargado y filtrado por año
-    sector_options = ["Todos"] + df["MACROSECTOR"].unique().tolist()
-    sector = st.selectbox("Filtrar por Macrosector", sector_options)
+    sector = st.selectbox("Filtrar por Macrosector", ["Todos"] + df["MACROSECTOR"].unique().tolist())
 with col2:
-    region_options = ["Todos"] + df["REGION"].unique().tolist()
-    region = st.selectbox("Filtrar por Región", region_options)
+    region = st.selectbox("Filtrar por Región", ["Todos"] + df["REGION"].unique().tolist())
 
-# Aplicar filtros
 df_filtrado = df.copy()
 if sector != "Todos":
     df_filtrado = df_filtrado[df_filtrado["MACROSECTOR"] == sector]
@@ -162,7 +159,7 @@ st.dataframe(df_filtrado.head(30))
 
 
 # ----------------------------------------------------
-# 5) KPIs AGREGADOS
+# 5) KPIs SEGUROS
 # ----------------------------------------------------
 st.subheader("📊 KPIs agregados")
 
@@ -175,10 +172,10 @@ else:
         except:
             return np.nan
 
-    for col in ["INGRESOS_OPERACIONALES", "TOTAL_PATRIMONIO"]:
+    for col in ["INGRESOS_OPERACIONALES","TOTAL_ACTIVOS","TOTAL_PASIVOS","TOTAL_PATRIMONIO"]:
         df_filtrado[col] = df_filtrado[col].apply(safe_float)
 
-    ingresos_total = df_filtrado["INGRESES_OPERACIONALES"].sum()
+    ingresos_total = df_filtrado["INGRESOS_OPERACIONALES"].sum()
     patrimonio_prom = df_filtrado["TOTAL_PATRIMONIO"].mean()
 
     col_kpi1, col_kpi2 = st.columns(2)
@@ -189,7 +186,7 @@ else:
 
 
 # ----------------------------------------------------
-# 6) PREDICCIÓN CON COMPARACIÓN
+# 6) PREDICCIÓN CON COMPARACIÓN (CON DOS SELECTORES)
 # ----------------------------------------------------
 st.subheader("🔮 Predicción de Ganancia/Pérdida")
 
@@ -197,15 +194,16 @@ if df_filtrado.empty:
     st.warning("No hay empresas con ese filtro para realizar predicciones.")
     st.stop()
 
-# 1. Determinar el año base (¡Esto ahora SÍ funcionará!)
+# 1. Determinar el año base (¡Esto ahora SÍ funcionará gracias al FIX en load_data!)
 ano_corte_mas_reciente = df_filtrado["ANO_DE_CORTE"].max()
-# (La comprobación de <= 2000 ya no es necesaria aquí, porque load_data() ya lo hizo)
 
 # --- SELECTORES: Año y Empresa ---
 col_sel_year, col_sel_company = st.columns(2)
 
 with col_sel_year:
+    # MEJORA: Lista desplegable de Años
     pred_years = [2026, 2027, 2028, 2029, 2030]
+    # Solo mostrar años futuros al año más reciente
     años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente]
     
     if not años_futuros:
@@ -226,6 +224,7 @@ if not empresas_disponibles:
     st.stop()
 
 with col_sel_company:
+    # MEJORA: Lista desplegable de Empresa
     empresa_seleccionada = st.selectbox(
         "Selecciona la Empresa para predecir",
         empresas_disponibles
@@ -260,22 +259,18 @@ try:
         'INGRESOS_OPERACIONALES','TOTAL_ACTIVOS','TOTAL_PASIVOS',
         'TOTAL_PATRIMONIO','ANO_DE_CORTE'
     ]
-    # Asegurarse de que solo estas columnas estén y en este orden
     row = row[FEATURE_ORDER]
 
     # Convertir a códigos categóricos/numéricos
     row_prediccion = row.copy()
     for col in row_prediccion.columns:
         if row_prediccion[col].dtype == 'object':
-            # Si es categórica (texto)
             row_prediccion[col] = row_prediccion[col].astype("category").cat.codes
         else:
-            # Si ya es numérica (NIT, Ingresos, etc.)
             try:
                 row_prediccion[col] = pd.to_numeric(row_prediccion[col], errors='raise')
             except:
-                # Fallback por si algo se coló
-                row_prediccion[col] = 0
+                row_prediccion[col] = 0 # Fallback
 
     # 4. Realizar Predicción
     pred = model.predict(row_prediccion)[0]
