@@ -336,4 +336,19 @@ try:
         if ganancia_anterior > 0 and diferencia >= 0:
             st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **AUMENTO** en la magnitud de la ganancia (Resultado: ${pred_real:,.2f} Billones COP).")
         elif ganancia_anterior < 0:
-            st.success(f"🚀 El modelo predice una **RECUPERACIÓN TOTAL** al pasar de pérdida a **GANANCIA** (Resultado: ${pred_real:,.2f} Billones COP).
+            # Línea Corregida con el } final
+            st.success(f"🚀 El modelo predice una **RECUPERACIÓN TOTAL** al pasar de pérdida a **GANANCIA** (Resultado: ${pred_real:,.2f} Billones COP).")
+        elif ganancia_anterior == 0:
+            st.success(f"📈 El modelo predice que la empresa pasa a **GANANCIA** desde equilibrio (Resultado: ${pred_real:,.2f} Billones COP).")
+        else: # pred_real >= 0.01 and diferencia < 0 (Ganancia a Ganancia, pero menor)
+            st.warning(f"⚠️ El modelo clasifica la operación como **GANANCIA**, pero predice una **REDUCCIÓN** en su magnitud (Resultado: ${pred_real:,.2f} Billones COP).")
+
+    elif pred_real < -0.01: 
+        # Predicción: PÉRDIDA
+        st.error(f"📉 El modelo clasifica la operación como **PÉRDIDA** neta (Resultado: **${abs(pred_real):,.2f} Billones COP**).")
+    else:
+        # Predicción: CERO (Equilibrio)
+        st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
+
+    st.markdown("---")
+    
