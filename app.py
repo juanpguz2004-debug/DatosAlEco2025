@@ -17,14 +17,12 @@ st.set_page_config(
 TARGET_COL = 'GANANCIA_PERDIDA'
 OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR', 'ANO_DE_CORTE'] 
 LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU'] 
-# Nuevas constantes para la proyección de features (deben coincidir con el entrenamiento)
 COLS_TO_PROJECT = ['INGRESOS_OPERACIONALES','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO']
 
 # Función de formato de año (CRÍTICO: debe ser la misma que en el entrenamiento)
 def format_ano(year):
     year_str = str(year)
     if len(year_str) == 4:
-        # Esto maneja el formato de entrenamiento X,XXX (e.g., 2,024)
         return f'{year_str[0]},{year_str[1:]}' 
     return year_str
 
@@ -56,8 +54,8 @@ def load_data():
                 .str.replace("−","-",regex=False).str.replace("(","",regex=False)
                 .str.replace(")","",regex=False)
             )
-            df[col] = df[col].str.replace('.', '', regex=False) # Elimina puntos de miles
-            df[col] = df[col].str.replace(',', '.', regex=False) # Reemplaza coma decimal por punto
+            df[col] = df[col].str.replace('.', '', regex=False) 
+            df[col] = df[col].str.replace(',', '.', regex=False) 
 
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
@@ -76,18 +74,17 @@ def load_data():
         return pd.DataFrame()
 
 # ----------------------------------------------------
-# 2) CARGAR SIETE ACTIVOS DEL MODELO (CRÍTICO: AHORA SON 7)
+# 2) CARGAR SIETE ACTIVOS DEL MODELO
 # ----------------------------------------------------
 @st.cache_resource
 def load_assets():
-    # Nombres de los SIETE archivos
     cls_file = "model_clasificacion.pkl"
     reg_gan_file = "model_reg_ganancia.pkl"
     reg_per_file = "model_reg_perdida.pkl" 
     features_file = "model_features.pkl"
     encoders_file = "label_encoders.pkl"
-    growth_file = "growth_rate.pkl"      # <--- NUEVO
-    base_year_file = "base_year.pkl"     # <--- NUEVO
+    growth_file = "growth_rate.pkl"      
+    base_year_file = "base_year.pkl"     
     
     files_list = [cls_file, reg_gan_file, reg_per_file, features_file, encoders_file, growth_file, base_year_file]
     
@@ -101,9 +98,8 @@ def load_assets():
         model_reg_per = joblib.load(reg_per_file)
         model_features = joblib.load(features_file)
         label_encoders = joblib.load(encoders_file)
-        # Cargar las constantes de proyección
-        AGR = joblib.load(growth_file)              # <--- CARGADO
-        ANO_CORTE_BASE_GLOBAL = joblib.load(base_year_file) # <--- CARGADO
+        AGR = joblib.load(growth_file)              
+        ANO_CORTE_BASE_GLOBAL = joblib.load(base_year_file) 
         
         return model_cls, model_reg_gan, model_reg_per, model_features, label_encoders, AGR, ANO_CORTE_BASE_GLOBAL
     except Exception as e:
@@ -115,7 +111,6 @@ def load_assets():
 # --- INICIO DE LA APLICACIÓN ---
 # ----------------------------------------------------
 
-# Cargamos los 7 activos
 df = load_data()
 model_cls, model_reg_gan, model_reg_per, MODEL_FEATURE_NAMES, label_encoders, AGR, ANO_CORTE_BASE_GLOBAL = load_assets()
 
@@ -178,7 +173,7 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (CORREGIDO)
+# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS Y PROYECCIÓN (FIXED)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -223,31 +218,31 @@ try:
     ganancia_anterior = ganancia_anterior / 100.0 
     
     # --- 1. PRE-PROCESAMIENTO, PROYECCIÓN Y CODIFICACIÓN ---
-    # Convertir a Serie para manipular y proyectar
     row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').iloc[0].copy() 
     row_prediccion = row_prediccion.drop(labels=['NIT', 'RAZON_SOCIAL'], errors='ignore')
-    
-    # CRÍTICO: Proyección de Features Numéricos (Esto genera la variación)
+
+    # A. Asegurar tipo numérico y Proyección de Features Numéricos (FIX CRÍTICO)
     delta_anos_prediccion = ano_prediccion - ano_corte_empresa
     if delta_anos_prediccion > 0:
         for col in COLS_TO_PROJECT:
-            # Fórmula de Proyección: Valor_Futuro = Valor_Actual * (AGR ^ DELTA_ANOS)
+            # FIX: Asegurar que el feature es numérico para la multiplicación
+            row_prediccion[col] = pd.to_numeric(row_prediccion[col], errors='coerce', downcast='float')
+            # Proyección
             row_prediccion[col] = row_prediccion[col] * (AGR ** delta_anos_prediccion)
-    
-    # Seteamos el Año de Predicción y aplicamos formato OHE
+            
+    # B. Seteamos el Año de Predicción y aplicamos formato OHE
     row_prediccion["ANO_DE_CORTE"] = ano_prediccion 
     row_prediccion['ANO_DE_CORTE'] = format_ano(row_prediccion['ANO_DE_CORTE'])
     
-    # Aplicar Label Encoding (LE)
+    # C. Aplicar Label Encoding (LE)
     for col in LE_COLS:
         try:
             encoder = label_encoders[col]
-            # Usar [str(row_prediccion[col])] para transformar el valor único de la Serie
             row_prediccion[col] = encoder.transform([str(row_prediccion[col])])[0]
         except ValueError:
              row_prediccion[col] = -1 # Valor desconocido
     
-    # Aplicar One-Hot Encoding (OHE) y Alineación
+    # D. Aplicar One-Hot Encoding (OHE) y Alineación
     row_prediccion_df = row_prediccion.to_frame().T
     for col in OHE_COLS:
         row_prediccion_df[col] = row_prediccion_df[col].astype(str)
@@ -261,6 +256,7 @@ try:
     for c in missing_cols:
         row_prediccion_ohe[c] = 0 
     
+    # FIX: La alineación debe ocurrir antes de la preparación final del DF
     X_pred = row_prediccion_ohe[MODEL_FEATURE_NAMES].copy()
     X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0)
     
@@ -287,7 +283,6 @@ try:
     delta_metric_value = diferencia 
 
     # --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
-    # (Mantenemos la lógica robusta del delta)
     if ganancia_anterior == 0:
         if pred_real > 0:
             delta_display = f"Ganó ${pred_real:,.2f} vs 0"
