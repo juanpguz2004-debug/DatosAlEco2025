@@ -198,7 +198,26 @@ try:
     st.info(f"Predicción para **{ano_prediccion}**, comparando contra la última fecha de corte registrada de la empresa: **{ano_corte_empresa}**.")
 
     row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
-    ganancia_anterior = row_data[TARGET_COL].iloc[0]
+    # Sección 5: PREDICCIÓN CON COMPARACIÓN (LÓGICA FINAL Y ROBUSTA)
+
+# ... (código de predicción y diferencia) ...
+ganancia_anterior = row_data[TARGET_COL].iloc[0] # <--- DATO REAL ORIGINAL
+
+# 🚨 APLICAR EL FIX DE ESCALA AQUÍ 🚨
+# Si la carga del CSV tiene un problema de escala donde el dato se multiplicó por 100,
+# lo corregimos justo al extraerlo, antes de usarlo en el cálculo de delta.
+
+# Si 1493.00 es realmente 14.93, divide por 100:
+# ganancia_anterior = ganancia_anterior / 100.0 
+
+# ... (cálculo de delta) ...
+
+with col_res2:
+    st.metric(
+        label=f"G/P Real (Última fecha de corte registrada) (Billones COP)", 
+        value=f"${ganancia_anterior:,.2f}", # <--- Aquí se muestra el valor formateado
+        delta_color="off"
+    )
     
     # --- PRE-PROCESAMIENTO IDÉNTICO AL ENTRENAMIENTO ---
     row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').copy()
@@ -280,3 +299,4 @@ try:
 except Exception as e:
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
+
