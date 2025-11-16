@@ -10,7 +10,7 @@ from sklearn.preprocessing import LabelEncoder
 # 0) CONFIGURACIÓN INICIAL Y CONSTANTES
 # ----------------------------------------------------
 st.set_page_config(
-    page_title="Dashboard ALECO", 
+    page_title="📊 Dashboard ALECO", 
     layout="wide"
 )
 
@@ -74,25 +74,35 @@ def load_data():
         return pd.DataFrame()
 
 # ----------------------------------------------------
-# 2) CARGAR MODELO Y REFERENCIAS (CRÍTICO)
+# 2) CARGAR TRES MODELOS Y REFERENCIAS (CRÍTICO)
 # ----------------------------------------------------
 @st.cache_resource
 def load_assets():
-    model_file = "model_corregido.pkl" 
+    # Nombres de los archivos
+    cls_file = "model_clasificacion.pkl"
+    reg_gan_file = "model_reg_ganancia.pkl"
+    reg_per_file = "model_reg_perdida.pkl" 
     features_file = "model_features.pkl"
     encoders_file = "label_encoders.pkl"
     
-    if not (os.path.exists(model_file) and os.path.exists(features_file) and os.path.exists(encoders_file)):
-        return None, None, None
+    files_exist = (os.path.exists(cls_file) and os.path.exists(reg_gan_file) and 
+                   os.path.exists(reg_per_file) and os.path.exists(features_file) and 
+                   os.path.exists(encoders_file))
+
+    if not files_exist:
+        return None, None, None, None, None
 
     try:
-        model = joblib.load(model_file)
+        model_cls = joblib.load(cls_file)
+        model_reg_gan = joblib.load(reg_gan_file)
+        model_reg_per = joblib.load(reg_per_file)
         model_features = joblib.load(features_file)
         label_encoders = joblib.load(encoders_file)
-        return model, model_features, label_encoders
+        
+        return model_cls, model_reg_gan, model_reg_per, model_features, label_encoders
     except Exception as e:
         st.error(f"❌ ERROR al cargar activos: {e}")
-        return None, None, None
+        return None, None, None, None, None
 
 
 # ----------------------------------------------------
@@ -100,22 +110,22 @@ def load_assets():
 # ----------------------------------------------------
 
 df = load_data()
-model, MODEL_FEATURE_NAMES, label_encoders = load_assets()
+model_cls, model_reg_gan, model_reg_per, MODEL_FEATURE_NAMES, label_encoders = load_assets()
 
 
 if df.empty:
     st.error("❌ ERROR FATAL: No se encontraron datos válidos en el CSV.")
     st.stop()
     
-if model is None or MODEL_FEATURE_NAMES is None or label_encoders is None:
-    st.error("❌ ERROR FATAL: No se pudieron cargar el modelo o las referencias. Verifica los archivos .pkl.")
+if None in [model_cls, model_reg_gan, model_reg_per, MODEL_FEATURE_NAMES, label_encoders]:
+    st.error("❌ ERROR FATAL: No se pudieron cargar los TRES modelos o las referencias. Verifica los archivos .pkl.")
     st.stop()
 
 # --- Encabezado ---
-st.title("📊 Dashboard ALECO: Final")
+st.title("📊 Dashboard ALECO: Modelo de Dos Partes")
 st.markdown("""
-**Reporte de las diez mil empresas más grandes del país.**
-Todas las cifras en este reporte se muestran en **Billones de Pesos**.
+**Predicción de Ganancia/Pérdida (incluyendo pérdidas reales) usando Modelado de Dos Partes.**
+Todas las cifras se muestran en **Billones de Pesos**.
 """)
 st.markdown("---") 
 
@@ -161,7 +171,7 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 5) PREDICCIÓN CON COMPARACIÓN (LÓGICA FINAL Y ROBUSTA)
+# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -185,7 +195,7 @@ with col_sel_year:
         st.warning(f"El año de corte base es {ano_corte_mas_reciente_global}.")
         st.stop()
     ano_prediccion = st.selectbox(
-        "Selecciona el Año de Predicción (2026 por defecto)", años_futuros, index=0 
+        "Selecciona el Año de Predicción", años_futuros, index=0 
     )
 
 
@@ -204,47 +214,66 @@ try:
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     
     # --- PARCHE DE CORRECCIÓN DE ESCALA (ACTIVO) ---
-    # Divide por 100 para corregir el error de $1,493.00 a $14.93,
-    # causado probablemente por una mala lectura del formato decimal/miles en el CSV.
+    # Divide por 100 para corregir el error de $1,493.00 a $14.93
     ganancia_anterior = ganancia_anterior / 100.0 
     
-    # --- PRE-PROCESAMIENTO IDÉNTICO AL ENTRENAMIENTO ---
+    # --- 1. PRE-PROCESAMIENTO PARA LOS TRES MODELOS ---
     row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').copy()
     row_prediccion = row_prediccion.drop(columns=['NIT', 'RAZON_SOCIAL'], errors='ignore')
     row_prediccion["ANO_DE_CORTE"] = ano_prediccion
     
-    # 1. Aplicar Label Encoding (Usando los encoders cargados)
+    # Aplicar Label Encoding (Usando los encoders cargados)
     for col in LE_COLS:
         try:
             encoder = label_encoders[col]
             row_prediccion[col] = encoder.transform(row_prediccion[col].astype(str))[0]
             row_prediccion[col] = int(row_prediccion[col]) 
         except ValueError:
+             # Asignar 0 o el valor más común si es un valor no visto
              row_prediccion[col] = 0 
     
-    # 2. FIX CRÍTICO: Formato de Año para OHE (Asegura la coincidencia de nombre de columna)
+    # FIX CRÍTICO: Formato de Año para OHE
     row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
 
-    # 3. Aplicar One-Hot Encoding
+    # Aplicar One-Hot Encoding
     row_prediccion = pd.get_dummies(
         row_prediccion, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
     )
     
-    # 4. Alinear y ordenar las columnas (CRÍTICO)
+    # Alinear y ordenar las columnas (CRÍTICO)
     missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion.columns)
     for c in missing_cols:
         row_prediccion[c] = 0 
     
-    row_prediccion = row_prediccion[MODEL_FEATURE_NAMES].copy()
+    X_pred = row_prediccion[MODEL_FEATURE_NAMES].copy()
     
-    # 5. Conversión final a numérico (prevención de errores de dtype)
-    row_prediccion = row_prediccion.apply(pd.to_numeric, errors='coerce').fillna(0)
+    # Conversión final a numérico
+    X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0)
     
-    # --- PREDICCIÓN Y REVERSIÓN ---
-    pred_log = model.predict(row_prediccion)[0]
-    pred_real = np.expm1(pred_log) # Reversión np.log1p(x) -> e^x - 1
     
-    # --- MOSTRAR RESULTADOS ---
+    # --- 2. LÓGICA DE PREDICCIÓN CONDICIONAL ---
+    
+    # Paso A: Clasificar (0 = Pérdida/Cero, 1 = Ganancia)
+    pred_cls = model_cls.predict(X_pred)[0]
+    
+    pred_log = 0.0
+    
+    if pred_cls == 1:
+        # Ganancia: Usar Modelo de Regresión de Ganancias
+        pred_log = model_reg_gan.predict(X_pred)[0]
+        # Reversión: e^x - 1
+        pred_real = np.expm1(pred_log) 
+        
+    else:
+        # Pérdida/Cero: Usar Modelo de Regresión de Pérdidas
+        pred_log = model_reg_per.predict(X_pred)[0]
+        # Reversión: e^x - 1 (nos da la magnitud positiva de la pérdida)
+        magnitud_perdida_real = np.expm1(pred_log)
+        # CRÍTICO: Convertir la magnitud a valor negativo (pérdida)
+        pred_real = -magnitud_perdida_real
+        
+    
+    # --- 3. MOSTRAR RESULTADOS ---
     diferencia = pred_real - ganancia_anterior
     
     delta_percent = 0.0
@@ -272,13 +301,15 @@ try:
         
     # Mensaje condicional
     st.markdown("---") 
-    if pred_real >= 0:
+    if pred_real >= 0.01: # Considerar 0.01 como el umbral de ganancia
         if diferencia >= 0:
-            st.success(f"📈 Se predice un **aumento** de la ganancia del {delta_percent:,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred_real:,.2f} Billones COP).")
+            st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **aumento** de {delta_percent:,.2f}% (Ganancia total: ${pred_real:,.2f} Billones COP).")
         else:
-            st.warning(f"⚠️ Se predice una **reducción** en la ganancia del {abs(delta_percent):,.2f}% respecto al año {ano_corte_empresa} (Ganancia total: ${pred_real:,.2f} Billones COP).")
+            st.warning(f"⚠️ El modelo clasifica la operación como **GANANCIA**, pero predice una **reducción** en la magnitud de la ganancia (Ganancia total: ${pred_real:,.2f} Billones COP).")
+    elif pred_real < -0.01: # Considerar -0.01 como el umbral de pérdida
+        st.error(f"📉 El modelo clasifica la operación como **PÉRDIDA** neta. Se predice una pérdida de **${abs(pred_real):,.2f} Billones COP** para {ano_prediccion}.")
     else:
-        st.error(f"📉 Se predice una **pérdida** neta para {ano_prediccion} (Pérdida total: ${pred_real:,.2f} Billones COP).")
+        st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
 
     st.markdown("---")
     st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
@@ -286,4 +317,4 @@ try:
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
-    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que el modelo es compatible con la estructura de la fila.")
+    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que los CINCO archivos .pkl son correctos.")
