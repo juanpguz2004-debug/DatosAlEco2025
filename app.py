@@ -217,7 +217,6 @@ try:
     ganancia_anterior = ganancia_anterior / 100.0 # Parche de escala
     
     # Inicializar la base para la recursividad
-    # Aseguramos que los features a proyectar sean float desde el inicio.
     row_current_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0].copy() 
     for col in COLS_TO_PROJECT:
          row_current_base[col] = pd.to_numeric(row_current_base[col], errors='coerce').astype(float)
@@ -231,15 +230,15 @@ try:
         
         # A. Proyección de Features Numéricos (Recursiva: Valor Anterior * AGR)
         for col in COLS_TO_PROJECT:
-            # Multiplicamos el valor del año anterior (almacenado en row_current_base) por AGR
             row_current_base[col] = row_current_base[col] * AGR
             
         # B. Codificación (LE y OHE) para el año actual
-        row_prediccion = row_current_base.copy() # Copia de los features proyectados
+        row_prediccion = row_current_base.copy() 
         
-        # CRÍTICO: Actualizar el feature del año para el OHE
+        # CRÍTICO: Actualizar el feature del año y darle el formato correcto
         row_prediccion["ANO_DE_CORTE"] = ano_actual
-        row_prediccion['ANO_DE_CORTE'] = format_ano(row_prediccion['ANO_DE_CORTE'])
+        ano_ohe_value = format_ano(row_prediccion['ANO_DE_CORTE'])
+        row_prediccion['ANO_DE_CORTE'] = ano_ohe_value
         
         # Aplicar Label Encoding (LE)
         for col in LE_COLS:
@@ -249,39 +248,47 @@ try:
             except ValueError:
                  row_prediccion[col] = -1 
         
-        # Aplicar One-Hot Encoding (OHE) y Alineación
+        # Aplicar One-Hot Encoding (OHE)
         row_prediccion_df = row_prediccion.to_frame().T
-        for col in OHE_COLS:
+        # Excluimos ANO_DE_CORTE de OHE para forzar la creación manual más tarde
+        ohe_cols_temp = [c for c in OHE_COLS if c != 'ANO_DE_CORTE'] 
+        for col in ohe_cols_temp:
             row_prediccion_df[col] = row_prediccion_df[col].astype(str)
 
         row_prediccion_ohe = pd.get_dummies(
-            row_prediccion_df, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
+            row_prediccion_df.drop(columns=['ANO_DE_CORTE']), # Se quita el año
+            columns=ohe_cols_temp, prefix=ohe_cols_temp, drop_first=True, dtype=int
         )
         
-        # Alinear y ordenar las columnas (CRÍTICO)
-        missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion_ohe.columns)
-        for c in missing_cols:
-            row_prediccion_ohe[c] = 0 
+        # C. ALINEACIÓN Y CREACIÓN MANUAL DEL FEATURE OHE DEL AÑO (FIX CRÍTICO)
         
-        # Preparación final del DataFrame de predicción para el modelo
-        X_pred = row_prediccion_ohe[MODEL_FEATURE_NAMES].copy()
-        X_pred = X_pred.astype(float).fillna(0)
-        # ... después de X_pred = X_pred.astype(float).fillna(0)
-
-        # DEBUG: Verificar el valor de la columna OHE del año actual
-        col_ohe_name = f'ANO_DE_CORTE_{format_ano(ano_actual)}'
-
-        # Esta verificación es la clave:
+        # 1. Asegurar todas las columnas necesarias (incluyendo el año) existen y son 0
+        X_pred = pd.DataFrame(0, index=[0], columns=MODEL_FEATURE_NAMES)
+        
+        # 2. Inyectar las columnas OHE no-año que se calcularon
+        for col in row_prediccion_ohe.columns:
+            if col in X_pred.columns:
+                 X_pred[col] = row_prediccion_ohe[col].iloc[0]
+                 
+        # 3. Inyectar los features numéricos y LE
+        for col in row_current_base.index:
+            if col in X_pred.columns:
+                 X_pred[col] = row_current_base[col]
+                 
+        # 4. Inyectar el feature OHE del año manualmente
+        col_ohe_name = f'ANO_DE_CORTE_{ano_ohe_value}'
         if col_ohe_name in X_pred.columns:
-            st.write(f"DEBUG: Año {ano_actual} | Valor del Feature OHE '{col_ohe_name}': {X_pred[col_ohe_name].iloc[0]}")
+            X_pred[col_ohe_name] = 1 # ¡Este es el FIX!
+            st.write(f"DEBUG: ✅ Año {ano_actual} | Valor del Feature OHE '{col_ohe_name}': {X_pred[col_ohe_name].iloc[0]}")
         else:
-            st.write(f"DEBUG: ¡Alerta! Columna OHE esperada '{col_ohe_name}' NO ENCONTRADA en X_pred.")
+            # Esta alerta indica que el nombre del feature de la columna de entrenamiento es incorrecto.
+            st.write(f"DEBUG: ❌ ¡Alerta FATAL! Columna OHE esperada '{col_ohe_name}' NO EXISTE en MODEL_FEATURE_NAMES.")
+            
+        # Finalizar la preparación
+        X_pred = X_pred.astype(float).fillna(0)
         
-        # ... luego sigue la lógica de predicción
-        # pred_cls = model_cls.predict(X_pred)[0]
-        # ...
         
-        # C. Lógica de Predicción Condicional
+        # D. Lógica de Predicción Condicional
         pred_cls = model_cls.predict(X_pred)[0]
         
         if pred_cls == 1:
@@ -292,12 +299,10 @@ try:
             magnitud_perdida_real = np.expm1(pred_log)
             pred_g_p_actual = -magnitud_perdida_real
             
-        # D. ALMACENAMIENTO: El resultado final es el que se muestra al usuario
+        # E. ALMACENAMIENTO
         if ano_actual == ano_prediccion_final:
             pred_real_final = pred_g_p_actual
             
-        # Nota: row_current_base ya contiene los valores proyectados para el año actual y es la base para la siguiente iteración.
-        
     
     # --- 3. MOSTRAR RESULTADOS (Usando pred_real_final) ---
     diferencia = pred_real_final - ganancia_anterior
@@ -371,5 +376,3 @@ try:
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
     st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que todos los SIETE archivos .pkl son correctos.")
-
-
