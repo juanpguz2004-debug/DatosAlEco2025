@@ -4,3 +4,5 @@ joblib
 altair
 xgboost
 gpt4all
+numpy
+scikit-learn
