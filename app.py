@@ -14,16 +14,19 @@ st.set_page_config(
     layout="wide"
 )
 
+# Constantes de columnas
 TARGET_COL = 'GANANCIA_PERDIDA'
 OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR', 'ANO_DE_CORTE'] 
 LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU'] 
-# NUEVA CONSTANTE: Columnas financieras a proyectar
+# Columnas financieras que se proyectarán usando AGR
 COLS_TO_PROJECT = ['INGRESOS_OPERACIONALES','TOTAL_ACTIVOS','TOTAL_PASIVOS','TOTAL_PATRIMONIO']
 
 # Función de formato de año (CRÍTICO: debe ser la misma que en el entrenamiento)
+# Convierte 2024 -> '2,024'
 def format_ano(year):
     year_str = str(year)
     if len(year_str) == 4:
+        # Asegura que siempre tenga el formato 2,XXX
         return f'{year_str[0]},{year_str[1:]}' 
     return year_str
 
@@ -34,11 +37,11 @@ def normalize_col(col):
 
 
 # ----------------------------------------------------
-# 1) CARGAR CSV Y LIMPIEZA
+# 1) CARGAR CSV Y LIMPIEZA (FIX DE ANO_DE_CORTE)
 # ----------------------------------------------------
 @st.cache_data
 def load_data():
-    csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
+    csv_file = "10.000_Empresas_mas_Grandes_del País_20251115.csv"
     if not os.path.exists(csv_file):
         st.error(f"❌ ERROR: Archivo CSV no encontrado: {csv_file}")
         return pd.DataFrame()
@@ -62,9 +65,11 @@ def load_data():
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
         if 'ANO_DE_CORTE' in df.columns:
+            # FIX: Limpieza robusta del año
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
             df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
-            df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int)
+            # Asegura que sea un entero antes de filtrar
+            df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].round(0).fillna(-1).astype(int)
             
         df = df[df['ANO_DE_CORTE'] > 2000].copy()
         df.dropna(subset=numeric_cols, inplace=True)
@@ -76,27 +81,27 @@ def load_data():
         return pd.DataFrame()
 
 # ----------------------------------------------------
-# 2) CARGAR SIETE MODELOS Y REFERENCIAS (ACTUALIZADO)
+# 2) CARGAR SIETE MODELOS Y REFERENCIAS 
 # ----------------------------------------------------
 @st.cache_resource
 def load_assets():
-    # Nombres de los archivos
+    # Nombres de los 7 archivos
     cls_file = "model_clasificacion.pkl"
     reg_gan_file = "model_reg_ganancia.pkl"
     reg_per_file = "model_reg_perdida.pkl" 
     features_file = "model_features.pkl"
     encoders_file = "label_encoders.pkl"
-    growth_file = "growth_rate.pkl"   # NUEVO
-    base_year_file = "base_year.pkl"  # NUEVO
+    growth_file = "growth_rate.pkl"   
+    base_year_file = "base_year.pkl"  
     
     # Comprobar existencia de 7 archivos
     files_exist = (os.path.exists(cls_file) and os.path.exists(reg_gan_file) and 
                    os.path.exists(reg_per_file) and os.path.exists(features_file) and 
                    os.path.exists(encoders_file) and os.path.exists(growth_file) and
-                   os.path.exists(base_year_file)) # Verificación de 7 archivos
+                   os.path.exists(base_year_file)) 
 
     if not files_exist:
-        # Devolver 7 None
+        st.error("❌ Error: Faltan archivos .pkl del modelo. Asegúrate de que los 7 archivos estén en la misma carpeta.")
         return None, None, None, None, None, None, None
 
     try:
@@ -106,15 +111,13 @@ def load_assets():
         model_features = joblib.load(features_file)
         label_encoders = joblib.load(encoders_file)
         
-        # Cargar las nuevas constantes de proyección
+        # Cargar las constantes de proyección
         AGR = joblib.load(growth_file)
         BASE_YEAR = joblib.load(base_year_file)
         
-        # Devolver 7 objetos
         return model_cls, model_reg_gan, model_reg_per, model_features, label_encoders, AGR, BASE_YEAR
     except Exception as e:
         st.error(f"❌ ERROR al cargar activos: {e}")
-        # Devolver 7 None
         return None, None, None, None, None, None, None
 
 
@@ -129,8 +132,8 @@ loaded_assets = load_assets()
 if loaded_assets and all(asset is not None for asset in loaded_assets):
     model_cls, model_reg_gan, model_reg_per, MODEL_FEATURE_NAMES, label_encoders, AGR, BASE_YEAR = loaded_assets
 else:
-    # Si loaded_assets es None o si hay un None dentro de la tupla
-    if not df.empty:
+    # Si la carga falló (y no es solo por CSV vacío)
+    if not df.empty and None in loaded_assets:
         st.error("❌ ERROR FATAL: No se pudieron cargar los 7 activos del modelo. Verifica los archivos .pkl.")
     st.stop()
 
@@ -185,7 +188,7 @@ with col_kpi2:
 
 
 # ----------------------------------------------------
-# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS (ACTUALIZADO)
+# 5) PREDICCIÓN CON LÓGICA DE TRES MODELOS (CRÍTICO)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -204,9 +207,10 @@ with col_sel_company:
 
 with col_sel_year:
     pred_years = [2026, 2027, 2028, 2029, 2030]
+    # Filtra años para que solo muestre el futuro
     años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente_global]
     if not años_futuros:
-        st.warning(f"El año de corte base es {ano_corte_mas_reciente_global}.")
+        st.warning(f"El año de corte base ({ano_corte_mas_reciente_global}) es demasiado alto para predecir.")
         st.stop()
     ano_prediccion = st.selectbox(
         "Selecciona el Año de Predicción", años_futuros, index=0 
@@ -233,46 +237,52 @@ try:
     row_prediccion = row_data.drop(columns=[TARGET_COL], errors='ignore').copy()
     row_prediccion = row_prediccion.drop(columns=['NIT', 'RAZON_SOCIAL'], errors='ignore')
 
-    # 1. Proyectar variables financieras al Año Base Global (igual que en el entrenamiento)
+    # A. DESPROYECTAR: Llevar los valores financieros al Año Base Global (ej: 2024 -> 2018)
     delta_anos_actual = ano_corte_empresa - BASE_YEAR
     if delta_anos_actual > 0:
         for col in COLS_TO_PROJECT:
             # Fórmula inversa: Valor_Base = Valor_Actual / (AGR ^ delta_años)
             row_prediccion[col] = row_prediccion[col] / (AGR ** delta_anos_actual)
 
-    # 2. Proyectar *desde* el Año Base Global *hasta* el Año de Predicción
+    # B. PROYECTAR: Proyectar *desde* el Año Base Global *hasta* el Año de Predicción (ej: 2018 -> 2027)
     delta_anos_prediccion = ano_prediccion - BASE_YEAR
     if delta_anos_prediccion > 0:
         for col in COLS_TO_PROJECT:
             # Fórmula: Valor_Proyectado = Valor_Base * (AGR ^ delta_años_prediccion)
             row_prediccion[col] = row_prediccion[col] * (AGR ** delta_anos_prediccion)
 
-    # Establecer el año de predicción (CRÍTICO para el OHE de ANO_DE_CORTE)
+    # C. Establecer el año de predicción (CRÍTICO para el OHE de ANO_DE_CORTE)
     row_prediccion["ANO_DE_CORTE"] = ano_prediccion
     
     # Aplicar Label Encoding (Usando los encoders cargados)
     for col in LE_COLS:
         try:
             encoder = label_encoders[col]
+            # Asegura que el valor sea string para el transform
             row_prediccion[col] = encoder.transform(row_prediccion[col].astype(str))[0]
             row_prediccion[col] = int(row_prediccion[col]) 
         except ValueError:
+             # Si el valor no está en el encoder, se asigna 0 (desconocido)
              row_prediccion[col] = 0 
     
-    # FIX CRÍTICO: Formato de Año para OHE
+    # D. FIX CRÍTICO: Formato de Año para OHE (Ej: 2026 -> '2,026')
     row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
-
+    
+    # Convertir la fila en un DataFrame para el One-Hot Encoding
+    row_prediccion_df = pd.DataFrame([row_prediccion.iloc[0]])
+    
     # Aplicar One-Hot Encoding
-    row_prediccion = pd.get_dummies(
-        row_prediccion, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
+    row_prediccion_ohe = pd.get_dummies(
+        row_prediccion_df, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
     )
     
-    # Alinear y ordenar las columnas (CRÍTICO)
-    missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion.columns)
+    # E. Alinear y ordenar las columnas (CRÍTICO)
+    missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion_ohe.columns)
     for c in missing_cols:
-        row_prediccion[c] = 0 
+        row_prediccion_ohe[c] = 0 
     
-    X_pred = row_prediccion[MODEL_FEATURE_NAMES].copy()
+    # Asegura que la data de entrada tenga el mismo orden que el entrenamiento
+    X_pred = row_prediccion_ohe[MODEL_FEATURE_NAMES].copy()
     
     # Conversión final a numérico
     X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0)
@@ -305,10 +315,9 @@ try:
 
     # --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
     delta_display = ""
-    delta_metric_value = diferencia # Usaremos la diferencia para el indicador de Streamlit (flecha)
+    delta_metric_value = diferencia 
 
     if ganancia_anterior == 0:
-        # Caso 1: Anterior fue CERO (0).
         if pred_real > 0:
             delta_display = f"Ganó ${pred_real:,.2f} vs 0"
         elif pred_real < 0:
@@ -317,14 +326,11 @@ try:
             delta_display = "Sin cambio vs 0"
 
     elif ganancia_anterior < 0:
-        # Caso 2: Anterior fue una PÉRDIDA (Negativo).
         if pred_real >= 0:
-            # Pasó de Negativo a Positivo/Cero
             delta_abs = pred_real - ganancia_anterior
             delta_display = f"Mejoró ${delta_abs:,.2f} (Cambio Absoluto)"
             
         else:
-            # Siguió en Pérdida
             delta_percent_mag = (diferencia / abs(ganancia_anterior)) * 100
             
             if delta_percent_mag > 0:
@@ -333,7 +339,7 @@ try:
                 delta_display = f"Pérdida PROFUNDIZADA {abs(delta_percent_mag):,.2f}%"
                 
     else:
-        # Caso 3: Anterior fue una GANANCIA (Positivo).
+        # Caso: Ganancia a Ganancia o Ganancia a Pérdida
         delta_percent = (diferencia / ganancia_anterior) * 100
         delta_display = f"{delta_percent:,.2f}% vs {ano_corte_empresa}"
 
@@ -348,7 +354,6 @@ try:
             delta=delta_metric_value, 
             delta_color="normal"
         )
-        # Mostramos el texto formateado en el caption
         st.caption(f"Cambio vs {ano_corte_empresa}: **{delta_display}**") 
 
     with col_res2:
@@ -362,21 +367,18 @@ try:
     st.markdown("---") 
 
     if pred_real >= 0.01: 
-        # Predicción: GANANCIA
         if ganancia_anterior > 0 and diferencia >= 0:
             st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **AUMENTO** en la magnitud de la ganancia (Resultado: ${pred_real:,.2f} Billones COP).")
         elif ganancia_anterior < 0:
             st.success(f"🚀 El modelo predice una **RECUPERACIÓN TOTAL** al pasar de pérdida a **GANANCIA** (Resultado: ${pred_real:,.2f} Billones COP).")
         elif ganancia_anterior == 0:
             st.success(f"📈 El modelo predice que la empresa pasa a **GANANCIA** desde equilibrio (Resultado: ${pred_real:,.2f} Billones COP).")
-        else: # pred_real >= 0.01 and diferencia < 0 (Ganancia a Ganancia, pero menor)
+        else: 
             st.warning(f"⚠️ El modelo clasifica la operación como **GANANCIA**, pero predice una **REDUCCIÓN** en su magnitud (Resultado: ${pred_real:,.2f} Billones COP).")
 
     elif pred_real < -0.01: 
-        # Predicción: PÉRDIDA
         st.error(f"📉 El modelo clasifica la operación como **PÉRDIDA** neta (Resultado: **${abs(pred_real):,.2f} Billones COP**).")
     else:
-        # Predicción: CERO (Equilibrio)
         st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
 
     st.markdown("---")
@@ -385,4 +387,4 @@ try:
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
-    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que los SIETE archivos .pkl son correctos.")
+    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que los SIETE archivos .pkl son correctos y consistentes.")
