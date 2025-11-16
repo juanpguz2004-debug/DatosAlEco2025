@@ -160,10 +160,8 @@ with col_kpi1:
     st.metric(label="Ingresos Operacionales Totales", value=f"${ingresos_total:,.2f}")
 with col_kpi2:
     st.metric(label="Patrimonio Promedio", value=f"${patrimonio_prom:,.2f}")
-
-
 # ----------------------------------------------------
-# 6) PREDICCIÓN CON COMPARACIÓN (LÓGICA POR EMPRESA Y CODIFICACIÓN)
+# 6) PREDICCIÓN CON COMPARACIÓN (LÓGICA FINAL Y ROBUSTA)
 # ----------------------------------------------------
 st.header("3. Predicción de Ganancia/Pérdida")
 
@@ -209,20 +207,16 @@ with col_sel_year:
 
 # 3. Preparar datos para la predicción
 try:
-    # 🟢 LÓGICA CLAVE: Encontrar el año más reciente registrado para *ESTA EMPRESA*
-    
-    # 1. Encontrar la fila original y el año de corte
+    # 🟢 LÓGICA CLAVE: Usar el NIT como identificador
     df_empresa_original = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada]
+    
+    # 1. Encontrar el NIT y el año de corte de la empresa seleccionada
+    nit_empresa = df_empresa_original["NIT"].iloc[0]
     ano_corte_empresa = df_empresa_original["ANO_DE_CORTE"].max()
     
     if ano_corte_empresa <= 2000:
         st.error(f"Error: La empresa '{empresa_seleccionada}' no tiene un año de corte válido.")
         st.stop()
-
-    # 2. Encontrar el código de la RAZON_SOCIAL de esa empresa
-    codigo_razon_social = df_codificado[
-        df_codificado["RAZON_SOCIAL"] == empresa_seleccionada
-    ]["RAZON_SOCIAL"].iloc[0] # El valor ya es el código
 
     st.info(f"Predicción para **{ano_prediccion}**, comparando contra la última fecha de corte registrada de la empresa: **{ano_corte_empresa}**.")
 
@@ -233,13 +227,13 @@ try:
         'TOTAL_PATRIMONIO','ANO_DE_CORTE'
     ]
     
-    # 3. Extraer la fila de datos ya CODIFICADA usando el código y el año más reciente de la empresa
+    # 2. Extraer la fila de datos ya CODIFICADA usando el NIT y el año más reciente de la empresa
     row_data = df_codificado[
-        (df_codificado["RAZON_SOCIAL"] == codigo_razon_social) &
+        (df_codificado["NIT"] == nit_empresa) &
         (df_codificado["ANO_DE_CORTE"] == ano_corte_empresa)
     ].iloc[[0]].copy()
 
-    # 4. Guardar ganancia anterior (usando el DF original que no está codificado)
+    # 3. Guardar ganancia anterior (usando el DF original)
     ganancia_anterior = df_empresa_original[
         df_empresa_original["ANO_DE_CORTE"] == ano_corte_empresa
     ]["GANANCIA_PERDIDA"].iloc[0]
@@ -285,8 +279,5 @@ try:
         st.error(f"📉 Se predice una **pérdida** neta para {ano_prediccion} (Pérdida total: ${pred:,.2f}).")
 
 except Exception as e:
-    st.error(f"❌ ERROR generando la predicción: {e}. Revisa la codificación y la alineación de las características.")
-    # 🚨 DEBUGGING: Si falla, podemos mostrar la fila para ver si la codificación es numérica
-    # st.write("Fila de predicción:", row_prediccion) 
     st.error(f"❌ ERROR generando la predicción: {e}. Revisa la codificación y la alineación de las características.")
 
