@@ -28,10 +28,10 @@ def calculate_antiguedad_y_estado(df_temp):
         COL_FECHA_ACTUALIZACION = 'fecha_de_ultima_actualizacion_de_datos_utc'
         COL_FRECUENCIA = 'informacion_de_datos_frecuencia_de_actualizacion'
 
-        # Convertir fechas (Paso sensible 1)
+        # Convertir fechas 
         df_temp[COL_FECHA_ACTUALIZACION] = pd.to_datetime(df_temp[COL_FECHA_ACTUALIZACION], errors='coerce', utc=True)
         
-        # Calcular Antigüedad (Paso sensible 2)
+        # Calcular Antigüedad 
         hoy = pd.to_datetime(datetime.now().date(), utc=True)
         df_temp['antiguedad_datos_dias'] = (hoy - df_temp[COL_FECHA_ACTUALIZACION]).dt.days
         
@@ -134,47 +134,37 @@ def process_data(df):
         st.error(f"❌ ERROR [Paso Score Riesgo]: Falló el cálculo del score final. Detalle: {e}")
         return pd.DataFrame() 
     
-    # 6. Filtrar Públicos
-    try:
-        VALOR_PUBLICO_REAL = 'public'
-        # Usamos .get para manejar si la columna 'publico' no existe
-        if 'publico' in df.columns:
-            df_publico = df[df['publico'].astype(str).str.lower().str.strip() == VALOR_PUBLICO_REAL.lower().strip()].copy()
-        else:
-            st.warning("⚠️ La columna 'publico' no se encontró. Mostrando todo el DataFrame.")
-            df_publico = df.copy()
-    except Exception as e:
-        st.error(f"❌ ERROR [Paso Filtrado]: Falló el filtrado por columna 'publico'. Detalle: {e}")
-        return pd.DataFrame() 
-
-    return df_publico
+    # --- 6. Filtrar Públicos (ESTE PASO HA SIDO ELIMINADO/MODIFICADO) ---
+    # Ya no se filtra por 'publico'. Se devuelve el DataFrame completo.
+    
+    return df
 
 ## 2. Título y Ejecución Principal
 
-st.title("📊 Dashboard de Priorización de Activos de Datos")
+st.title("📊 Dashboard de Priorización de Activos de Datos (Todos los Activos)")
 
 try:
     with st.spinner(f'Cargando y procesando el archivo: **{ARCHIVO_CSV}**...'):
         # Carga del archivo
         df = pd.read_csv(ARCHIVO_CSV, low_memory=False)
-        df_publico = process_data(df.copy())
+        # Llamamos al DataFrame final 'df_analisis' para diferenciarlo del original
+        df_analisis = process_data(df.copy()) 
         
-    if df_publico.empty:
+    if df_analisis.empty:
         st.error("🛑 Proceso de datos detenido debido a errores previos. Revisa los mensajes de error ❌ para depurar.")
     else:
-        st.success(f'✅ Archivo **{ARCHIVO_CSV}** cargado y procesamiento completado. Mostrando resultados para activos PÚBLICOS.')
-        st.info(f"El procesamiento incluye un modelo ML Isolation Forest para la detección de anomalías.")
-        st.write(f"Total de activos en el inventario: **{len(df)}**")
-        st.write(f"Total de activos de modalidad PÚBLICA analizados: **{len(df_publico)}**")
+        st.success(f'✅ Archivo **{ARCHIVO_CSV}** cargado y procesamiento completado.')
+        st.info(f"Analizando **TODOS** los activos en el inventario, incluyendo aquellos no clasificados como públicos.")
+        st.write(f"Total de activos analizados: **{len(df_analisis)}**")
         
         # --- 3. Métricas y Visualizaciones ---
         
         st.header("🔍 Resultados Clave de Calidad y Prioridad")
         
         col1, col2, col3 = st.columns(3)
-        col1.metric("Completitud Promedio", f"{df_publico['completitud_score'].mean():.2f}%")
-        col2.metric("Activos en Incumplimiento", f"{(df_publico['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_publico)}")
-        col3.metric("Anomalías Detectadas (ML)", f"{(df_publico['anomalia_score'] == -1).sum()}")
+        col1.metric("Completitud Promedio", f"{df_analisis['completitud_score'].mean():.2f}%")
+        col2.metric("Activos en Incumplimiento", f"{(df_analisis['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_analisis)}")
+        col3.metric("Anomalías Detectadas (ML)", f"{(df_analisis['anomalia_score'] == -1).sum()}")
         
         
         # --- Visualización 1: Prioridad de Intervención ---
@@ -184,7 +174,7 @@ try:
             sns.scatterplot(
                 x='antiguedad_datos_dias',
                 y='prioridad_riesgo_score', 
-                data=df_publico,
+                data=df_analisis, # Usamos df_analisis
                 hue='estado_actualizacion',
                 palette={'🔴 INCUMPLIMIENTO': 'red', '🟢 CUMPLE': 'green'},
                 size='popularidad_score',
@@ -195,7 +185,7 @@ try:
             ax1.set_title('Prioridad de Intervención vs. Antigüedad (Score ML)', fontsize=16)
             ax1.set_xlabel('Antigüedad de Datos (Días desde la última actualización)', fontsize=12)
             ax1.set_ylabel('Score de Prioridad de Intervención (Riesgo)', fontsize=12)
-            ax1.axhline(y=df_publico['prioridad_riesgo_score'].quantile(0.75), color='red', linestyle='--', label='Prioridad Alta (Q3)')
+            ax1.axhline(y=df_analisis['prioridad_riesgo_score'].quantile(0.75), color='red', linestyle='--', label='Prioridad Alta (Q3)')
             ax1.legend(title='Estado de Actualización')
             ax1.grid(True, linestyle='--', alpha=0.5)
             st.pyplot(fig1)
@@ -209,7 +199,7 @@ try:
         st.subheader("2. Top 10 Entidades con Mayor Porcentaje de Incumplimiento")
         try:
             COLUMNA_ENTIDAD = 'dueño'
-            resumen_entidad = df_publico.groupby(COLUMNA_ENTIDAD).agg(
+            resumen_entidad = df_analisis.groupby(COLUMNA_ENTIDAD).agg(
                 Total_Activos=('uid', 'count'),
                 Activos_Incumplimiento=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
             ).reset_index()
@@ -245,7 +235,7 @@ try:
         st.subheader("3. Top 10 Categorías con Mayor Cobertura Temática")
         try:
             COLUMNA_CATEGORIA = 'categoria'
-            conteo_categoria = df_publico[COLUMNA_CATEGORIA].value_counts().head(10)
+            conteo_categoria = df_analisis[COLUMNA_CATEGORIA].value_counts().head(10)
             
             if not conteo_categoria.empty:
                 fig3, ax3 = plt.subplots(figsize=(10, 7))
