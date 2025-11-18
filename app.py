@@ -20,7 +20,7 @@ st.set_page_config(layout="wide")
 # 2. FUNCIONES DE PROCESAMIENTO Y CACHEO (ETL + MÉTRICAS + ML)
 # ==============================================================================
 
-# Función para estandarizar nombres de columnas (de la Celda 3)
+# Función para estandarizar nombres de columnas
 def clean_col_name(col):
     name = col.lower().strip()
     # Limpieza de tildes
@@ -86,31 +86,57 @@ def load_and_process_data(file_path):
     # Popularidad
     df['vistas'] = pd.to_numeric(df['vistas'], errors='coerce')
     df['descargas'] = pd.to_numeric(df['descargas'], errors='coerce')
-    df['popularidad_score'] = (df['vistas'].fillna(0) * 0.6) + (df['descargas'].fillna(0) * 0.4)
+    # Manejar NaN para cálculo del score
+    vistas_norm = df['vistas'].fillna(0)
+    descargas_norm = df['descargas'].fillna(0)
+    
+    # Calcular Popularidad Score (Normalizada)
+    max_vistas = vistas_norm.max()
+    max_descargas = descargas_norm.max()
+    
+    if max_vistas > 0:
+        vistas_norm = vistas_norm / max_vistas
+    if max_descargas > 0:
+        descargas_norm = descargas_norm / max_descargas
+        
+    df['popularidad_score'] = (vistas_norm * 0.6) + (descargas_norm * 0.4)
+    # Re-escalar a un rango de 0 a 10 (opcional, para visualización)
+    df['popularidad_score'] = df['popularidad_score'] * 10
 
     # ----------------------------------------
     # IV. Detección de Anomalías (Isolation Forest)
     # ----------------------------------------
     df['anomalia_score'] = 0 # Inicializar
+    # Usar solo datos donde se pueden calcular métricas
     df_modelo = df[(df['antiguedad_datos_dias'] < 9999) & (df['popularidad_score'] > 0)].copy()
     
     if not df_modelo.empty:
         features = df_modelo[['antiguedad_datos_dias', 'popularidad_score', 'completitud_score']]
-        # Usa un número fijo de estimadores (ej: 100) en lugar de un archivo pkl
+        # Usa IsolationForest con un factor de "contaminación" (0.1% de anomalías)
         model = IsolationForest(contamination=0.01, random_state=42)
         model.fit(features)
+        # -1 significa anomalía, 1 significa normal
         anomalias = model.predict(features)
         df.loc[df_modelo.index, 'anomalia_score'] = anomalias
 
     # ----------------------------------------
-    # V. Score de Prioridad/Riesgo 
+    # V. Score de Prioridad/Riesgo (OE2)
     # ----------------------------------------
+    # Componente 1: Incumplimiento de Frecuencia
     df['riesgo_incumplimiento'] = np.where(df['estado_actualizacion'] == '🔴 INCUMPLIMIENTO', 3.0, 0.0)
+    
+    # Componente 2: Baja Completitud
     df['riesgo_completitud'] = np.where(df['completitud_score'] < 50, 1.5, 0.0)
-    max_popularidad = df['popularidad_score'].max()
-    df['riesgo_demanda'] = (df['popularidad_score'] / max_popularidad) * 1.0 if max_popularidad > 0 else 0.0
+    
+    # Componente 3: Alta Demanda (Popularidad) - El riesgo es perder un activo valioso
+    max_popularidad_score = df['popularidad_score'].max()
+    # Ponderar el riesgo de demanda de 0 a 1.0
+    df['riesgo_demanda'] = (df['popularidad_score'] / max_popularidad_score) * 1.0 if max_popularidad_score > 0 else 0.0
+    
+    # Componente 4: Anomalía ML
     df['riesgo_anomalia'] = np.where(df['anomalia_score'] == -1, 2.0, 0.0)
     
+    # Score total: Máximo 3.0 + 1.5 + 1.0 + 2.0 = 7.5
     df['prioridad_riesgo_score'] = (
         df['riesgo_incumplimiento'] + 
         df['riesgo_completitud'] + 
@@ -121,13 +147,12 @@ def load_and_process_data(file_path):
     # ----------------------------------------
     # VI. Filtrado Público (Solo activos con acceso "public")
     # ----------------------------------------
-    # Corregido: La columna es common_core_public_access_level
     COL_PUBLICO = 'common_core_public_access_level'
     
     if COL_PUBLICO in df.columns:
         df_publico = df[df[COL_PUBLICO].astype(str).str.lower().str.strip() == 'public'].copy()
     else:
-        # Si la columna no existe, asumimos que todos son públicos para continuar el dashboard
+        # Si la columna no existe o está mal nombrada, asumimos que todos son públicos
         df_publico = df.copy() 
     
     return df_publico
@@ -137,12 +162,13 @@ def load_and_process_data(file_path):
 # ==============================================================================
 
 # RUTA CORREGIDA con el nombre de tu archivo grande subido por LFS
+# Asegúrate que este nombre es correcto
 FILE_PATH = 'data/Asset_Inventory_-_Public_20251118.csv' 
 
 try:
     df_publico = load_and_process_data(FILE_PATH)
 except FileNotFoundError:
-    st.error(f"Error: No se encontró el archivo '{FILE_PATH}'. Verifica la ruta en GitHub.")
+    st.error(f"Error: No se encontró el archivo '{FILE_PATH}'. Verifica la ruta en GitHub (debe ser 'data/Asset_Inventory_-_Public_20251118.csv').")
     df_publico = pd.DataFrame()
 
 if df_publico.empty:
@@ -165,7 +191,7 @@ entidad_seleccionada = st.sidebar.selectbox(
 
 # Aplicar filtro a la vista principal
 if entidad_seleccionada != 'Todas':
-    df_filtrado = df_publico[df_publico['dueño'] == entidad_seleccionada]
+    df_filtrado = df_publico[df_publico['dueño'] == entidad_seleccionada].copy()
 else:
     df_filtrado = df_publico.copy()
 
@@ -178,57 +204,62 @@ tab1, tab2, tab3 = st.tabs(["🚨 Prioridad de Intervención (OE2)", "🔍 Diagn
 with tab1:
     st.header("1. Score de Riesgo y Prioridad de Intervención")
     
-    # KPIs Rápidos
-    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
-    
-    num_incumplimiento = (df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()
-    pct_incumplimiento = num_incumplimiento / len(df_filtrado) * 100 if len(df_filtrado) > 0 else 0
-    
-    num_anomalias = (df_filtrado['anomalia_score'] == -1).sum()
-    avg_completitud = df_filtrado['completitud_score'].mean()
-    avg_riesgo = df_filtrado['prioridad_riesgo_score'].mean()
-    
-    col_kpi1.metric("Activos en Incumplimiento", f"{num_incumplimiento} ({pct_incumplimiento:.1f}%)")
-    col_kpi2.metric("Anomalías ML Detectadas", num_anomalias)
-    col_kpi3.metric("Completitud Promedio", f"{avg_completitud:.1f}%")
-    col_kpi4.metric("Riesgo Promedio (Score)", f"{avg_riesgo:.2f}")
-
-    st.markdown("---")
-    
-    # Gráfico de Prioridad 
-    st.subheader("Visualización de Riesgo: Antigüedad vs. Score de Prioridad")
-    
-    # Prevenir errores si el dataframe filtrado es muy pequeño para el quantile
-    if df_filtrado['prioridad_riesgo_score'].nunique() > 1:
-        prioridad_q3 = df_filtrado['prioridad_riesgo_score'].quantile(0.75)
+    # Validar que el DF filtrado no esté vacío antes de calcular métricas
+    if df_filtrado.empty:
+        st.warning("No hay datos para la entidad seleccionada.")
     else:
-        prioridad_q3 = df_filtrado['prioridad_riesgo_score'].max()
+        # KPIs Rápidos
+        col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
         
-    fig, ax = plt.subplots(figsize=(10, 6))
-    sns.scatterplot(
-        x='antiguedad_datos_dias', 
-        y='prioridad_riesgo_score', 
-        data=df_filtrado, 
-        hue='estado_actualizacion', 
-        palette={'🔴 INCUMPLIMIENTO': 'red', '🟢 CUMPLE': 'green'}, 
-        size='popularidad_score',
-        sizes=(50, 800),
-        alpha=0.7,
-        ax=ax
-    )
-    ax.set_title('Antigüedad vs. Score de Prioridad de Intervención')
-    ax.set_xlabel('Antigüedad de Datos (Días)')
-    ax.set_ylabel('Score de Prioridad de Riesgo')
-    ax.axhline(y=prioridad_q3, color='red', linestyle='--', label='Prioridad Alta (Q3)')
-    st.pyplot(fig)
-    
-    # Tabla de Top 20 Riesgosos
-    st.subheader("Top 20 Activos de Mayor Riesgo (Prioridad de Intervención)")
-    top_riesgo = df_filtrado.sort_values('prioridad_riesgo_score', ascending=False).head(20)
-    st.dataframe(top_riesgo[[
-        'titulo', 'dueño', 'antiguedad_datos_dias', 'completitud_score', 
-        'popularidad_score', 'prioridad_riesgo_score', 'anomalia_score'
-    ]].style.background_gradient(cmap='Reds', subset=['prioridad_riesgo_score']), use_container_width=True)
+        num_incumplimiento = (df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()
+        pct_incumplimiento = num_incumplimiento / len(df_filtrado) * 100 if len(df_filtrado) > 0 else 0
+        
+        num_anomalias = (df_filtrado['anomalia_score'] == -1).sum()
+        avg_completitud = df_filtrado['completitud_score'].mean()
+        avg_riesgo = df_filtrado['prioridad_riesgo_score'].mean()
+        
+        col_kpi1.metric("Activos en Incumplimiento", f"{num_incumplimiento} ({pct_incumplimiento:.1f}%)")
+        col_kpi2.metric("Anomalías ML Detectadas", num_anomalias)
+        col_kpi3.metric("Completitud Promedio", f"{avg_completitud:.1f}%")
+        col_kpi4.metric("Riesgo Promedio (Score)", f"{avg_riesgo:.2f}")
+
+        st.markdown("---")
+        
+        # Gráfico de Prioridad 
+        st.subheader("Visualización de Riesgo: Antigüedad vs. Score de Prioridad")
+        
+        # Prevenir errores si el dataframe filtrado es muy pequeño para el quantile
+        if df_filtrado['prioridad_riesgo_score'].nunique() > 1:
+            prioridad_q3 = df_filtrado['prioridad_riesgo_score'].quantile(0.75)
+        else:
+            prioridad_q3 = df_filtrado['prioridad_riesgo_score'].max()
+            
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.scatterplot(
+            x='antiguedad_datos_dias', 
+            y='prioridad_riesgo_score', 
+            data=df_filtrado, 
+            hue='estado_actualizacion', 
+            palette={'🔴 INCUMPLIMIENTO': 'red', '🟢 CUMPLE': 'green'}, 
+            size='popularidad_score',
+            sizes=(50, 800),
+            alpha=0.7,
+            ax=ax
+        )
+        ax.set_title('Antigüedad vs. Score de Prioridad de Intervención')
+        ax.set_xlabel('Antigüedad de Datos (Días)')
+        ax.set_ylabel('Score de Prioridad de Riesgo')
+        ax.axhline(y=prioridad_q3, color='red', linestyle='--', label='Prioridad Alta (Q3)')
+        st.pyplot(fig)
+        
+        # Tabla de Top 20 Riesgosos
+        st.subheader("Top 20 Activos de Mayor Riesgo (Prioridad de Intervención)")
+        top_riesgo = df_filtrado.sort_values('prioridad_riesgo_score', ascending=False).head(20)
+        # Se reemplaza use_container_width por width='stretch' para evitar warning en Streamlit
+        st.dataframe(top_riesgo[[
+            'titulo', 'dueño', 'antiguedad_datos_dias', 'completitud_score', 
+            'popularidad_score', 'prioridad_riesgo_score', 'anomalia_score'
+        ]].style.background_gradient(cmap='Reds', subset=['prioridad_riesgo_score']), width='stretch')
 
 
 # ------------------------------------------------------------------------------
@@ -248,6 +279,7 @@ with tab2:
         ).reset_index()
 
         resumen_entidad['Porcentaje_Incumplimiento'] = (resumen_entidad['Activos_Incumplimiento'] / resumen_entidad['Total_Activos']) * 100
+        # Filtrar entidades con pocos activos para mejor visualización
         resumen_entidad_top = resumen_entidad[resumen_entidad['Total_Activos'] >= 5].sort_values('Porcentaje_Incumplimiento', ascending=False).head(10)
         
         fig2, ax2 = plt.subplots(figsize=(8, 6))
@@ -280,10 +312,19 @@ with tab3:
     
     st.subheader("Simulador de Recomendaciones Clave")
     
-    # KPIs para el LLM
+    # Se recalcula resumen_entidad por si no se calculó en el tab 2
+    if 'resumen_entidad_top' not in locals() or resumen_entidad_top.empty:
+        resumen_entidad = df_publico.groupby('dueño').agg(
+            Total_Activos=('titulo', 'count'),
+            Activos_Incumplimiento=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
+        ).reset_index()
+        resumen_entidad['Porcentaje_Incumplimiento'] = (resumen_entidad['Activos_Incumplimiento'] / resumen_entidad['Total_Activos']) * 100
+        resumen_entidad_top = resumen_entidad[resumen_entidad['Total_Activos'] >= 5].sort_values('Porcentaje_Incumplimiento', ascending=False).head(1)
+    
+    
+    # Lógica del LLM
     if not df_filtrado.empty:
         peor_activo = df_filtrado.sort_values('prioridad_riesgo_score', ascending=False).iloc[0]
-        # Garantizar que resumen_entidad_top no esté vacío antes de acceder a iloc[0]
         peor_entidad = resumen_entidad_top.iloc[0] if not resumen_entidad_top.empty else None
 
         # Simular la respuesta del LLM
@@ -291,9 +332,9 @@ with tab3:
         Basado en el análisis de Machine Learning y las métricas de completitud y actualización, estos son los hallazgos clave para **{entidad_seleccionada}**:
         
         **🔴 Alerta de Alto Riesgo:**
-        - El activo de más alta prioridad para intervención es: **'{peor_activo['titulo']}'**.
+        - El activo de más alta prioridad para intervención es: **'{peor_activo['titulo']}'** (ID: {peor_activo['id']}).
         - Su Score de Riesgo es de **{peor_activo['prioridad_riesgo_score']:.2f}** (máx. 7.5).
-        - **Motivo de Riesgo:** El activo está en **{peor_activo['estado_actualizacion']}** y tiene una Completitud de solo **{peor_activo['completitud_score']:.1f}%**.
+        - **Motivo de Riesgo:** El activo está en **{peor_activo['estado_actualizacion']}** (Antigüedad: {peor_activo['antiguedad_datos_dias']:.0f} días) y tiene una Completitud de solo **{peor_activo['completitud_score']:.1f}%**.
         
         **📢 Recomendación de Gobernanza:**
         """
@@ -304,6 +345,7 @@ with tab3:
         else:
             respuesta_llm += f"""
             - Su entidad tiene un Score de Completitud promedio de **{avg_completitud:.1f}%**. Enfoque los esfuerzos de diligenciamiento de metadatos en aquellos activos con menos del 50% de completitud.
+            - Considere revisar la columna **'informacion_de_datos_frecuencia_de_actualizacion'** en los activos en incumplimiento para validar si la frecuencia declarada es correcta.
             """
             
         st.info(respuesta_llm)
