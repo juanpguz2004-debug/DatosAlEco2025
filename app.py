@@ -193,58 +193,52 @@ try:
             col3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
             
             
-            # --- Visualización 1: Gráfico de Cuadrantes de Prioridad (Burbujas) ---
-            st.subheader("1. 🔴 Matriz de Priorización de Activos (Score Riesgo vs. Antigüedad)")
-            st.markdown("Este gráfico segmenta los activos por su **Score de Riesgo** (Y) y **Antigüedad** (X). Los activos en el cuadrante superior derecho (🔥🔥 PRIORIDAD ALTA) requieren atención inmediata. El **tamaño de la burbuja** indica su **Popularidad** (Demanda).")
+            # --- Visualización 1: Gráfico de Barras de Completitud por Entidad ---
+            st.subheader("1. 📉 Completitud Promedio por Entidad (Top 10 Peor Rendimiento)")
+            st.markdown("Este gráfico muestra las **10 entidades** (`dueño`) en la vista actual con el **Score de Completitud Promedio más bajo**. Estos sectores requieren la mayor atención para mejorar la documentación de sus activos.")
             
             try:
-                # Se deben calcular los umbrales solo si hay suficientes datos
-                if len(df_filtrado) > 1:
-                    
-                    # Calcular umbrales (Mediana) para los cuadrantes
-                    umbral_riesgo = df_filtrado['prioridad_riesgo_score'].median()
-                    umbral_antiguedad = df_filtrado['antiguedad_datos_dias'].median()
-                    
-                    # Ajuste si la mediana es 0 (usar el 60 percentil)
-                    if umbral_riesgo <= 0:
-                        umbral_riesgo = df_filtrado['prioridad_riesgo_score'].quantile(0.6)
-                    if umbral_antiguedad <= 0:
-                        umbral_antiguedad = df_filtrado['antiguedad_datos_dias'].quantile(0.6)
-                    
-                    # Clasificación de cuadrantes
-                    df_filtrado['cuadrante'] = 'Baja Prioridad'
-                    df_filtrado.loc[df_filtrado['prioridad_riesgo_score'] >= umbral_riesgo, 'cuadrante'] = 'Riesgo Alto'
-                    df_filtrado.loc[df_filtrado['antiguedad_datos_dias'] >= umbral_antiguedad, 'cuadrante'] = 'Antigüedad Alta'
-                    df_filtrado.loc[(df_filtrado['prioridad_riesgo_score'] >= umbral_riesgo) & (df_filtrado['antiguedad_datos_dias'] >= umbral_antiguedad), 'cuadrante'] = '🔥🔥 PRIORIDAD ALTA'
-                    
-                    # Gráfico de Burbujas
-                    fig1, ax1 = plt.subplots(figsize=(12, 7))
-                    sns.scatterplot(
-                        x='antiguedad_datos_dias',
-                        y='prioridad_riesgo_score', 
-                        data=df_filtrado,
-                        hue='cuadrante',
-                        palette={'🔥🔥 PRIORIDAD ALTA': 'red', 'Riesgo Alto': 'orange', 'Antigüedad Alta': 'blue', 'Baja Prioridad': 'green'},
-                        size='popularidad_score',
-                        sizes=(20, 500),
-                        alpha=0.6,
+                COLUMNA_ENTIDAD = 'dueño'
+                
+                # Agrupar por Entidad y calcular el Score de Completitud Promedio
+                resumen_completitud = df_filtrado.groupby(COLUMNA_ENTIDAD).agg(
+                    Total_Activos=('uid', 'count'),
+                    Completitud_Promedio=('completitud_score', 'mean')
+                ).reset_index()
+                
+                # Filtrar entidades con volumen mínimo (ejemplo: 5 activos)
+                entidades_volumen = resumen_completitud[resumen_completitud['Total_Activos'] >= 5]
+                
+                # Ordenar para obtener el TOP 10 con la PEOR COMPLETITUD (el promedio más bajo)
+                df_top_10_peor_completitud = entidades_volumen.sort_values(
+                    by='Completitud_Promedio', 
+                    ascending=True # Orden ascendente para mostrar lo peor primero
+                ).head(10)
+                
+                if not df_top_10_peor_completitud.empty:
+                    fig1, ax1 = plt.subplots(figsize=(10, 6))
+                    sns.barplot(
+                        x='Completitud_Promedio',
+                        y=COLUMNA_ENTIDAD,
+                        data=df_top_10_peor_completitud,
+                        palette='Reds_r', # Paleta que destaca los valores bajos
                         ax=ax1
                     )
                     
-                    # Dibujar líneas de cuadrantes
-                    ax1.axvline(x=umbral_antiguedad, color='gray', linestyle='--')
-                    ax1.axhline(y=umbral_riesgo, color='gray', linestyle='--')
-                    
-                    ax1.set_title('Matriz de Priorización de Activos', fontsize=16)
-                    ax1.set_xlabel(f'Antigüedad de Datos (Días) | Umbral: {umbral_antiguedad:.0f} días', fontsize=12)
-                    ax1.set_ylabel(f'Score de Prioridad de Intervención | Umbral: {umbral_riesgo:.2f}', fontsize=12)
-                    ax1.legend(title='Prioridad', loc='upper right')
+                    ax1.set_title('Top 10 Entidades con Peor Completitud Promedio (Mín. 5 activos)', fontsize=14)
+                    ax1.set_xlabel('Score de Completitud Promedio (%)', fontsize=12)
+                    ax1.set_ylabel('Entidad Responsable', fontsize=12)
+                    ax1.grid(axis='x', linestyle='--', alpha=0.6)
+                    plt.tight_layout()
                     st.pyplot(fig1)
+
+                    st.markdown("### Resumen de Completitud (Top 10 Peor)")
+                    st.dataframe(df_top_10_peor_completitud.sort_values(by='Completitud_Promedio', ascending=True), use_container_width=True)
                 else:
-                    st.info("Se requiere más de un activo para generar la Matriz de Priorización.")
+                    st.info("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking de Completitud en la vista actual.")
 
             except Exception as e:
-                st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Cuadrantes. Detalle: {e}")
+                st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
 
             st.markdown("---")
 
@@ -252,10 +246,7 @@ try:
             # --- Visualización 2: Top 10 Entidades con Incumplimiento ---
             st.subheader("2. Top 10 Entidades con Mayor Porcentaje de Incumplimiento (Vista Total)")
             
-            # NOTA: Esta visualización SÍ usa el análisis COMPLETO (df_analisis_completo) 
-            # para dar una vista general de las entidades, sin importar el filtro individual.
-            # Si se prefiere que use df_filtrado, se cambia aquí la variable.
-            
+            # Esta visualización usa el análisis COMPLETO (df_analisis_completo) para mostrar el ranking general.
             df_para_ranking = df_analisis_completo.copy() 
 
             try:
