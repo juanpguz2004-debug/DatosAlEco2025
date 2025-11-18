@@ -1,9 +1,7 @@
 streamlit
 pandas
-joblib
-altair
-xgboost
-gpt4all
 numpy
+matplotlib
+seaborn
 scikit-learn
-cloudpickle
+sentence-transformers
