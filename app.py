@@ -33,9 +33,10 @@ def safe_le_transform(encoder: LabelEncoder, value: str) -> int:
     """Aplica la transformación de LabelEncoder, devolviendo -1 para valores no vistos."""
     try:
         # Aseguramos que el valor de entrada se maneje como string
-        return int(encoder.transform([str(value)])[0])
+        # Si el encoder fue entrenado con str.fillna('MISSING'), 'MISSING' es una categoría válida.
+        return int(encoder.transform([str(value).upper()])[0])
     except ValueError:
-        # Valor no visto o NaN. Devuelve el valor por defecto (-1)
+        # Valor no visto. Devuelve el valor por defecto (-1)
         return -1 
 
 
@@ -45,7 +46,7 @@ def safe_le_transform(encoder: LabelEncoder, value: str) -> int:
 @st.cache_data
 def load_data():
     """Carga el CSV y aplica la limpieza y filtrado inicial."""
-    # **IMPORTANTE:** Cambia "nombre_de_tu_archivo.csv" por el nombre de tu archivo cargado
+    # **IMPORTANTE:** Reemplaza el nombre del archivo si es necesario
     csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
     if not os.path.exists(csv_file):
         st.error(f"❌ ERROR: Archivo CSV no encontrado: {csv_file}")
@@ -69,7 +70,7 @@ def load_data():
 
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Manejo del año de corte (Numérico, como se corrigió)
+        # Manejo del año de corte (Numérico)
         if 'ANO_DE_CORTE' in df.columns:
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
             df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
@@ -91,7 +92,7 @@ def load_data():
 # ----------------------------------------------------
 @st.cache_resource
 def load_assets():
-    """Carga los modelos, la lista de features, los encoders y la tasa de crecimiento (AGR)."""
+    """Carga los 6 activos (modelos, features, encoders y AGR)."""
     assets = {}
     files_to_load = [
         "model_clasificacion.pkl", "model_reg_ganancia.pkl", "model_reg_perdida.pkl",
@@ -118,7 +119,7 @@ def load_assets():
 
 
 # ----------------------------------------------------
-# 3) FUNCIÓN DE FORECASTING RECURSIVO (LA LÓGICA CLAVE)
+# 3) FUNCIÓN DE FORECASTING RECURSIVO (CORREGIDA)
 # ----------------------------------------------------
 
 def run_forecasting(
@@ -132,44 +133,35 @@ def run_forecasting(
     Realiza la predicción recursiva aplicando el AGR a las variables financieras
     y ejecutando el Hurdle Model para cada año hasta target_year.
     """
-    # Usamos la primera fila como base
+    # 🚨 CORRECCIÓN CLAVE: Usamos una copia que será MUTADA en el bucle para la recursividad.
     current_data = initial_row.iloc[0].copy()
     start_year = current_data['ANO_DE_CORTE']
     
-    # DataFrame para almacenar el resultado final
     df_forecast = pd.DataFrame()
     
-    # Itera desde el año base + 1 hasta el año objetivo
     for year in range(start_year + 1, target_year + 1):
         
-        # --- Paso 1: Proyección (Recursiva) ---
-        # Aplica AGR a las variables financieras proyectables
+        # --- Paso 1: Proyección Acumulativa ---
         for col in COLS_TO_PROJECT:
-            # Multiplica el valor del año anterior (current_data) por AGR
-            current_data[col] *= agr
+            # Multiplica el valor del AÑO ANTERIOR (current_data) por AGR.
+            current_data[col] *= agr 
             
-        # Actualiza el año
         current_data['ANO_DE_CORTE'] = year
         
         # --- Paso 2: Preprocesamiento para el Modelo ---
-        # Crea la fila de predicción (temporal)
         row_prediccion = pd.DataFrame([current_data.to_dict()])
-        
-        # Copia de la fila para trabajar
         X_pred_temp = row_prediccion.copy()
         
-        # Aplicar Label Encoding (con manejo seguro de valores no vistos)
+        # Aplicar Label Encoding seguro
         for col in LE_COLS:
             encoder = label_encoders[col]
-            # Usar safe_le_transform, aplicado a una columna entera simulada con .apply()
             X_pred_temp[col] = X_pred_temp[col].apply(lambda x: safe_le_transform(encoder, x))
 
-        # Aplicar One-Hot Encoding (OHE)
+        # Aplicar One-Hot Encoding (OHE) y Alinear
         X_pred_temp = pd.get_dummies(
             X_pred_temp, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
         )
         
-        # Alinear y ordenar las columnas (CRÍTICO)
         missing_cols = set(model_feature_names) - set(X_pred_temp.columns)
         for c in missing_cols:
             X_pred_temp[c] = 0 
@@ -178,32 +170,27 @@ def run_forecasting(
         X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0) # Limpieza final
 
         # --- Paso 3: Predicción con Hurdle Model ---
-        
-        # 3A: Clasificar (0 = Pérdida/Cero, 1 = Ganancia)
         pred_cls = model_cls.predict(X_pred)[0]
-        
         pred_real = 0.0
         
         if pred_cls == 1:
-            # 3B-Ganancia: Usar Regresión de Ganancias
+            # Ganancia
             pred_log = model_reg_gan.predict(X_pred)[0]
-            pred_real = np.expm1(pred_log) # Reversión: e^x - 1
+            pred_real = np.expm1(pred_log)
         else:
-            # 3B-Pérdida: Usar Regresión de Pérdidas
+            # Pérdida/Cero
             pred_log = model_reg_per.predict(X_pred)[0]
             magnitud_perdida_real = np.expm1(pred_log)
-            pred_real = -magnitud_perdida_real # CRÍTICO: Convertir a valor negativo
+            pred_real = -magnitud_perdida_real
 
-        # --- Paso 4: Almacenar Resultado y Preparar para el Siguiente Bucle ---
+        # --- Paso 4: Almacenar Resultado ---
         
-        # Almacena G/P en el DataFrame de resultados
-        row_prediccion['GANANCIA_PERDIDA_PRED'] = pred_real 
-        row_prediccion['ANO_DE_CORTE'] = year
+        # Almacena G/P en el DataFrame de resultados (usando los datos proyectados de current_data)
+        current_data_for_output = current_data.to_dict()
+        current_data_for_output['GANANCIA_PERDIDA_PRED'] = pred_real 
         
-        df_forecast = pd.concat([df_forecast, row_prediccion], ignore_index=True)
-        
-        # La G/P predicha no es un input para la siguiente proyección, 
-        # solo los COLS_TO_PROJECT son inputs
+        # Usamos pd.DataFrame con la lista de diccionarios para asegurar que el índice sea correcto.
+        df_forecast = pd.concat([df_forecast, pd.DataFrame([current_data_for_output])], ignore_index=True)
         
     return df_forecast
 
@@ -339,7 +326,7 @@ try:
     
     diferencia = pred_real - ganancia_anterior
 
-    # Lógica simplificada de Delta para el KPI (mejorado)
+    # Lógica simplificada de Delta para el KPI
     delta_display = f"vs {ano_corte_empresa}"
     
     st.metric(
