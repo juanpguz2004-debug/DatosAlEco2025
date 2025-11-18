@@ -1,80 +1,110 @@
 # app.py
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
 from sklearn.ensemble import IsolationForest
 
-st.set_page_config(page_title="Dashboard Inventario de Datos Abiertos - MinTIC", layout="wide")
+# ========================================
+# Título del dashboard
+# ========================================
 st.title("📊 Dashboard Inventario de Datos Abiertos - MinTIC")
 
-# --------------------------
-# 1️⃣ CARGA DEL CSV LOCAL
-# --------------------------
-CSV_PATH = "Asset_Inventory_-_Public_20251118.csv"  # <-- archivo en main de github
-try:
-    df = pd.read_csv(CSV_PATH)
-    st.success(f"✅ Archivo '{CSV_PATH}' cargado correctamente.")
-    st.write(f"Total de registros: {len(df)}")
-except FileNotFoundError:
-    st.error(f"❌ No se encontró el archivo '{CSV_PATH}'. Verifica que exista en tu repositorio.")
-    st.stop()
+# ========================================
+# Cargar CSV desde el repositorio (ya en main)
+# ========================================
+CSV_PATH = "Asset_Inventory_-_Public_20251118.csv"
 
-# --------------------------
-# 2️⃣ FILTRO DE ACTIVOS PÚBLICOS
-# --------------------------
-df['audience'] = df['audience'].astype(str).str.lower().str.strip()
-public_values = ['public', 'público', 'si', 'sí']
-df_publico = df[df['audience'].isin(public_values)]
-st.write(f"Total de activos públicos: {len(df_publico)} / {len(df)}")
+@st.cache_data
+def load_data(path):
+    df = pd.read_csv(path)
+    
+    # Normalizar nombres de columnas
+    df.columns = df.columns.str.strip()  # quitar espacios
+    df.columns = df.columns.str.lower()  # minúsculas
+    df.columns = df.columns.str.replace(r"[\s\(\):]", "_", regex=True)
+    df.columns = df.columns.str.replace(r"__+", "_", regex=True)
+    df.columns = df.columns.str.replace(r"[^0-9a-zA-Z_]", "", regex=True)
+    
+    return df
 
-# --------------------------
-# 3️⃣ COMPLETITUD DE METADATOS
-# --------------------------
-campos_minimos = [
-    'Titulo','description','owner','contact_email','license','domain','category',
-    'informacindedatos_frecuenciadeactualizacin','informacindedatos_coberturageogrfica',
-    'commoncore_publicaccesslevel'
+df = load_data(CSV_PATH)
+st.success(f"✅ Archivo '{CSV_PATH}' cargado correctamente. Total de registros: {len(df)}")
+
+# ========================================
+# Filtrar solo activos públicos
+# ========================================
+# Normalizar columna de público
+if "publico" in df.columns:
+    df['publico'] = df['publico'].astype(str).str.lower().str.strip()
+    public_values = ['public', 'público', 'si', 'sí', 'yes']
+    df_publico = df[df['publico'].isin(public_values)]
+    st.write(f"Total de activos públicos: {len(df_publico)} / {len(df)}")
+else:
+    st.warning("⚠️ No se encontró la columna de público en el CSV")
+    df_publico = df.copy()  # para no romper el resto de la app
+
+# ========================================
+# Métricas básicas de completitud
+# ========================================
+st.header("📈 Métricas básicas de completitud")
+# Columnas mínimas consideradas importantes
+required_cols = [
+    "titulo", "descripcion", "dueño", "dominio", "categoria",
+    "informacindedatos_frecuenciadeactualizacin", "informacindedatos_coberturageogrfica",
+    "license"
 ]
 
-df_publico['campos_diligenciados'] = df_publico[campos_minimos].notna().sum(axis=1)
-df_publico['completitud_score'] = (df_publico['campos_diligenciados'] / len(campos_minimos)) * 100
-completitud_promedio = df_publico['completitud_score'].mean()
-st.write(f"Completitud promedio: {completitud_promedio:.2f}%")
+# Verificar si existen en df
+required_cols = [c for c in required_cols if c in df_publico.columns]
 
-# --------------------------
-# 4️⃣ ANOMALÍAS CON ISOLATION FOREST
-# --------------------------
-features_cols = ['visits','downloads','completitud_score']
-df_modelo = df_publico[features_cols].dropna()
-
-if not df_modelo.empty:
-    model = IsolationForest(contamination=0.01, random_state=42)
-    model.fit(df_modelo)
-    df_publico.loc[df_modelo.index,'anomalia_score'] = model.predict(df_modelo)
+if required_cols:
+    completeness = df_publico[required_cols].notna().mean(axis=1) * 100
+    st.write(f"Completitud promedio: {completeness.mean():.2f}%")
 else:
-    df_publico['anomalia_score'] = 0
+    st.warning("⚠️ No se encontraron columnas mínimas para calcular completitud.")
 
-# --------------------------
-# 5️⃣ VISUALIZACIONES
-# --------------------------
-st.subheader("📈 Gráficos de KPIs")
-col1, col2, col3 = st.columns(3)
-col1.metric("Total de datasets públicos", len(df_publico))
-col2.metric("Completitud promedio (%)", f"{completitud_promedio:.2f}")
-col3.metric("Datasets con anomalías", (df_publico['anomalia_score'] == -1).sum())
+# ========================================
+# Gráfico de distribución por dominio
+# ========================================
+st.header("📊 Distribución de datasets por dominio")
+if "dominio" in df_publico.columns:
+    domain_counts = df_publico['dominio'].value_counts().reset_index()
+    domain_counts.columns = ['dominio', 'cantidad']
+    fig_domain = px.bar(domain_counts, x='dominio', y='cantidad', text='cantidad', height=400)
+    st.plotly_chart(fig_domain)
+else:
+    st.warning("⚠️ No se encontró la columna 'dominio' para graficar.")
 
-# Distribución de completitud
-fig1 = px.histogram(df_publico, x='completitud_score', nbins=20, title="Distribución de Completitud")
-st.plotly_chart(fig1, use_container_width=True)
+# ========================================
+# Gráfico de distribución territorial
+# ========================================
+st.header("🌎 Cobertura territorial")
+if "informacindelaentidad_departamento" in df_publico.columns:
+    dept_counts = df_publico['informacindelaentidad_departamento'].value_counts().reset_index()
+    dept_counts.columns = ['departamento', 'cantidad']
+    fig_dept = px.bar(dept_counts, x='departamento', y='cantidad', text='cantidad', height=400)
+    st.plotly_chart(fig_dept)
+else:
+    st.warning("⚠️ No se encontró la columna 'informacindelaentidad_departamento' para graficar.")
 
-# Top 10 dominios
-top_domains = df_publico['domain'].value_counts().head(10).reset_index()
-fig2 = px.bar(top_domains, x='index', y='domain', title="Top 10 Dominios")
-st.plotly_chart(fig2, use_container_width=True)
+# ========================================
+# Detección de anomalías simple
+# ========================================
+st.header("🚨 Detección de datasets atípicos")
+num_features = ["row_count", "column_count", "visits", "downloads"]
+num_features = [c for c in num_features if c in df_publico.columns]
 
-# --------------------------
-# 6️⃣ TABLA FILTRABLE
-# --------------------------
-st.subheader("📋 Tabla de Activos Públicos")
-st.dataframe(df_publico.sort_values(by='completitud_score', ascending=False))
+if num_features:
+    df_model = df_publico[num_features].fillna(0)
+    iso = IsolationForest(contamination=0.01, random_state=42)
+    iso.fit(df_model)
+    df_publico['anomaly'] = iso.predict(df_model)
+    st.write(f"Total de datasets detectados como atípicos: {(df_publico['anomaly'] == -1).sum()}")
+else:
+    st.warning("⚠️ No se encontraron columnas numéricas para detección de anomalías.")
+
+# ========================================
+# Mostrar tabla de datasets públicos
+# ========================================
+st.header("📋 Vista de datasets públicos")
+st.dataframe(df_publico.head(50))
