@@ -16,6 +16,9 @@ st.set_page_config(
 # --- Nombre del archivo CSV que Streamlit debe encontrar ---
 ARCHIVO_CSV = "Asset_Inventory_-_Public_20251118.csv"
 
+# --- UMBLRALES DE RIESGO PARA FORMATO CONDICIONAL ---
+UMBRAL_RIESGO_ALTO = 1.0 
+
 ## 1. Funciones de Procesamiento de Datos (Sin Cambios en la Lógica Central)
 def clean_col_name(col):
     name = col.lower().strip()
@@ -224,7 +227,7 @@ try:
             st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
         else:
             
-            # --- 3. Métricas y Visualizaciones ---
+            # --- 3. Métricas de la Vista Actual ---
             
             st.subheader("Métricas de la Vista Actual")
             col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
@@ -237,13 +240,11 @@ try:
             # --- NUEVA SECCIÓN: 4. Tabla de Búsqueda de Entidades Detallada ---
             st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 
-            st.info("""
+            st.info(f"""
                 Utiliza la barra de búsqueda para filtrar el diagnóstico por **Entidad Responsable** (`dueño`). 
-                Esta tabla resume el estado de calidad de cada sector en la vista actual, combinando las métricas de:
-                1. **Riesgo Promedio:** La calificación general de prioridad de intervención.
-                2. **Completitud Promedio:** Calidad de los metadatos.
-                3. **Antigüedad Promedio (Coherencia):** Promedio de días desde la última actualización.
-                4. **Incumplimiento:** Porcentaje de activos que no cumplen con su frecuencia de actualización prometida.
+                La columna **Riesgo Promedio** ahora tiene un formato de color:
+                * 🟢 **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO}**. Intervención no urgente.
+                * 🔴 **Rojo:** El riesgo promedio es **mayor a {UMBRAL_RIESGO_ALTO}**. Se requiere **intervención/actualización prioritaria**.
             """)
             
             # Calculamos el resumen de métricas por DUEÑO
@@ -261,31 +262,41 @@ try:
             resumen_entidades_busqueda = resumen_entidades_busqueda.rename(columns={'dueño': 'Entidad Responsable'})
             resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
             
-            # Configuración para búsqueda interactiva
-            columnas_busqueda = {
-                'Entidad Responsable': 'Entidad Responsable',
-                'Activos_Totales': 'Activos Totales',
-                'Riesgo_Promedio': 'Riesgo Promedio',
-                'Completitud_Promedio': 'Completitud Promedio (%)',
-                'Antiguedad_Promedio_Dias': 'Antigüedad Promedio (Días)',
-                '%_Incumplimiento': '% Incumplimiento'
-            }
+            
+            # --- FUNCIÓN DE ESTILO CONDICIONAL PARA RIESGO ---
+            def color_riesgo_promedio(val):
+                color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
+                return color
+            
+            # Aplicar el estilo condicional solo a la columna 'Riesgo_Promedio'
+            styled_df = resumen_entidades_busqueda.style.applymap(
+                color_riesgo_promedio, 
+                subset=['Riesgo_Promedio']
+            ).format({
+                'Riesgo_Promedio': '{:.2f}',
+                'Completitud_Promedio': '{:.2f}%',
+                'Antiguedad_Promedio_Dias': '{:.0f}',
+                '%_Incumplimiento': '{:.2f}%'
+            })
+
 
             st.dataframe(
-                resumen_entidades_busqueda.style.format({
-                    'Riesgo_Promedio': '{:.2f}',
-                    'Completitud_Promedio': '{:.2f}%',
-                    'Antiguedad_Promedio_Dias': '{:.0f}',
-                    '%_Incumplimiento': '{:.2f}%'
-                }), 
+                styled_df, 
                 use_container_width=True,
                 column_config={
                     'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable", help="Buscar por nombre de la entidad."),
-                    'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio", format="%.2f", help="Score de prioridad de intervención."),
+                    'Activos_Totales': st.column_config.NumberColumn("Activos Totales", format="%d"),
+                    'Riesgo_Promedio': st.column_config.NumberColumn(
+                        "Riesgo Promedio (Score)", 
+                        format="%.2f", 
+                        help=f"Score de prioridad de intervención. Rojo > {UMBRAL_RIESGO_ALTO}."
+                    ),
                     'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%"),
                     'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d"),
-                    '%_Incumplimiento': st.column_config.ProgressColumn("% Incumplimiento", format="%.2f%%", min_value=0, max_value=100)
-                }
+                    'Incumplimiento_Absoluto': st.column_config.NumberColumn("Activos en Incumplimiento (Count)", format="%d"),
+                    '%_Incumplimiento': st.column_config.TextColumn("% Incumplimiento", help="Porcentaje de Activos Obsoletos")
+                },
+                hide_index=True
             )
 
             st.markdown("---")
@@ -341,7 +352,7 @@ try:
 
             st.markdown("---")
 
-            # --- Visualización 2: Gráfico de PARETO de Riesgo (NUEVO) ---
+            # --- Visualización 2: Gráfico de PARETO de Riesgo (Se mantiene) ---
             st.subheader("2. 🎯 Gráfico de Pareto de Riesgo (Activos más Críticos)")
             
             st.info("""
