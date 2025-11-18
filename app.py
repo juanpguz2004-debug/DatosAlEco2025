@@ -20,6 +20,7 @@ TARGET_COL = 'GANANCIA_PERDIDA'
 # OHE_COLS corregidas para excluir ANO_DE_CORTE
 OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR']
 LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU']
+# Variables a proyectar (crecimiento del 5%)
 COLS_TO_PROJECT = ['INGRESOS_OPERACIONALES', 'TOTAL_ACTIVOS', 'TOTAL_PASIVOS', 'TOTAL_PATRIMONIO']
 
 # Función de normalización de columna
@@ -32,11 +33,8 @@ def normalize_col(col: str) -> str:
 def safe_le_transform(encoder: LabelEncoder, value: str) -> int:
     """Aplica la transformación de LabelEncoder, devolviendo -1 para valores no vistos."""
     try:
-        # Aseguramos que el valor de entrada se maneje como string
-        # Si el encoder fue entrenado con str.fillna('MISSING'), 'MISSING' es una categoría válida.
         return int(encoder.transform([str(value).upper()])[0])
     except ValueError:
-        # Valor no visto. Devuelve el valor por defecto (-1)
         return -1 
 
 
@@ -46,7 +44,6 @@ def safe_le_transform(encoder: LabelEncoder, value: str) -> int:
 @st.cache_data
 def load_data():
     """Carga el CSV y aplica la limpieza y filtrado inicial."""
-    # **IMPORTANTE:** Reemplaza el nombre del archivo si es necesario
     csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
     if not os.path.exists(csv_file):
         st.error(f"❌ ERROR: Archivo CSV no encontrado: {csv_file}")
@@ -64,19 +61,16 @@ def load_data():
                 .str.replace("−","-",regex=False).str.replace("(","",regex=False)
                 .str.replace(")","",regex=False)
             )
-            # Elimina puntos de miles y reemplaza coma decimal por punto (Asunción de formato COP)
             df[col] = df[col].str.replace('.', '', regex=False) 
             df[col] = df[col].str.replace(',', '.', regex=False)
 
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Manejo del año de corte (Numérico)
         if 'ANO_DE_CORTE' in df.columns:
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
             df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int)
         
-        # Filtros y limpieza final
         df = df[df['ANO_DE_CORTE'] > 2000].copy()
         df.dropna(subset=numeric_cols, inplace=True)
         
@@ -133,7 +127,7 @@ def run_forecasting(
     Realiza la predicción recursiva aplicando el AGR a las variables financieras
     y ejecutando el Hurdle Model para cada año hasta target_year.
     """
-    # Usamos una copia que será MUTADA en el bucle para la recursividad.
+    # 🚨 CORRECCIÓN CLAVE: Usamos una copia que será MUTADA en el bucle para la recursividad.
     current_data = initial_row.iloc[0].copy()
     start_year = current_data['ANO_DE_CORTE']
     
@@ -145,7 +139,6 @@ def run_forecasting(
         for col in COLS_TO_PROJECT:
             # Multiplica el valor del AÑO ANTERIOR por AGR.
             current_data[col] *= agr 
-            # 🚨 Refuerzo: Aseguramos que las variables proyectadas sigan siendo numéricas.
             current_data[col] = float(current_data[col]) 
             
         current_data['ANO_DE_CORTE'] = year
@@ -170,18 +163,22 @@ def run_forecasting(
         )
         
         # 🚨 CORRECCIÓN CLAVE: Alinear y Ordenar las columnas para el input del modelo
-        X_pred = pd.DataFrame(columns=model_feature_names)
+        # Usamos un diccionario para construir la fila final de manera segura
+        final_input_data = {}
         
-        # Llenar X_pred con los valores calculados/codificados
         for feature in model_feature_names:
             if feature in X_pred_temp.columns:
-                X_pred[feature] = X_pred_temp[feature]
+                # Si la feature ya existe (numérica, LE o OHE), la tomamos.
+                final_input_data[feature] = X_pred_temp[feature].iloc[0]
             else:
-                # Si es una columna OHE que no existe en esta fila (e.g., una región no seleccionada)
-                X_pred[feature] = 0
+                # Si no existe (es una columna OHE que no aplica), es 0.
+                final_input_data[feature] = 0
         
-        X_pred = X_pred.fillna(0)
-        
+        # Convertir a DataFrame para el modelo
+        X_pred = pd.DataFrame([final_input_data])
+        X_pred = X_pred[model_feature_names] # Asegurar orden
+        X_pred = X_pred.fillna(0) # Limpieza final
+
         # --- Paso 3: Predicción con Hurdle Model ---
         
         pred_cls = model_cls.predict(X_pred)[0]
@@ -202,16 +199,6 @@ def run_forecasting(
         current_data_for_output = current_data.to_dict()
         current_data_for_output['GANANCIA_PERDIDA_PRED'] = pred_real 
         
-        df_forecast = pd.concat([df_forecast, pd.DataFrame([current_data_for_output])], ignore_index=True)
-        
-    return df_forecast
-        # --- Paso 4: Almacenar Resultado ---
-        
-        # Almacena G/P en el DataFrame de resultados (usando los datos proyectados de current_data)
-        current_data_for_output = current_data.to_dict()
-        current_data_for_output['GANANCIA_PERDIDA_PRED'] = pred_real 
-        
-        # Usamos pd.DataFrame con la lista de diccionarios para asegurar que el índice sea correcto.
         df_forecast = pd.concat([df_forecast, pd.DataFrame([current_data_for_output])], ignore_index=True)
         
     return df_forecast
@@ -385,4 +372,3 @@ except Exception as e:
     st.error(f"❌ ERROR generando la proyección: {e}")
     st.caption(f"Detalle del error: {e}")
 # ----------------------------------------------------
-
