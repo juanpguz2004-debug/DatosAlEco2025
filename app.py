@@ -203,6 +203,7 @@ def format_billones(value):
         return "$0.00"
     return f"${value:,.2f}"
 
+# Los KPIs se calculan correctamente, el problema anterior era de datos o indexación.
 total_ingresos = kpis_df['INGRESOS_OPERACIONALES'].sum()
 promedio_patrimonio = kpis_df['TOTAL_PATRIMONIO'].mean()
 
@@ -344,11 +345,20 @@ try:
 
     st.info(f"Predicción recursiva hasta **{ano_prediccion_final}**, iniciando desde la última fecha de corte ({ano_corte_empresa}). Tasa de Crecimiento Asumida (AGR): **{AGR:.2f}**")
 
+    # Obtener los datos para el año de corte
+    df_data_year = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].copy()
+
+    if df_data_year.empty:
+        st.warning(f"Advertencia: No se encontraron datos para {empresa_seleccionada} en el año {ano_corte_empresa}. Imposible predecir.")
+        st.stop()
+        
+    # CORRECCIÓN CLAVE: Forzar el reset de índice para evitar el error '0' al usar iloc[0]
+    row_data = df_data_year.reset_index(drop=True).iloc[[0]].copy() 
+    
     # Valores en Billones COP
-    row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     
-    # *** LÍNEA CRÍTICA CORREGIDA ***: Mantiene SUPERVISOR, REGION y MACROSECTOR
+    # Mantiene las columnas categóricas (SUPERVISOR, REGION, MACROSECTOR)
     row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0]
 
 
@@ -427,4 +437,4 @@ try:
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
-    st.caption(f"Detalle del error: {e}. **VERIFICAR:** Si este error persiste, revisa que los nombres de las columnas categóricas ('SUPERVISOR', 'REGION', 'MACROSECTOR', 'DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU') sean correctos y consistentes entre el CSV y el código.")
+    st.caption(f"Detalle del error: {e}. **VERIFICAR:** Si este error persiste, la causa más probable es que los datos financieros ('INGRESOS_OPERACIONALES', 'TOTAL_ACTIVOS', etc.) son completamente cero para el año {ano_corte_empresa} o hay un error sutil en la carga del CSV.")
