@@ -5,7 +5,7 @@ import joblib
 import unicodedata
 import warnings
 
-# Suprimir advertencias de Streamlit
+# Suprimir advertencias de Streamlit (opcional, pero ayuda a la limpieza de la consola)
 warnings.filterwarnings("ignore")
 
 # --- 0) CONFIGURACIÓN INICIAL Y CONSTANTES ---
@@ -16,15 +16,20 @@ st.title("📊 Dashboard ALECO: Modelo de Dos Partes")
 st.markdown("Predicción de Ganancia/Pérdida (incluyendo pérdidas reales) usando Modelado de Dos Partes. Todas las cifras se muestran en **Billones de Pesos**.")
 st.markdown("---")
 
-# Nombres de las columnas clave (DEBE COINCIDIR CON EL ENTRENAMIENTO NUEVO)
+# Nombres de las columnas clave (deben coincidir con el entrenamiento)
 TARGET_COL = 'GANANCIA_PERDIDA'
 COLS_TO_PROJECT = [
     'INGRESOS_OPERACIONALES', 'TOTAL_ACTIVOS', 
     'TOTAL_PASIVOS', 'TOTAL_PATRIMONIO'
 ]
-# CRÍTICO: 'ANO_DE_CORTE' NO debe estar aquí.
+# CRÍTICO: 'ANO_DE_CORTE' NO debe estar aquí para que la predicción futura funcione.
 OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR'] 
 LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU']
+
+# Función de normalización (debe coincidir con el del notebook)
+def normalize_col(col):
+    col = col.strip().upper().replace(" ", "_").replace("(", "").replace(")", "").replace("Ñ", "N")
+    return ''.join(c for c in unicodedata.normalize('NFD', col) if unicodedata.category(c) != 'Mn')
 
 # Función de Label Encoder segura (Para manejar valores no vistos)
 def safe_le_transform(encoder, val):
@@ -34,12 +39,7 @@ def safe_le_transform(encoder, val):
         return int(np.where(encoder.classes_ == s)[0][0])
     return -1
 
-# Función de normalización (debe coincidir con el del notebook)
-def normalize_col(col):
-    col = col.strip().upper().replace(" ", "_").replace("(", "").replace(")", "").replace("Ñ", "N")
-    return ''.join(c for c in unicodedata.normalize('NFD', col) if unicodedata.category(c) != 'Mn')
-
-# --- 1) CARGA DE DATOS Y ACTIVOS (LIMPIEZA NUMÉRICA ROBUSTA) ---
+# --- 1) CARGA DE DATOS Y ACTIVOS (LIMPIEZA CON REGLAS EXPLÍCITAS) ---
 @st.cache_data
 def load_data(file_path):
     try:
@@ -51,32 +51,18 @@ def load_data(file_path):
         for col in numeric_cols:
              s = df[col].astype(str).str.strip()
              
-             # Función de limpieza robusta para formato local (e.g., 1.234.567,89)
-             def clean_locale_number(num_str):
-                 if not isinstance(num_str, str): return np.nan
-                 
-                 # 1. Quitar símbolos, paréntesis y el signo de menos Unicode
-                 num_str = num_str.replace('$', '').replace('(', '').replace(')', '').replace(' ', '').replace('−', '-')
-                 
-                 # 2. Manejo de separadores: asumir formato '1.234.567,89' (Punto miles, Coma decimal)
-                 # Eliminar el punto (separador de miles) si la coma es el decimal
-                 if num_str.count('.') > 0 and num_str.count(',') == 1 and num_str.rfind('.') < num_str.rfind(','):
-                     num_str = num_str.replace('.', '')
-                 elif num_str.count('.') >= 1 and num_str.count(',') == 0:
-                      # Si solo hay varios puntos sin comas, asumimos que son separadores de miles y los quitamos.
-                      if num_str.count('.') > 1:
-                           num_str = num_str.replace('.', '')
-                      
-                 # Reemplazar la coma (separador decimal) por punto decimal
-                 num_str = num_str.replace(',', '.')
-                 
-                 # Eliminar cualquier otro caracter no numérico restante (excepto el punto decimal y el signo)
-                 import re
-                 num_str = re.sub(r'[^\d\.\-]', '', num_str)
-
-                 return num_str
-                 
-             s = s.apply(clean_locale_number)
+             # --- FIX CRÍTICO DE LIMPIEZA DE FORMATO LOCAL (Punto miles, Coma decimal) ---
+             s = (
+                 s.str.replace('$', '', regex=False)
+                 .str.replace('(', '', regex=False).str.replace(')', '', regex=False)
+                 .str.replace(' ', '', regex=False).str.replace('−', '-', regex=False)
+             )
+             # 1. Eliminar el punto (separador de miles)
+             s = s.str.replace('.', '', regex=False) 
+             # 2. Reemplazar la coma (separador decimal) por punto decimal
+             s = s.str.replace(',', '.', regex=False) 
+             
+             # Conversión final a numérico. Coerce errors to NaN.
              df[col] = pd.to_numeric(s, errors='coerce').astype(float)
 
 
@@ -183,25 +169,23 @@ with col_kpi2:
 st.markdown("---")
 
 # ----------------------------------------------------
-# FUNCIÓN DE PREDICCIÓN RECURSIVA (Permite predecir años futuros)
+# FUNCIÓN DE PREDICCIÓN RECURSIVA (Lógica de Inferencia Optimizada)
 # ----------------------------------------------------
 def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final, 
                       model_cls, model_reg_gan, model_reg_per, 
                       label_encoders, MODEL_FEATURE_NAMES, AGR, 
                       COLS_TO_PROJECT, LE_COLS, OHE_COLS):
     
-    row_current_base = row_base.copy()
-    
-    for col in COLS_TO_PROJECT:
-         row_current_base[col] = pd.to_numeric(row_current_base[col], errors='coerce').astype(float).fillna(0)
+    row_current_base = row_base.copy() # row_current_base es un Pandas Series
     
     años_a_predecir = range(ano_corte_empresa + 1, ano_prediccion_final + 1)
     pred_real_final = 0.0 
     
     for ano_actual in años_a_predecir:
         
-        # A. Proyección de Features Numéricos (Simulación de crecimiento)
+        # A. Proyección de Features Numéricos
         for col in COLS_TO_PROJECT:
+            # Multiplicación directa en el Series
             row_current_base[col] = row_current_base[col] * AGR
             
         # B. Creación de la fila de predicción y codificación
@@ -227,13 +211,15 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
         )
         
         # C. ALINEACIÓN FINAL DE X_PRED
+        
+        # 1. Crear DataFrame base con ceros
         X_pred = pd.DataFrame(0, index=[0], columns=MODEL_FEATURE_NAMES)
         
-        # Inyectar OHE
+        # 2. Inyectar OHE/calculados con reindexación robusta
         common = [c for c in row_prediccion_ohe.columns if c in X_pred.columns]
         X_pred.loc[0, common] = row_prediccion_ohe.loc[0, common].values
         
-        # Inyectar numéricos (incluyendo ANO_DE_CORTE, que ahora es continuo)
+        # 3. Inyectar numéricos/LE/Año (que deben ser tratados como variables continuas)
         cols_to_inject = COLS_TO_PROJECT + LE_COLS + ['ANO_DE_CORTE'] 
 
         for col in cols_to_inject:
@@ -245,9 +231,12 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
                     val = 0.0 
                 X_pred.at[0, col] = val
         
+        # 4. Asegurar tipos finales
         X_pred = X_pred.astype(float).fillna(0)
         
+        
         # D. Lógica de Predicción Condicional
+        
         if X_pred.shape[1] == 0:
             raise ValueError("El DataFrame de predicción (X_pred) está vacío.")
 
@@ -311,8 +300,8 @@ try:
     row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     
-    # ⚠️ REVISIÓN CRÍTICA: La línea de división por 100 se activa si el CSV tiene escala de cientos
-    # Si tus números están en Billones, COMENTA la siguiente línea:
+    # Si tus números están en Billones, COMENTA la siguiente línea.
+    # Si al contrario, vienen en cientos o miles y debes escalarlos, DESCOMÉNTALA:
     # ganancia_anterior = ganancia_anterior / 100.0 
     
     row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0]
