@@ -26,7 +26,6 @@ LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU']
 AGR = 1.05 
 
 # Definición de los nombres de archivo con prioridad
-# AJUSTA 'dataset_limpio_para_streamlit.csv' si usaste un nombre diferente
 FILE_PROCESSED = "dataset_limpio_para_streamlit.csv" 
 FILE_RAW = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
 
@@ -36,12 +35,10 @@ def normalize_col(col):
 
 def safe_le_transform(encoder, val):
     s = str(val)
-    # Manejar el caso donde la empresa no tiene la columna (ej: en el CSV raw)
     if pd.isna(s):
         s = "nan"
     if s in encoder.classes_:
         return encoder.transform([s])[0]
-    # Si NO fue vista → devolver -1
     return -1
 
 # --- 1) CARGA DE DATOS Y ACTIVOS (LIMPIEZA Y ESCALADO REFORZADO) ---
@@ -60,7 +57,6 @@ def load_data(file_processed, file_raw):
             # Forzar tipo flotante y manejar NaNs
             for col in numeric_cols:
                 if col in df.columns:
-                    # Usar la columna tal cual, ya que se espera que esté limpia
                     df[col] = pd.to_numeric(df[col], errors='coerce').astype(float).fillna(0.0)
             
             st.success(f"Datos cargados exitosamente desde **{file_processed}**.")
@@ -120,8 +116,6 @@ def load_data(file_processed, file_raw):
     # *** ESCALADO CRUCIAL: Convertir a Billones de COP (dividir por 1e9) ***
     for col in numeric_cols:
         if col in df.columns:
-            # Asegurar que solo se escale si el valor es grande (para evitar re-escalar si ya estaba escalado)
-            # Pero forzamos la división para garantizar consistencia con el entrenamiento logarítmico.
             df[col] = df[col] / 1e9 
 
     return df
@@ -314,7 +308,6 @@ if not empresas_disponibles:
     st.stop()
 
 with col_sel_company:
-    # Selecciona la empresa
     default_index = 0
     if "ECOPETROL S.A" in empresas_disponibles:
         default_index = empresas_disponibles.index("ECOPETROL S.A")
@@ -355,7 +348,8 @@ try:
     row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     
-    row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL', 'SUPERVISOR', 'REGION', 'MACROSECTOR'], errors='ignore').iloc[0]
+    # *** LÍNEA CRÍTICA CORREGIDA ***: Mantiene SUPERVISOR, REGION y MACROSECTOR
+    row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0]
 
 
     pred_real_final = predict_recursive(
@@ -433,4 +427,4 @@ try:
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
-    st.caption(f"Detalle del error: {e}. **VERIFICAR:** Si este error persiste, confirma que las 15 columnas listadas existen en tu archivo CSV y que el nombre de tu archivo limpio coincide exactamente con '{FILE_PROCESSED}'.")
+    st.caption(f"Detalle del error: {e}. **VERIFICAR:** Si este error persiste, revisa que los nombres de las columnas categóricas ('SUPERVISOR', 'REGION', 'MACROSECTOR', 'DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU') sean correctos y consistentes entre el CSV y el código.")
