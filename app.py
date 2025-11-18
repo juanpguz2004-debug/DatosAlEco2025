@@ -6,28 +6,35 @@ import unicodedata
 import warnings
 import cloudpickle 
 import os 
+from sklearn.preprocessing import LabelEncoder # Necesario si se usa en load_assets o si se necesita instanciar, aunque solo se usará para tipos.
 
 # Suprimir advertencias de Streamlit 
 warnings.filterwarnings("ignore")
 
 # --- 0) CONFIGURACIÓN INICIAL Y CONSTANTES ---
 st.set_page_config(layout="wide", page_title="Dashboard ALECO: Modelo de Dos Partes")
-st.title("📊 Dashboard ALECO: Modelo de Dos Partes")
-st.markdown("Predicción de Ganancia/Pérdida (incluyendo pérdidas reales) usando Modelado de Dos Partes. Todas las cifras se muestran en **Billones de Pesos**.")
-st.markdown("---")
 
 TARGET_COL = 'GANANCIA_PERDIDA'
 COLS_TO_PROJECT = [
     'INGRESOS_OPERACIONALES', 'TOTAL_ACTIVOS', 
     'TOTAL_PASIVOS', 'TOTAL_PATRIMONIO'
 ]
-OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR']
+# CORRECCIÓN CRÍTICA: Se añade de nuevo 'ANO_DE_CORTE' a las columnas OHE
+OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR', 'ANO_DE_CORTE'] 
 LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU']
-AGR = 1.05 
+AGR = 1.05 # Tasa de crecimiento asumida (se sobrescribe si existe 'growth_rate.pkl')
 
 # Definición de los nombres de archivo con prioridad
 FILE_PROCESSED = "dataset_limpio_para_streamlit.csv" 
 FILE_RAW = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
+
+# FUNCIÓN CRÍTICA: Debe ser exactamente la misma que en el entrenamiento
+def format_ano(year):
+    year_str = str(year)
+    year_str = str(int(float(year_str))) # Asegurar que es un entero antes de formatear
+    if len(year_str) == 4:
+        return f'{year_str[0]},{year_str[1:]}'  
+    return year_str
 
 def normalize_col(col):
     col = col.strip().upper().replace(" ", "_").replace("(", "").replace(")", "").replace("Ñ", "N")
@@ -35,11 +42,15 @@ def normalize_col(col):
 
 def safe_le_transform(encoder, val):
     s = str(val)
-    if pd.isna(s):
+    if pd.isna(s) or s.lower() == 'nan':
         s = "nan"
+    # El valor debe ser una lista para .transform()
     if s in encoder.classes_:
         return encoder.transform([s])[0]
+    
+    # Si la clase no está en el encoder, devolver -1 (o el valor que el modelo use para 'desconocido')
     return -1
+
 
 # --- 1) CARGA DE DATOS Y ACTIVOS (LIMPIEZA Y ESCALADO REFORZADO) ---
 @st.cache_data
@@ -59,7 +70,7 @@ def load_data(file_processed, file_raw):
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').astype(float).fillna(0.0)
             
-            st.success(f"Datos cargados exitosamente desde **{file_processed}**.")
+            #st.success(f"Datos cargados exitosamente desde **{file_processed}**.")
 
         except Exception as e:
             st.warning(f"Error al cargar {file_processed} ({e}). Intentando con el archivo RAW...")
@@ -82,16 +93,25 @@ def load_data(file_processed, file_raw):
                      .str.replace(' ', '', regex=False).str.replace('−', '-', regex=False)
                  )
                  
-                 if s.str.contains(',').any() and s.str.contains('\.').any():
-                     s_clean = s.str.replace(',', '', regex=False)
-                 elif s.str.contains(',').any():
-                     s_clean = s.str.replace(',', '.', regex=False)
-                 else:
-                     s_clean = s.str.replace('.', '', regex=False)
+                 # Lógica para manejar el formato de números
+                 def clean_number_string(x):
+                    if pd.isna(x): return x
+                    x = str(x)
+                    if x.count('.') > 1 and x.count(',') == 0:
+                        # Asume que el punto es separador de miles y no decimal
+                        return x.replace('.', '') 
+                    elif x.count('.') == 1 and x.count(',') == 1:
+                        # Asume punto de miles, coma decimal
+                        return x.replace('.', '').replace(',', '.')
+                    elif x.count(',') == 1:
+                        # Asume coma decimal
+                        return x.replace(',', '.')
+                    return x.replace('.', '') # Asume punto de miles
 
+                 s_clean = s.apply(clean_number_string)
                  df[col] = pd.to_numeric(s_clean, errors='coerce').astype(float)
             
-            st.success(f"Datos cargados exitosamente desde **{file_raw}** con limpieza reforzada.")
+            #st.success(f"Datos cargados exitosamente desde **{file_raw}** con limpieza reforzada.")
 
         except Exception as e:
             st.error(f"Error final cargando o limpiando el archivo CSV: {e}")
@@ -114,6 +134,7 @@ def load_data(file_processed, file_raw):
     df[numeric_cols] = df[numeric_cols].fillna(0.0)
 
     # *** ESCALADO CRUCIAL: Convertir a Billones de COP (dividir por 1e9) ***
+    # Se asume que los modelos fueron entrenados con data escalada a Billones COP.
     for col in numeric_cols:
         if col in df.columns:
             df[col] = df[col] / 1e9 
@@ -128,22 +149,39 @@ def load_assets():
             'reg_gan': joblib.load("model_reg_ganancia.pkl"),
             'reg_per': joblib.load("model_reg_perdida.pkl"),
         }
-        assets = {
-            'model_features': joblib.load("model_features.pkl"),
-            'AGR': joblib.load("growth_rate.pkl"),
-            'base_year': joblib.load("base_year.pkl"),
-        }
+        
+        # Carga de archivos de referencia, AGR y base_year
+        model_features = joblib.load("model_features.pkl")
+        AGR_loaded = joblib.load("growth_rate.pkl")
+        base_year_loaded = joblib.load("base_year.pkl")
         
         # Carga robusta de Label Encoders (cloudpickle vs joblib)
         try:
-            assets['label_encoders'] = joblib.load("label_encoders.pkl")
+            label_encoders = joblib.load("label_encoders.pkl")
         except:
             with open("label_encoders.pkl", "rb") as f:
-                 assets['label_encoders'] = cloudpickle.load(f)
+                 label_encoders = cloudpickle.load(f)
+
+        assets = {
+            'model_features': model_features,
+            'AGR': AGR_loaded,
+            'base_year': base_year_loaded,
+            'label_encoders': label_encoders
+        }
         
+        # Verificar que todos los encoders sean instancias válidas
+        for col in LE_COLS:
+            if col not in assets['label_encoders']:
+                 st.error(f"Error: Falta el Label Encoder para la columna '{col}' en 'label_encoders.pkl'.")
+                 return None, None
+            # Intento de corrección si el encoder se cargó como un objeto no deseado
+            # if not hasattr(assets['label_encoders'][col], 'transform'):
+            #     st.error(f"Error: El objeto cargado para '{col}' no parece ser un LabelEncoder válido.")
+            #     return None, None
+            
         return models, assets
     except FileNotFoundError as e:
-        st.error(f"Error: No se encontró el archivo de activo '{e.filename}'. Asegúrate de que los SIETE archivos .pkl estén en el mismo directorio.")
+        st.error(f"Error: No se encontró el archivo de activo '{e.filename}'. Asegúrate de que los archivos PKL requeridos estén presentes.")
         return None, None
     except Exception as e:
         st.error(f"Error cargando los activos (pkls): {e}")
@@ -157,14 +195,19 @@ models, assets = load_assets()
 if df.empty or not models:
     st.stop()
 
-# Desempaquetar activos
+# Desempaquetar activos y manejar el caso donde AGR no se cargó
 model_cls, model_reg_gan, model_reg_per = models['cls'], models['reg_gan'], models['reg_per']
 label_encoders = assets['label_encoders']
 MODEL_FEATURE_NAMES = assets['model_features']
-AGR = assets['AGR']
-ANO_CORTE_BASE_GLOBAL = assets['base_year']
+AGR = assets.get('AGR', 1.05) # Usar 1.05 como fallback
+ANO_CORTE_BASE_GLOBAL = assets.get('base_year', 2024)
 
-# --- 2) LÓGICA DE FILTROS Y KPIS ---
+
+# --- 2) DISPLAY INICIAL Y FILTROS ---
+st.title("📊 Dashboard ALECO: Modelo de Dos Partes")
+st.markdown("Predicción de Ganancia/Pérdida (incluyendo pérdidas reales) usando Modelado de Dos Partes. Todas las cifras se muestran en **Billones de Pesos**.")
+st.markdown("---")
+
 st.header("1. Filtros y Datos")
 
 macrosectores = ["Todos"] + df['MACROSECTOR'].dropna().unique().tolist()
@@ -178,8 +221,8 @@ with col_m:
 with col_r:
     filtro_region = st.selectbox("Filtrar por Región", regiones)
 
+ano_corte_mas_reciente_global = df['ANO_DE_CORTE'].max()
 with col_c:
-    ano_corte_mas_reciente_global = df['ANO_DE_CORTE'].max()
     st.markdown(f"✅ Año de corte máximo global: **{ano_corte_mas_reciente_global}**")
 
 df_filtrado = df.copy()
@@ -188,7 +231,7 @@ if filtro_macrosector != "Todos":
 if filtro_region != "Todos":
     df_filtrado = df_filtrado[df_filtrado['REGION'] == filtro_region]
     
-# Verificar si hay datos después del filtro antes de calcular KPIs
+# Verificar si hay datos después del filtro
 if df_filtrado.empty:
     st.warning("No hay datos disponibles para los filtros seleccionados.")
     st.stop()
@@ -198,12 +241,10 @@ st.header("2. KPIs Agregados")
 kpis_df = df_filtrado[df_filtrado['ANO_DE_CORTE'] == ano_corte_mas_reciente_global]
 
 def format_billones(value):
-    # El valor ya está en la escala de Billones de COP
     if pd.isna(value) or value is None:
         return "$0.00"
     return f"${value:,.2f}"
 
-# Los KPIs se calculan correctamente, el problema anterior era de datos o indexación.
 total_ingresos = kpis_df['INGRESOS_OPERACIONALES'].sum()
 promedio_patrimonio = kpis_df['TOTAL_PATRIMONIO'].mean()
 
@@ -222,14 +263,15 @@ with col_kpi2:
     )
 
 st.markdown("---")
+st.dataframe(df_filtrado.head(5))
 
 # ----------------------------------------------------
-# FUNCIÓN DE PREDICCIÓN RECURSIVA
+# FUNCIÓN DE PREDICCIÓN RECURSIVA (CORREGIDA)
 # ----------------------------------------------------
 def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final, 
                       model_cls, model_reg_gan, model_reg_per, 
                       label_encoders, MODEL_FEATURE_NAMES, AGR, 
-                      COLS_TO_PROJECT, LE_COLS, OHE_COLS):
+                      COLS_TO_PROJECT, LE_COLS, OHE_COLS_ALL):
     
     row_current_base = row_base.copy() 
     
@@ -240,60 +282,74 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
         
         # A. Proyección de Features Numéricos (ya están en Billones COP)
         for col in COLS_TO_PROJECT:
-            row_current_base[col] = row_current_base[col] * AGR
+            # Asegurar que la proyección se haga sobre el valor numérico, no sobre el Series
+            row_current_base[col] = row_current_base[col].iloc[0] * AGR
             
         # B. Creación de la fila de predicción y codificación
+        # Convertir la serie base (con un solo elemento) a un DataFrame de 1 fila
         row_prediccion = row_current_base.to_frame().T.copy() 
         row_prediccion["ANO_DE_CORTE"] = ano_actual 
         
         # 1. Aplicar Label Encoding (LE) usando función segura
         for col in LE_COLS:
             val_to_encode = row_prediccion[col].iloc[0]
+            # La salida de safe_le_transform es un int/float
             row_prediccion[col] = safe_le_transform(label_encoders[col], val_to_encode)
         
-        # 2. Aplicar One-Hot Encoding (OHE) a las categóricas
-        ohe_cols_to_use = [c for c in OHE_COLS]
+        # CRITICAL FIX: Formato de Año para OHE (Reintroducido)
+        # Esto genera la clave OHE esperada, ej. 'ANO_DE_CORTE_2,026'
+        row_prediccion['ANO_DE_CORTE'] = row_prediccion['ANO_DE_CORTE'].apply(format_ano)
         
-        for col in ohe_cols_to_use:
+        # 2. Aplicar One-Hot Encoding (OHE)
+        for col in OHE_COLS_ALL:
+            # Asegurar que las columnas OHE son tipo string ANTES de get_dummies
             row_prediccion[col] = row_prediccion[col].astype(str)
 
         row_prediccion_ohe = pd.get_dummies(
             row_prediccion, 
-            columns=ohe_cols_to_use, prefix=ohe_cols_to_use, drop_first=True, dtype=int
+            columns=OHE_COLS_ALL, prefix=OHE_COLS_ALL, drop_first=True, dtype=int
         )
         
-        # C. ALINEACIÓN FINAL DE X_PRED: Crear el vector de features exacto
-        X_pred = pd.DataFrame(0, index=[0], columns=MODEL_FEATURE_NAMES)
+        # C. ALINEACIÓN FINAL DE X_PRED: Usar el método robusto de alineación
         
-        # Mapear columnas OHE
-        common_ohe = [c for c in row_prediccion_ohe.columns if c in X_pred.columns]
-        X_pred.loc[0, common_ohe] = row_prediccion_ohe.loc[0, common_ohe].values
+        # 1. Llenar columnas OHE faltantes con 0 (columnas que existen en el modelo pero no en esta fila)
+        missing_cols = set(MODEL_FEATURE_NAMES) - set(row_prediccion_ohe.columns)
+        for c in missing_cols:
+            row_prediccion_ohe[c] = 0  
         
-        # Mapear columnas numéricas (ya en Billones COP) y LE/Año
-        cols_to_inject = COLS_TO_PROJECT + LE_COLS + ['ANO_DE_CORTE'] 
-
-        for col in cols_to_inject:
-            if col in X_pred.columns and col in row_prediccion.columns:
-                X_pred.at[0, col] = row_prediccion[col].iloc[0]
+        # 2. Seleccionar solo las columnas que el modelo espera, en el orden correcto (CRÍTICO)
+        X_pred = row_prediccion_ohe[MODEL_FEATURE_NAMES].copy()
         
-        X_pred = X_pred.astype(float).fillna(0)
+        # 3. Conversión final a numérico
+        X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0)
         
         # D. Lógica de Predicción Condicional
+        
+        # Asegurarse de que las filas numéricas tengan un tipo de dato consistente
+        X_pred = X_pred.astype(float) 
+
         pred_cls = model_cls.predict(X_pred)[0]
         
         if pred_cls == 1:
             pred_log = model_reg_gan.predict(X_pred)[0]
-            pred_g_p_actual = np.expm1(pred_log) # Inversa de log1p: Billones COP
+            pred_g_p_actual = np.expm1(pred_log) 
         else:
             pred_log = model_reg_per.predict(X_pred)[0]
-            magnitud_perdida_real = np.expm1(pred_log) # Inversa de log1p: Magnitud en Billones COP
+            magnitud_perdida_real = np.expm1(pred_log) 
             pred_g_p_actual = -magnitud_perdida_real
             
-        # E. ALMACENAMIENTO (Solo el resultado final)
+        # E. Actualizar la base para la siguiente iteración (si es necesario)
+        if ano_actual < ano_prediccion_final:
+            # Reemplazamos la ganancia/pérdida proyectada para la siguiente iteración
+            row_current_base[TARGET_COL] = pred_g_p_actual
+            # Las otras columnas ya se proyectaron con AGR
+        
+        # F. ALMACENAMIENTO (Solo el resultado final)
         if ano_actual == ano_prediccion_final:
             pred_real_final = pred_g_p_actual
             
     return pred_real_final
+
 
 # ----------------------------------------------------
 # SECCIÓN 5: EJECUCIÓN DEL DASHBOARD Y RESULTADOS
@@ -358,9 +414,22 @@ try:
     # Valores en Billones COP
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     
-    # Mantiene las columnas categóricas (SUPERVISOR, REGION, MACROSECTOR)
-    row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0]
+    # Preparamos la base de datos para la proyección: 
+    # Mantiene columnas numéricas, LE y OHE (antes de OHE/LE)
+    row_base = row_data.drop(columns=['NIT', 'RAZON_SOCIAL', 'ANO_DE_CORTE', TARGET_COL], errors='ignore').iloc[0]
 
+    # Convertir a una serie con la etiqueta del índice correcto para el bucle
+    row_base = row_base.to_frame(name=0).T 
+
+    # Asegurar que las columnas a proyectar sean numéricas y las categóricas sean strings
+    for col in COLS_TO_PROJECT:
+         row_base[col] = pd.to_numeric(row_base[col], errors='coerce').fillna(0.0)
+
+    for col in LE_COLS + [c for c in OHE_COLS if c != 'ANO_DE_CORTE']:
+         row_base[col] = row_base[col].astype(str)
+    
+    # Se añade la ganancia anterior para que el bucle pueda proyectarla si es necesario
+    row_base[TARGET_COL] = ganancia_anterior
 
     pred_real_final = predict_recursive(
         row_base, ano_corte_empresa, ano_prediccion_final, 
@@ -437,4 +506,4 @@ try:
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
-    st.caption(f"Detalle del error: {e}. **VERIFICAR:** Si este error persiste, la causa más probable es que los datos financieros ('INGRESOS_OPERACIONALES', 'TOTAL_ACTIVOS', etc.) son completamente cero para el año {ano_corte_empresa} o hay un error sutil en la carga del CSV.")
+    st.caption(f"Detalle del error: {e}. **VERIFICAR:** La causa más probable de fallas persistentes es que la estructura de los archivos `.pkl` no coincide con la esperada (especialmente 'model_features.pkl' y 'label_encoders.pkl').")
