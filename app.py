@@ -21,8 +21,8 @@ st.markdown("---")
 # ========================================
 # 2. Cargar CSV y Limpieza
 # ========================================
-# Asegúrate de que esta ruta sea correcta para tu entorno (e.g., si está en la raíz, usa "Asset_Inventory_-_Public_20251118.csv")
-CSV_PATH = "data/Asset_Inventory_-_Public_20251118.csv" 
+# RUTA CORREGIDA: Se asume que el archivo CSV está en el mismo directorio que app.py
+CSV_PATH = "Asset_Inventory_-_Public_20251118.csv" 
 
 @st.cache_data
 def load_data(path):
