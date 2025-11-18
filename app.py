@@ -60,19 +60,17 @@ def load_data(file_processed, file_raw):
         df = pd.read_csv(file_to_load)
         df.columns = [normalize_col(c) for c in df.columns]
         
-        # CORRECCIÓN DE LIMPIEZA DE NÚMEROS (Formato $129.51)
+        # CORRECCIÓN DE LIMPIEZA DE NÚMEROS
         for col in numeric_cols:
              if col in df.columns:
                  s = df[col].astype(str).str.strip()
-                 # Eliminar símbolos de moneda, comas de miles (si las hay), paréntesis
                  s = (s.str.replace('$', '', regex=False)
-                       .str.replace(',', '', regex=False) # Eliminar coma (asumiendo formato US o que no hay comas decimales)
+                       .str.replace(',', '', regex=False) 
                        .str.replace('(', '', regex=False)
                        .str.replace(')', '', regex=False)
                        .str.replace(' ', '', regex=False)
                        .str.replace('−', '-', regex=False))
                  
-                 # Convertir a float. NO ELIMINAR EL PUNTO (es el decimal)
                  df[col] = pd.to_numeric(s, errors='coerce').fillna(0.0)
 
         # Limpieza de ANO_DE_CORTE
@@ -82,7 +80,7 @@ def load_data(file_processed, file_raw):
         
         df = df[df['ANO_DE_CORTE'] > 2000].copy()
         
-        # NOTA: NO DIVIDIMOS POR 1e9 AQUÍ porque los datos ya vienen escalados (según tus KPIs correctos)
+        # NOTA: No dividimos por 1e9 porque el CSV limpio ya viene escalado.
         st.success(f"Datos cargados desde **{file_to_load}**.")
         return df
 
@@ -197,16 +195,20 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
         for col in OHE_COLS:
             row_prediccion[col] = row_prediccion[col].astype(str)
             
+        # --- CORRECCIÓN DE SINTAXIS AQUÍ ---
         row_prediccion_ohe = pd.get_dummies(
             row_prediccion, 
-            columns=ohe_cols_to_use=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
+            columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
         )
         
         # D. Alineación
         X_pred = pd.DataFrame(0, index=[0], columns=MODEL_FEATURE_NAMES)
-        common_cols = [c for c in row_prediccion_ohe.columns if c in X_pred.columns]
-        X_pred[common_cols] = row_prediccion_ohe[common_cols]
         
+        # Copiar OHE coincidentes
+        common_cols = [c for c in row_prediccion_ohe.columns if c in X_pred.columns]
+        X_pred.loc[0, common_cols] = row_prediccion_ohe.loc[0, common_cols].values
+        
+        # Copiar Numéricos y LE (incluyendo ANO_DE_CORTE como numérico)
         cols_direct = COLS_TO_PROJECT + LE_COLS + ['ANO_DE_CORTE']
         for col in cols_direct:
             if col in X_pred.columns:
@@ -225,6 +227,9 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
             pred_val = -np.expm1(pred_log)
             
         pred_real_final = pred_val
+        
+        # Actualizar base para siguiente iteración
+        # (Opcional: si quisieras usar la ganancia predicha para algo más, pero aquí solo proyectamos features financieros)
         
     return pred_real_final
 
