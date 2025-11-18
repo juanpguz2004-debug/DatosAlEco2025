@@ -15,7 +15,7 @@ st.set_page_config(
 # --- Nombre del archivo CSV que Streamlit debe encontrar ---
 ARCHIVO_CSV = "Asset_Inventory_-_Public_20251118.csv"
 
-## 1. Funciones de Procesamiento de Datos (Sin Cambios en la Lógica Central)
+## 1. Funciones de Procesamiento de Datos (Sin Cambios)
 def clean_col_name(col):
     name = col.lower().strip()
     name = name.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
@@ -129,7 +129,7 @@ def process_data(df):
 
 ## 2. Título y Ejecución Principal
 
-st.title("📊 Dashboard de Priorización de Activos de Datos (Todos los Activos)")
+st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Completo)")
 
 try:
     with st.spinner(f'Cargando y procesando el archivo: **{ARCHIVO_CSV}**...'):
@@ -141,14 +141,14 @@ try:
     else:
         st.success(f'✅ Archivo **{ARCHIVO_CSV}** cargado y procesamiento completado. Total de activos: **{len(df_analisis_completo)}**')
 
-        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (NUEVO) ---
+        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
         st.header("🔬 Desglose de Métricas por Entidad")
         
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
         owners.sort()
         owners.insert(0, "Mostrar Análisis General")
         
-        # Seleccionador de Entidad principal (fuera del sidebar)
+        # Selector de Entidad principal (filtra las visualizaciones)
         filtro_dueño = st.selectbox(
             "Selecciona una Entidad para ver su Desglose de Estadísticas:",
             owners
@@ -161,7 +161,6 @@ try:
             if not df_entidad_seleccionada.empty:
                 st.subheader(f"Estadísticas Clave para: **{filtro_dueño}**")
                 
-                # Cálculo de métricas clave de la entidad
                 total_activos = len(df_entidad_seleccionada)
                 incumplimiento = (df_entidad_seleccionada['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()
                 
@@ -179,31 +178,46 @@ try:
                 st.markdown("---")
 
         # --- 2.1 BARRA LATERAL (FILTROS SECUNDARIOS) ---
-        st.sidebar.header("⚙️ Filtro de Categoría")
+        st.sidebar.header("⚙️ Filtros para Visualizaciones")
         
+        # NUEVO FILTRO: Nivel de Acceso (Activa/Desactiva 'public', etc.)
+        access_levels = df_analisis_completo['common_core_public_access_level'].dropna().unique().tolist()
+        access_levels.sort()
+        access_levels.insert(0, "Mostrar Todos")
+        
+        filtro_acceso = st.sidebar.selectbox(
+            "Filtrar por Nivel de Acceso:",
+            access_levels
+        )
+        
+        # Filtro de Categoría (Secundario)
         categories = df_analisis_completo['categoria'].dropna().unique().tolist()
         categories.sort()
         categories.insert(0, "Mostrar Todos")
         
         filtro_categoria = st.sidebar.selectbox(
-            "Filtrar por Categoría (Aplica a Gráficos):",
+            "Filtrar por Categoría:",
             categories
         )
 
         # --- 2.2 APLICAR FILTROS (Para las Visualizaciones) ---
         df_filtrado = df_analisis_completo.copy()
         
-        # Aplicar filtro de DUEÑO solo si NO es el modo de Desglose
+        # Aplicar filtro de DUEÑO (si no es el análisis general)
         if filtro_dueño != "Mostrar Análisis General":
              df_filtrado = df_filtrado[df_filtrado['dueño'] == filtro_dueño]
 
-        # Aplicar filtro de CATEGORÍA (secundario, siempre se aplica si no es "Mostrar Todos")
+        # Aplicar filtro de Nivel de Acceso
+        if filtro_acceso != "Mostrar Todos":
+             df_filtrado = df_filtrado[df_filtrado['common_core_public_access_level'] == filtro_acceso]
+
+        # Aplicar filtro de CATEGORÍA
         if filtro_categoria != "Mostrar Todos":
             df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
-            st.info(f"Filtro secundario aplicado: **Categoría = {filtro_categoria}**")
 
         st.header("📊 Visualizaciones y Rankings")
-        st.write(f"Activos en la vista actual para los gráficos: **{len(df_filtrado)}**")
+        st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {filtro_acceso}; Categoría: {filtro_categoria})")
+
 
         if df_filtrado.empty:
             st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
@@ -211,8 +225,6 @@ try:
             
             # --- 3. Métricas y Visualizaciones ---
             
-            # Las métricas se muestran aquí si estamos en "Mostrar Análisis General" o si el usuario
-            # quiere ver las métricas de la entidad/categoría filtrada
             st.subheader("Métricas de la Vista Actual")
             col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
             col_metrica1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
@@ -223,8 +235,13 @@ try:
             
             
             # --- Visualización 1: Gráfico de Barras de Completitud por Entidad ---
-            st.subheader("1. 📉 Completitud Promedio por Entidad (Top 10 Peor Rendimiento)")
-            st.markdown("Este gráfico muestra las **10 entidades** (`dueño`) en la vista actual con el **Score de Completitud Promedio más bajo**. Estos sectores requieren la mayor atención para mejorar la documentación de sus activos.")
+            st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
+            
+            st.info("""
+                **Propósito:** Identificar las entidades (`dueño`) que tienen la **peor calidad de documentación**.
+                **Interpretación:** Las barras más cortas (más a la izquierda) indican un menor `Score de Completitud Promedio`. Estas entidades deben ser **priorizadas** para mejorar el llenado de metadatos.
+                *Solo se incluyen entidades con 5 o más activos para asegurar un ranking significativo.*
+            """)
             
             try:
                 COLUMNA_ENTIDAD = 'dueño'
@@ -251,17 +268,17 @@ try:
                         ax=ax1
                     )
                     
-                    ax1.set_title('Top 10 Entidades con Peor Completitud Promedio (Mín. 5 activos)', fontsize=14)
+                    ax1.set_title('Top 10 Entidades con Peor Completitud Promedio (Vista Actual)', fontsize=14)
                     ax1.set_xlabel('Score de Completitud Promedio (%)', fontsize=12)
                     ax1.set_ylabel('Entidad Responsable', fontsize=12)
                     ax1.grid(axis='x', linestyle='--', alpha=0.6)
                     plt.tight_layout()
                     st.pyplot(fig1)
 
-                    st.markdown("### Resumen de Completitud (Top 10 Peor)")
+                    st.markdown("### Datos del Ranking (Peor Completitud)")
                     st.dataframe(df_top_10_peor_completitud.sort_values(by='Completitud_Promedio', ascending=True), use_container_width=True)
                 else:
-                    st.info("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking de Completitud en la vista actual.")
+                    st.warning("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking de Completitud en la vista actual.")
 
             except Exception as e:
                 st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
@@ -270,7 +287,12 @@ try:
 
 
             # --- Visualización 2: Top 10 Entidades con Incumplimiento ---
-            st.subheader("2. Top 10 Entidades con Mayor Porcentaje de Incumplimiento (Vista Total)")
+            st.subheader("2. 🚨 Ranking de Entidades por Porcentaje de Incumplimiento")
+            
+            st.info("""
+                **Propósito:** Determinar qué entidades tienen el mayor porcentaje de activos que **no se actualizan** con la frecuencia prometida.
+                **Interpretación:** Las entidades con mayor porcentaje de incumplimiento (barras más largas) representan el **mayor riesgo operacional** debido a datos obsoletos. Este ranking utiliza el **conjunto TOTAL** de activos para el ranking general.
+            """)
             
             df_para_ranking = df_analisis_completo.copy() 
 
@@ -296,25 +318,30 @@ try:
                             palette='Reds_d',
                             ax=ax2
                         )
-                        ax2.set_title('Top 10 Entidades con Mayor % de Incumplimiento (Min. 5 activos)', fontsize=14)
+                        ax2.set_title('Top 10 Entidades con Mayor % de Incumplimiento (Ranking Global)', fontsize=14)
                         ax2.set_xlabel('Porcentaje de Activos en INCUMPLIMIENTO (%)', fontsize=12)
                         ax2.set_ylabel('Entidad Responsable', fontsize=12)
                         ax2.grid(axis='x', linestyle='--', alpha=0.6)
                         st.pyplot(fig2)
                         
-                        st.markdown("### Resumen de Entidades (Top Global)")
+                        st.markdown("### Datos del Ranking (Incumplimiento)")
                         st.dataframe(resumen_entidad_top, use_container_width=True)
                     else:
-                        st.info("No hay entidades con suficiente volumen (>= 5 activos) o incumplimiento para mostrar el top 10.")
+                        st.warning("No hay entidades con suficiente volumen (>= 5 activos) o incumplimiento para mostrar el top 10.")
                 else:
-                    st.info("No hay entidades que cumplan el volumen mínimo de 5 activos para el ranking.")
+                    st.warning("No hay entidades que cumplan el volumen mínimo de 5 activos para el ranking.")
             except Exception as e:
                 st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Bar Plot de Entidades. Detalle: {e}")
             
             st.markdown("---")
 
             # --- Visualización 3: Top 10 Categorías ---
-            st.subheader("3. Top 10 Categorías con Mayor Cobertura Temática (Vista Actual)")
+            st.subheader("3. 🗺️ Cobertura Temática por Categoría")
+            
+            st.info("""
+                **Propósito:** Mapear la **cobertura temática** del inventario.
+                **Interpretación:** Las categorías con más activos (barras más largas) indican las áreas donde la organización tiene su **mayor volumen** de datos, ayudando a identificar áreas de especialización o redundancia.
+            """)
             
             try:
                 COLUMNA_CATEGORIA = 'categoria'
@@ -329,10 +356,10 @@ try:
                     ax3.set_ylabel('Categoría', fontsize=12)
                     st.pyplot(fig3)
                     
-                    st.markdown("### Conteo de Categorías (Vista Actual)")
+                    st.markdown("### Datos del Conteo de Categorías")
                     st.dataframe(conteo_categoria.to_frame(), use_container_width=True)
                 else:
-                    st.info("La columna 'categoria' no contiene valores para generar la visualización con los filtros seleccionados.")
+                    st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización con los filtros seleccionados.")
             except Exception as e:
                 st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
 
