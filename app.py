@@ -15,8 +15,7 @@ st.set_page_config(
 # --- Nombre del archivo CSV que Streamlit debe encontrar ---
 ARCHIVO_CSV = "Asset_Inventory_-_Public_20251118.csv"
 
-## 1. Funciones de Procesamiento de Datos
-
+## 1. Funciones de Procesamiento de Datos (Sin Cambios en la Lógica Central)
 def clean_col_name(col):
     name = col.lower().strip()
     name = name.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
@@ -141,56 +140,86 @@ try:
         st.error("🛑 Proceso de datos detenido debido a errores previos. Revisa los mensajes de error ❌ para depurar.")
     else:
         st.success(f'✅ Archivo **{ARCHIVO_CSV}** cargado y procesamiento completado. Total de activos: **{len(df_analisis_completo)}**')
+
+        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (NUEVO) ---
+        st.header("🔬 Desglose de Métricas por Entidad")
         
-        # --- 2.1 BARRA LATERAL (FILTROS) ---
-        st.sidebar.header("⚙️ Filtros de Análisis")
-        
-        # Opción para filtrar por DUEÑO (Entidad)
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
         owners.sort()
-        owners.insert(0, "Mostrar Todos los Activos")
+        owners.insert(0, "Mostrar Análisis General")
         
-        filtro_dueño = st.sidebar.selectbox(
-            "Filtrar por Entidad Responsable:",
+        # Seleccionador de Entidad principal (fuera del sidebar)
+        filtro_dueño = st.selectbox(
+            "Selecciona una Entidad para ver su Desglose de Estadísticas:",
             owners
         )
         
-        # Opción para filtrar por CATEGORÍA
+        # --- DESGLOSE DE ESTADÍSTICAS PARA LA ENTIDAD SELECCIONADA ---
+        if filtro_dueño != "Mostrar Análisis General":
+            df_entidad_seleccionada = df_analisis_completo[df_analisis_completo['dueño'] == filtro_dueño]
+            
+            if not df_entidad_seleccionada.empty:
+                st.subheader(f"Estadísticas Clave para: **{filtro_dueño}**")
+                
+                # Cálculo de métricas clave de la entidad
+                total_activos = len(df_entidad_seleccionada)
+                incumplimiento = (df_entidad_seleccionada['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()
+                
+                col1, col2, col3, col4, col5 = st.columns(5)
+                
+                col1.metric("Activos Totales", total_activos)
+                col2.metric("Completitud Promedio", f"{df_entidad_seleccionada['completitud_score'].mean():.2f}%")
+                col3.metric("Riesgo Promedio", f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}")
+                col4.metric("Incumplimiento Absoluto", f"{incumplimiento} / {total_activos}")
+                col5.metric("Antigüedad Promedio", f"{df_entidad_seleccionada['antiguedad_datos_dias'].mean():.0f} días")
+                
+                st.markdown("---")
+            else:
+                st.warning(f"⚠️ No se encontraron activos para la entidad: {filtro_dueño}")
+                st.markdown("---")
+
+        # --- 2.1 BARRA LATERAL (FILTROS SECUNDARIOS) ---
+        st.sidebar.header("⚙️ Filtro de Categoría")
+        
         categories = df_analisis_completo['categoria'].dropna().unique().tolist()
         categories.sort()
         categories.insert(0, "Mostrar Todos")
         
         filtro_categoria = st.sidebar.selectbox(
-            "Filtrar por Categoría:",
+            "Filtrar por Categoría (Aplica a Gráficos):",
             categories
         )
 
-        # --- 2.2 APLICAR FILTROS ---
+        # --- 2.2 APLICAR FILTROS (Para las Visualizaciones) ---
         df_filtrado = df_analisis_completo.copy()
         
-        if filtro_dueño != "Mostrar Todos los Activos":
-            df_filtrado = df_filtrado[df_filtrado['dueño'] == filtro_dueño]
-            st.info(f"Filtro aplicado: **Entidad = {filtro_dueño}**")
+        # Aplicar filtro de DUEÑO solo si NO es el modo de Desglose
+        if filtro_dueño != "Mostrar Análisis General":
+             df_filtrado = df_filtrado[df_filtrado['dueño'] == filtro_dueño]
 
+        # Aplicar filtro de CATEGORÍA (secundario, siempre se aplica si no es "Mostrar Todos")
         if filtro_categoria != "Mostrar Todos":
             df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
-            st.info(f"Filtro aplicado: **Categoría = {filtro_categoria}**")
+            st.info(f"Filtro secundario aplicado: **Categoría = {filtro_categoria}**")
 
-        st.markdown(f"---")
-        st.write(f"Activos en la vista actual: **{len(df_filtrado)}**")
+        st.header("📊 Visualizaciones y Rankings")
+        st.write(f"Activos en la vista actual para los gráficos: **{len(df_filtrado)}**")
 
         if df_filtrado.empty:
-            st.warning("⚠️ No hay datos para mostrar con los filtros seleccionados.")
+            st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
         else:
             
             # --- 3. Métricas y Visualizaciones ---
             
-            st.header("🔍 Resultados Clave de Calidad y Prioridad")
+            # Las métricas se muestran aquí si estamos en "Mostrar Análisis General" o si el usuario
+            # quiere ver las métricas de la entidad/categoría filtrada
+            st.subheader("Métricas de la Vista Actual")
+            col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
+            col_metrica1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
+            col_metrica2.metric("Activos en Incumplimiento", f"{(df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_filtrado)}")
+            col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
             
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
-            col2.metric("Activos en Incumplimiento", f"{(df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_filtrado)}")
-            col3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
+            st.markdown("---")
             
             
             # --- Visualización 1: Gráfico de Barras de Completitud por Entidad ---
@@ -200,19 +229,16 @@ try:
             try:
                 COLUMNA_ENTIDAD = 'dueño'
                 
-                # Agrupar por Entidad y calcular el Score de Completitud Promedio
                 resumen_completitud = df_filtrado.groupby(COLUMNA_ENTIDAD).agg(
                     Total_Activos=('uid', 'count'),
                     Completitud_Promedio=('completitud_score', 'mean')
                 ).reset_index()
                 
-                # Filtrar entidades con volumen mínimo (ejemplo: 5 activos)
                 entidades_volumen = resumen_completitud[resumen_completitud['Total_Activos'] >= 5]
                 
-                # Ordenar para obtener el TOP 10 con la PEOR COMPLETITUD (el promedio más bajo)
                 df_top_10_peor_completitud = entidades_volumen.sort_values(
                     by='Completitud_Promedio', 
-                    ascending=True # Orden ascendente para mostrar lo peor primero
+                    ascending=True 
                 ).head(10)
                 
                 if not df_top_10_peor_completitud.empty:
@@ -221,7 +247,7 @@ try:
                         x='Completitud_Promedio',
                         y=COLUMNA_ENTIDAD,
                         data=df_top_10_peor_completitud,
-                        palette='Reds_r', # Paleta que destaca los valores bajos
+                        palette='Reds_r', 
                         ax=ax1
                     )
                     
@@ -246,12 +272,10 @@ try:
             # --- Visualización 2: Top 10 Entidades con Incumplimiento ---
             st.subheader("2. Top 10 Entidades con Mayor Porcentaje de Incumplimiento (Vista Total)")
             
-            # Esta visualización usa el análisis COMPLETO (df_analisis_completo) para mostrar el ranking general.
             df_para_ranking = df_analisis_completo.copy() 
 
             try:
                 COLUMNA_ENTIDAD = 'dueño'
-                # Asegurar que la entidad tenga al menos 5 activos para ser relevante
                 entidades_con_volumen = df_para_ranking.groupby(COLUMNA_ENTIDAD).filter(lambda x: len(x) >= 5)
 
                 if not entidades_con_volumen.empty:
