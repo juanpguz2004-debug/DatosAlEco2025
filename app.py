@@ -38,7 +38,7 @@ def safe_le_transform(encoder, val):
         return int(np.where(encoder.classes_ == s)[0][0])
     return -1
 
-# Función de formato de año (para OHE, solo si el modelo lo requiriera, pero se mantiene por si acaso)
+# Función de formato de año (para OHE, no se usa ya, pero se mantiene por si acaso)
 def format_ano(year):
     """Convierte el año 2024 a '2,024' para la codificación OHE."""
     year_str = str(year)
@@ -46,22 +46,32 @@ def format_ano(year):
         return f'{year_str[0]},{year_str[1:]}' 
     return year_str
 
-# --- 1) CARGA DE DATOS Y ACTIVOS ---
+# --- 1) CARGA DE DATOS Y ACTIVOS (CORRECCIÓN DE LIMPIEZA NUMÉRICA) ---
 @st.cache_data
 def load_data(file_path):
     try:
         df = pd.read_csv(file_path)
         df.columns = [normalize_col(c) for c in df.columns]
         
-        # Limpieza robusta de columnas numéricas (debe coincidir con el notebook)
+        # Columnas numéricas a limpiar
         numeric_cols = COLS_TO_PROJECT + [TARGET_COL]
+        
         for col in numeric_cols:
-             df[col] = (
-                df[col].astype(str)
-                .str.replace('$', '', regex=False).str.replace(',', '', regex=False)
-                .str.replace(' ', '', regex=False).str.replace('−', '-', regex=False)
-            )
-             df[col] = pd.to_numeric(df[col], errors='coerce')
+             s = df[col].astype(str).str.strip()
+             
+             # 1. Quitar símbolos monetarios y de agrupación, y el signo menos
+             s = s.str.replace(r'[\$\s()]', '', regex=True)
+             s = s.str.replace('−', '-', regex=False) # Maneja el signo 'menos' Unicode
+
+             # 2. Manejo de separadores: asumir formato '1.234.567,89' (punto miles, coma decimal)
+             # Eliminar el punto (separador de miles)
+             s = s.str.replace('.', '', regex=False)
+             # Reemplazar la coma (separador decimal) por punto decimal
+             s = s.str.replace(',', '.', regex=False)
+             
+             # Conversión final a numérico. Coerce errors to NaN.
+             df[col] = pd.to_numeric(s, errors='coerce').astype(float)
+
 
         # Limpieza de ANO_DE_CORTE
         if 'ANO_DE_CORTE' in df.columns:
@@ -69,7 +79,9 @@ def load_data(file_path):
             df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int)
         
+        # Filtrar años inválidos
         return df[df['ANO_DE_CORTE'] > 2000].copy()
+    
     except Exception as e:
         st.error(f"Error cargando o limpiando el archivo CSV: {e}")
         return pd.DataFrame()
@@ -111,8 +123,8 @@ ANO_CORTE_BASE_GLOBAL = assets['base_year']
 st.header("1. Filtros y Datos")
 
 # Obtener macrosectores y regiones únicas
-macrosectores = ["Todos"] + df['MACROSECTOR'].unique().tolist()
-regiones = ["Todos"] + df['REGION'].unique().tolist()
+macrosectores = ["Todos"] + df['MACROSECTOR'].dropna().unique().tolist()
+regiones = ["Todos"] + df['REGION'].dropna().unique().tolist()
 
 col_m, col_r, col_c = st.columns([1, 1, 0.5])
 
@@ -193,11 +205,11 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
             val_to_encode = row_prediccion[col].iloc[0]
             row_prediccion[col] = safe_le_transform(label_encoders[col], val_to_encode)
         
-        # 3. Aplicar One-Hot Encoding (OHE)
+        # 3. Aplicar One-Hot Encoding (OHE) a las categóricas
         ohe_cols_to_use = [c for c in OHE_COLS]
         
         for col in ohe_cols_to_use:
-            # Si el modelo NO fue reentrenado correctamente y aún espera OHE de año
+            # Si el modelo NO fue reentrenado correctamente y aún espera OHE de año (PARCHE PARA LEGACY)
             if col == 'ANO_DE_CORTE' and any(f.startswith('ANO_DE_CORTE_') for f in MODEL_FEATURE_NAMES):
                 row_prediccion[col] = format_ano(row_prediccion[col].iloc[0])
             row_prediccion[col] = row_prediccion[col].astype(str)
@@ -217,6 +229,7 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
         X_pred.loc[0, common] = row_prediccion_ohe.loc[0, common].values
         
         # 3. Inyectar numéricos/LE/Año que deben ser tratados como variables continuas
+        # Se asume que 'ANO_DE_CORTE' es una variable continua en el modelo final.
         cols_to_inject = COLS_TO_PROJECT + LE_COLS + ['ANO_DE_CORTE'] 
 
         for col in cols_to_inject:
@@ -229,11 +242,7 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
                         val = 0.0 
                     X_pred.at[0, col] = val
         
-        # 4. Debugging: Para verificar la variación en el año (opcional, comentar en producción)
-        # if 'ANO_DE_CORTE' in X_pred.columns:
-        #     st.write(f"DEBUG: ✅ Año {ano_actual} | 'ANO_DE_CORTE' (Continuo): {X_pred['ANO_DE_CORTE'].iloc[0]} | INGRESOS: ${row_current_base['INGRESOS_OPERACIONALES']:.2f}")
-
-        # 5. Asegurar tipos finales
+        # 4. Asegurar tipos finales
         X_pred = X_pred.astype(float).fillna(0)
         
         
@@ -298,7 +307,11 @@ try:
     # Obtener la fila base y la ganancia anterior
     row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
-    ganancia_anterior = ganancia_anterior / 100.0 # Parche de escala
+    
+    # ⚠️ NOTA IMPORTANTE: Si los valores en tu CSV ya están en Billones COP,
+    # comenta la siguiente línea de división:
+    # ganancia_anterior = ganancia_anterior / 100.0 
+    
     row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0]
 
 
@@ -316,7 +329,7 @@ try:
     delta_metric_value = diferencia 
 
     # --- CÁLCULO ROBUSTO DEL DELTA PORCENTUAL ---
-    if ganancia_anterior == 0:
+    if ganancia_anterior == 0 or np.isnan(ganancia_anterior) or abs(ganancia_anterior) < 0.0001:
         if pred_real_final > 0:
             delta_display = f"Ganó ${pred_real_final:,.2f} vs 0"
         elif pred_real_final < 0:
@@ -365,7 +378,7 @@ try:
             st.success(f"📈 El modelo clasifica la operación como **GANANCIA** y predice un **AUMENTO** en la magnitud de la ganancia (Resultado: ${pred_real_final:,.2f} Billones COP).")
         elif ganancia_anterior < 0:
             st.success(f"🚀 El modelo predice una **RECUPERACIÓN TOTAL** al pasar de pérdida a **GANANCIA** (Resultado: ${pred_real_final:,.2f} Billones COP).")
-        elif ganancia_anterior == 0:
+        elif ganancia_anterior == 0 or np.isnan(ganancia_anterior):
             st.success(f"📈 El modelo predice que la empresa pasa a **GANANCIA** desde equilibrio (Resultado: ${pred_real_final:,.2f} Billones COP).")
         else: 
             st.warning(f"⚠️ El modelo clasifica la operación como **GANANCIA**, pero predice una **REDUCCIÓN** en su magnitud (Resultado: ${pred_real_final:,.2f} Billones COP).")
@@ -376,7 +389,6 @@ try:
         st.info("ℹ️ El modelo predice que el resultado será **cercano a cero** (equilibrio financiero).")
 
     st.markdown("---")
-    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
 
 
 except Exception as e: 
