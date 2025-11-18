@@ -15,7 +15,7 @@ st.set_page_config(
 # --- Nombre del archivo CSV que Streamlit debe encontrar ---
 ARCHIVO_CSV = "Asset_Inventory_-_Public_20251118.csv"
 
-## 1. Funciones de Procesamiento de Datos (Sin Cambios)
+## 1. Funciones de Procesamiento de Datos
 def clean_col_name(col):
     name = col.lower().strip()
     name = name.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
