@@ -2,292 +2,377 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import os
 import unicodedata
-import warnings
-import cloudpickle 
-import os 
+from sklearn.preprocessing import LabelEncoder
+from typing import Dict, List, Tuple
 
-# Suprimir advertencias
-warnings.filterwarnings("ignore")
+# ----------------------------------------------------
+# 0) CONFIGURACIÓN INICIAL Y CONSTANTES
+# ----------------------------------------------------
+st.set_page_config(
+    page_title="📊 Dashboard ALECO",
+    layout="wide"
+)
 
-# --- 0) CONFIGURACIÓN INICIAL Y CONSTANTES ---
-st.set_page_config(layout="wide", page_title="Dashboard ALECO: Modelo de Dos Partes")
-
-st.title("📊 Dashboard ALECO: Modelo de Dos Partes")
-st.markdown("Predicción de Ganancia/Pérdida (incluyendo pérdidas reales) usando Modelado de Dos Partes. Todas las cifras se muestran en **Billones de Pesos**.")
-st.markdown("---")
-
+# Nombres de columnas clave
 TARGET_COL = 'GANANCIA_PERDIDA'
-COLS_TO_PROJECT = [
-    'INGRESOS_OPERACIONALES', 'TOTAL_ACTIVOS', 
-    'TOTAL_PASIVOS', 'TOTAL_PATRIMONIO'
-]
-# NOTA: 'ANO_DE_CORTE' NO está aquí porque es numérico en el nuevo modelo
+# OHE_COLS corregidas para excluir ANO_DE_CORTE
 OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR']
 LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU']
-AGR = 1.05 
+COLS_TO_PROJECT = ['INGRESOS_OPERACIONALES', 'TOTAL_ACTIVOS', 'TOTAL_PASIVOS', 'TOTAL_PATRIMONIO']
 
-# Definición de los nombres de archivo
-FILE_PROCESSED = "dataset_limpio_para_streamlit.csv" 
-FILE_RAW = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
-
-def normalize_col(col):
+# Función de normalización de columna
+def normalize_col(col: str) -> str:
     col = col.strip().upper().replace(" ", "_").replace("(", "").replace(")", "").replace("Ñ", "N")
     return ''.join(c for c in unicodedata.normalize('NFD', col) if unicodedata.category(c) != 'Mn')
 
-def safe_le_transform(encoder, val):
-    s = str(val)
-    if pd.isna(s): s = "nan"
-    if s in encoder.classes_:
-        return encoder.transform([s])[0]
-    return -1
 
-# --- 1) CARGA DE DATOS Y ACTIVOS ---
+# Función de Label Encoding segura
+def safe_le_transform(encoder: LabelEncoder, value: str) -> int:
+    """Aplica la transformación de LabelEncoder, devolviendo -1 para valores no vistos."""
+    try:
+        # Aseguramos que el valor de entrada se maneje como string
+        return int(encoder.transform([str(value)])[0])
+    except ValueError:
+        # Valor no visto o NaN. Devuelve el valor por defecto (-1)
+        return -1 
+
+
+# ----------------------------------------------------
+# 1) CARGAR DATOS Y LIMPIEZA
+# ----------------------------------------------------
 @st.cache_data
-def load_data(file_processed, file_raw):
-    
-    numeric_cols = COLS_TO_PROJECT + [TARGET_COL]
-    df = pd.DataFrame()
-    
-    # Intentar cargar archivo procesado o raw
-    file_to_load = file_processed if os.path.exists(file_processed) else (file_raw if os.path.exists(file_raw) else None)
-    
-    if not file_to_load:
-        st.error("No se encontró ningún archivo CSV de datos.")
+def load_data():
+    """Carga el CSV y aplica la limpieza y filtrado inicial."""
+    # **IMPORTANTE:** Cambia "nombre_de_tu_archivo.csv" por el nombre de tu archivo cargado
+    csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
+    if not os.path.exists(csv_file):
+        st.error(f"❌ ERROR: Archivo CSV no encontrado: {csv_file}")
         return pd.DataFrame()
 
     try:
-        df = pd.read_csv(file_to_load)
+        df = pd.read_csv(csv_file)
         df.columns = [normalize_col(c) for c in df.columns]
-        
-        # CORRECCIÓN DE LIMPIEZA DE NÚMEROS
-        for col in numeric_cols:
-             if col in df.columns:
-                 s = df[col].astype(str).str.strip()
-                 s = (s.str.replace('$', '', regex=False)
-                       .str.replace(',', '', regex=False) 
-                       .str.replace('(', '', regex=False)
-                       .str.replace(')', '', regex=False)
-                       .str.replace(' ', '', regex=False)
-                       .str.replace('−', '-', regex=False))
-                 
-                 df[col] = pd.to_numeric(s, errors='coerce').fillna(0.0)
 
-        # Limpieza de ANO_DE_CORTE
+        numeric_cols = COLS_TO_PROJECT + [TARGET_COL]
+        for col in numeric_cols:
+            df[col] = (
+                df[col].astype(str)
+                .str.replace("$","",regex=False).str.replace(" ","",regex=False)
+                .str.replace("−","-",regex=False).str.replace("(","",regex=False)
+                .str.replace(")","",regex=False)
+            )
+            # Elimina puntos de miles y reemplaza coma decimal por punto (Asunción de formato COP)
+            df[col] = df[col].str.replace('.', '', regex=False) 
+            df[col] = df[col].str.replace(',', '.', regex=False)
+
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Manejo del año de corte (Numérico, como se corrigió)
         if 'ANO_DE_CORTE' in df.columns:
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
-            df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce').fillna(-1).astype(int)
+            df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce')
+            df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int)
         
+        # Filtros y limpieza final
         df = df[df['ANO_DE_CORTE'] > 2000].copy()
+        df.dropna(subset=numeric_cols, inplace=True)
         
-        # NOTA: No dividimos por 1e9 porque el CSV limpio ya viene escalado.
-        st.success(f"Datos cargados desde **{file_to_load}**.")
         return df
 
     except Exception as e:
-        st.error(f"Error cargando el archivo: {e}")
+        st.error(f"❌ ERROR al leer o limpiar el CSV: {e}")
         return pd.DataFrame()
 
+
+# ----------------------------------------------------
+# 2) CARGAR TRES MODELOS Y REFERENCIAS
+# ----------------------------------------------------
 @st.cache_resource
 def load_assets():
+    """Carga los modelos, la lista de features, los encoders y la tasa de crecimiento (AGR)."""
+    assets = {}
+    files_to_load = [
+        "model_clasificacion.pkl", "model_reg_ganancia.pkl", "model_reg_perdida.pkl",
+        "model_features.pkl", "label_encoders.pkl", "growth_rate.pkl"
+    ]
+    
+    if not all(os.path.exists(f) for f in files_to_load):
+        st.error("❌ ERROR FATAL: Faltan archivos .pkl. Asegúrate de tener los 6 archivos.")
+        return None, None, None, None, None, None
+    
     try:
-        models = {
-            'cls': joblib.load("model_clasificacion.pkl"),
-            'reg_gan': joblib.load("model_reg_ganancia.pkl"),
-            'reg_per': joblib.load("model_reg_perdida.pkl"),
-        }
-        assets = {
-            'model_features': joblib.load("model_features.pkl"),
-            'AGR': joblib.load("growth_rate.pkl"),
-            'base_year': joblib.load("base_year.pkl"),
-        }
-        try:
-            assets['label_encoders'] = joblib.load("label_encoders.pkl")
-        except:
-            with open("label_encoders.pkl", "rb") as f:
-                 assets['label_encoders'] = cloudpickle.load(f)
-        return models, assets
+        assets['cls'] = joblib.load(files_to_load[0])
+        assets['reg_gan'] = joblib.load(files_to_load[1])
+        assets['reg_per'] = joblib.load(files_to_load[2])
+        assets['features'] = joblib.load(files_to_load[3])
+        assets['encoders'] = joblib.load(files_to_load[4])
+        assets['agr'] = joblib.load(files_to_load[5]) # growth_rate.pkl
+        
+        return (assets['cls'], assets['reg_gan'], assets['reg_per'], 
+                assets['features'], assets['encoders'], assets['agr'])
     except Exception as e:
-        st.error(f"Error cargando activos .pkl: {e}")
-        return None, None
+        st.error(f"❌ ERROR al cargar activos: {e}")
+        return None, None, None, None, None, None
 
-# Carga inicial
-df = load_data(FILE_PROCESSED, FILE_RAW) 
-models, assets = load_assets()
-
-if df.empty or not models:
-    st.stop()
-
-# Desempaquetar
-model_cls, model_reg_gan, model_reg_per = models['cls'], models['reg_gan'], models['reg_per']
-label_encoders = assets['label_encoders']
-MODEL_FEATURE_NAMES = assets['model_features']
-AGR = assets['AGR']
-ANO_CORTE_BASE_GLOBAL = assets['base_year']
-
-# --- 2) FILTROS Y KPIS ---
-st.header("1. Filtros y Datos")
-col1, col2 = st.columns(2)
-with col1:
-    filtro_macrosector = st.selectbox("Filtrar por Macrosector", ["Todos"] + sorted(df['MACROSECTOR'].dropna().unique().tolist()))
-with col2:
-    filtro_region = st.selectbox("Filtrar por Región", ["Todos"] + sorted(df['REGION'].dropna().unique().tolist()))
-
-df_filtrado = df.copy()
-if filtro_macrosector != "Todos":
-    df_filtrado = df_filtrado[df_filtrado['MACROSECTOR'] == filtro_macrosector]
-if filtro_region != "Todos":
-    df_filtrado = df_filtrado[df_filtrado['REGION'] == filtro_region]
-
-if df_filtrado.empty:
-    st.warning("No hay datos disponibles.")
-    st.stop()
-
-# KPIs
-st.header("2. KPIs Agregados")
-def format_currency(val):
-    return f"${val:,.2f}"
-
-ingresos_totales = df_filtrado['INGRESOS_OPERACIONALES'].sum()
-patrimonio_promedio = df_filtrado['TOTAL_PATRIMONIO'].mean()
-
-c1, c2 = st.columns(2)
-c1.metric("Ingresos Operacionales Totales (Billones COP)", format_currency(ingresos_totales))
-c2.metric("Patrimonio Promedio (Billones COP)", format_currency(patrimonio_promedio))
-
-st.markdown("---")
 
 # ----------------------------------------------------
-# FUNCIÓN DE PREDICCIÓN RECURSIVA
+# 3) FUNCIÓN DE FORECASTING RECURSIVO (LA LÓGICA CLAVE)
 # ----------------------------------------------------
-def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final, 
-                      model_cls, model_reg_gan, model_reg_per, 
-                      label_encoders, MODEL_FEATURE_NAMES, AGR, 
-                      COLS_TO_PROJECT, LE_COLS, OHE_COLS):
+
+def run_forecasting(
+    initial_row: pd.DataFrame, 
+    target_year: int, 
+    agr: float,
+    model_cls, model_reg_gan, model_reg_per,
+    model_feature_names: List[str], label_encoders: Dict[str, LabelEncoder]
+) -> pd.DataFrame:
+    """
+    Realiza la predicción recursiva aplicando el AGR a las variables financieras
+    y ejecutando el Hurdle Model para cada año hasta target_year.
+    """
+    # Usamos la primera fila como base
+    current_data = initial_row.iloc[0].copy()
+    start_year = current_data['ANO_DE_CORTE']
     
-    # Asegurar que row_base sea una SERIE
-    if isinstance(row_base, pd.DataFrame):
-        row_current_base = row_base.iloc[0].copy()
-    else:
-        row_current_base = row_base.copy()
+    # DataFrame para almacenar el resultado final
+    df_forecast = pd.DataFrame()
     
-    # Asegurar tipos float
-    for col in COLS_TO_PROJECT:
-        row_current_base[col] = float(row_current_base[col])
-    
-    años_a_predecir = range(ano_corte_empresa + 1, ano_prediccion_final + 1)
-    pred_real_final = 0.0 
-    
-    for ano_actual in años_a_predecir:
-        # A. Proyección
+    # Itera desde el año base + 1 hasta el año objetivo
+    for year in range(start_year + 1, target_year + 1):
+        
+        # --- Paso 1: Proyección (Recursiva) ---
+        # Aplica AGR a las variables financieras proyectables
         for col in COLS_TO_PROJECT:
-            row_current_base[col] = row_current_base[col] * AGR
+            # Multiplica el valor del año anterior (current_data) por AGR
+            current_data[col] *= agr
             
-        # B. Preparar fila de predicción
-        row_prediccion = row_current_base.to_frame().T 
-        row_prediccion["ANO_DE_CORTE"] = int(ano_actual)
+        # Actualiza el año
+        current_data['ANO_DE_CORTE'] = year
         
-        # C. Codificación
+        # --- Paso 2: Preprocesamiento para el Modelo ---
+        # Crea la fila de predicción (temporal)
+        row_prediccion = pd.DataFrame([current_data.to_dict()])
+        
+        # Copia de la fila para trabajar
+        X_pred_temp = row_prediccion.copy()
+        
+        # Aplicar Label Encoding (con manejo seguro de valores no vistos)
         for col in LE_COLS:
-            val = row_prediccion[col].iloc[0]
-            row_prediccion[col] = safe_le_transform(label_encoders[col], val)
-        
-        for col in OHE_COLS:
-            row_prediccion[col] = row_prediccion[col].astype(str)
-            
-        # --- CORRECCIÓN DE SINTAXIS AQUÍ ---
-        row_prediccion_ohe = pd.get_dummies(
-            row_prediccion, 
-            columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
+            encoder = label_encoders[col]
+            # Usar safe_le_transform, aplicado a una columna entera simulada con .apply()
+            X_pred_temp[col] = X_pred_temp[col].apply(lambda x: safe_le_transform(encoder, x))
+
+        # Aplicar One-Hot Encoding (OHE)
+        X_pred_temp = pd.get_dummies(
+            X_pred_temp, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
         )
         
-        # D. Alineación
-        X_pred = pd.DataFrame(0, index=[0], columns=MODEL_FEATURE_NAMES)
+        # Alinear y ordenar las columnas (CRÍTICO)
+        missing_cols = set(model_feature_names) - set(X_pred_temp.columns)
+        for c in missing_cols:
+            X_pred_temp[c] = 0 
         
-        # Copiar OHE coincidentes
-        common_cols = [c for c in row_prediccion_ohe.columns if c in X_pred.columns]
-        X_pred.loc[0, common_cols] = row_prediccion_ohe.loc[0, common_cols].values
+        X_pred = X_pred_temp[model_feature_names].copy()
+        X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0) # Limpieza final
+
+        # --- Paso 3: Predicción con Hurdle Model ---
         
-        # Copiar Numéricos y LE (incluyendo ANO_DE_CORTE como numérico)
-        cols_direct = COLS_TO_PROJECT + LE_COLS + ['ANO_DE_CORTE']
-        for col in cols_direct:
-            if col in X_pred.columns:
-                X_pred[col] = row_prediccion[col].iloc[0]
-        
-        X_pred = X_pred.astype(float)
-        
-        # E. Predicción
+        # 3A: Clasificar (0 = Pérdida/Cero, 1 = Ganancia)
         pred_cls = model_cls.predict(X_pred)[0]
         
+        pred_real = 0.0
+        
         if pred_cls == 1:
+            # 3B-Ganancia: Usar Regresión de Ganancias
             pred_log = model_reg_gan.predict(X_pred)[0]
-            pred_val = np.expm1(pred_log)
+            pred_real = np.expm1(pred_log) # Reversión: e^x - 1
         else:
+            # 3B-Pérdida: Usar Regresión de Pérdidas
             pred_log = model_reg_per.predict(X_pred)[0]
-            pred_val = -np.expm1(pred_log)
-            
-        pred_real_final = pred_val
+            magnitud_perdida_real = np.expm1(pred_log)
+            pred_real = -magnitud_perdida_real # CRÍTICO: Convertir a valor negativo
+
+        # --- Paso 4: Almacenar Resultado y Preparar para el Siguiente Bucle ---
         
-        # Actualizar base para siguiente iteración
-        # (Opcional: si quisieras usar la ganancia predicha para algo más, pero aquí solo proyectamos features financieros)
+        # Almacena G/P en el DataFrame de resultados
+        row_prediccion['GANANCIA_PERDIDA_PRED'] = pred_real 
+        row_prediccion['ANO_DE_CORTE'] = year
         
-    return pred_real_final
+        df_forecast = pd.concat([df_forecast, row_prediccion], ignore_index=True)
+        
+        # La G/P predicha no es un input para la siguiente proyección, 
+        # solo los COLS_TO_PROJECT son inputs
+        
+    return df_forecast
+
 
 # ----------------------------------------------------
-# SECCIÓN 5: EJECUCIÓN
+# --- INICIO DE LA APLICACIÓN ---
 # ----------------------------------------------------
-st.header("3. Predicción de Ganancia/Pérdida")
 
-col_sel_company, col_sel_year = st.columns(2) 
+# Cargar activos
+df = load_data()
+(model_cls, model_reg_gan, model_reg_per, 
+ MODEL_FEATURE_NAMES, label_encoders, AGR) = load_assets()
 
-# --- CORRECCIÓN DEL ERROR DE SORTED ---
-# Eliminamos nulos y aseguramos que sean string antes de ordenar
-lista_empresas = df_filtrado["RAZON_SOCIAL"].dropna().astype(str).unique().tolist()
-empresas_disponibles = sorted(lista_empresas)
+# Validaciones de carga
+if df.empty:
+    st.error("❌ ERROR FATAL: No se encontraron datos válidos en el CSV.")
+    st.stop()
+    
+if None in [model_cls, model_reg_gan, model_reg_per, MODEL_FEATURE_NAMES, label_encoders, AGR]:
+    st.error("❌ ERROR FATAL: Faltan activos (modelos, features, encoders, AGR). Verifica los archivos .pkl.")
+    st.stop()
+
+# --- Encabezado ---
+st.title("📊 Dashboard ALECO: Modelo de Dos Partes")
+st.markdown(f"""
+**Predicción de Ganancia/Pérdida (incluyendo pérdidas reales) usando Modelado de Dos Partes.**
+Todas las cifras se muestran en **Billones de Pesos**. Tasa de Crecimiento Anual (AGR) aplicada: **{AGR*100-100:.1f}%**
+""")
+st.markdown("---")
+
+ano_corte_mas_reciente_global = df["ANO_DE_CORTE"].max()
+
+# ----------------------------------------------------
+# 4) DASHBOARD PRINCIPAL Y FILTROS
+# ----------------------------------------------------
+st.header("1. Filtros y Datos")
+col1, col2 = st.columns(2)
+
+with col1:
+    sector = st.selectbox("Filtrar por Macrosector", ["Todos"] + df["MACROSECTOR"].unique().tolist())
+with col2:
+    region = st.selectbox("Filtrar por Región", ["Todos"] + df["REGION"].unique().tolist())
+
+df_filtrado = df.copy()
+if sector != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["MACROSECTOR"] == sector]
+if region != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["REGION"] == region]
+
+# Aseguramos que solo trabajamos con el año más reciente de datos reales en el DF filtrado
+df_filtrado_latest = df_filtrado[df_filtrado["ANO_DE_CORTE"] == df_filtrado["ANO_DE_CORTE"].max()].copy()
+
+
+if df_filtrado_latest.empty:
+    st.error("❌ ERROR: Los filtros eliminaron todos los datos válidos.")
+    st.stop()
+
+st.info(f"✅ Año de corte máximo global: **{ano_corte_mas_reciente_global}**. Empresas cargadas: **{len(df_filtrado_latest)}**")
+st.dataframe(df_filtrado_latest[["RAZON_SOCIAL", "ANO_DE_CORTE", "INGRESOS_OPERACIONALES", TARGET_COL]].head())
+
+# ----------------------------------------------------
+# 5) PREDICCIÓN CON LÓGICA DE FORECASTING
+# ----------------------------------------------------
+st.header("2. Proyección de Ganancia/Pérdida")
+
+# --- SELECTORES: Año y Empresa ---
+col_sel_company, col_sel_year = st.columns(2)
+
+# Usamos empresas disponibles en el año más reciente filtrado
+empresas_disponibles = df_filtrado_latest["RAZON_SOCIAL"].unique().tolist() 
 
 if not empresas_disponibles:
-    st.warning("No hay empresas disponibles.")
+    st.warning("No hay empresas disponibles después de aplicar los filtros.")
     st.stop()
 
 with col_sel_company:
-    idx = empresas_disponibles.index("ECOPETROL S.A") if "ECOPETROL S.A" in empresas_disponibles else 0
-    empresa_seleccionada = st.selectbox("Selecciona la Empresa", empresas_disponibles, index=idx)
+    empresa_seleccionada = st.selectbox(
+        "Selecciona la Empresa para proyectar", empresas_disponibles
+    )
 
 with col_sel_year:
-    ano_prediccion = st.selectbox("Año de Predicción", [2025, 2026, 2027, 2028, 2029, 2030])
-
-try:
-    df_empresa = df_filtrado[df_filtrado["RAZON_SOCIAL"] == empresa_seleccionada]
-    ano_corte_empresa = int(df_empresa["ANO_DE_CORTE"].max())
+    max_forecast_year = 2030
+    años_futuros = list(range(ano_corte_mas_reciente_global + 1, max_forecast_year + 1))
     
-    if ano_prediccion <= ano_corte_empresa:
-        st.warning(f"Selecciona un año mayor al último corte ({ano_corte_empresa}).")
-    else:
-        # Obtener datos base
-        row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].reset_index(drop=True).iloc[[0]]
-        ganancia_anterior = row_data[TARGET_COL].iloc[0]
-        
-        row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0]
+    if not años_futuros:
+        st.warning(f"El año de corte base ({ano_corte_mas_reciente_global}) ya es el máximo permitido para proyectar.")
+        st.stop()
+    
+    ano_prediccion = st.slider(
+        "Selecciona el Año Final de Proyección", 
+        min_value=años_futuros[0], 
+        max_value=años_futuros[-1], 
+        value=min(2028, años_futuros[-1])
+    )
 
-        st.info(f"Prediciendo para **{ano_prediccion}** (Base: {ano_corte_empresa}) | AGR: {AGR}")
-        
-        pred_final = predict_recursive(
-            row_base, ano_corte_empresa, ano_prediccion,
-            model_cls, model_reg_gan, model_reg_per,
-            label_encoders, MODEL_FEATURE_NAMES, AGR,
-            COLS_TO_PROJECT, LE_COLS, OHE_COLS
-        )
-        
-        # Resultados
-        diff = pred_final - ganancia_anterior
-        c1, c2 = st.columns(2)
-        c1.metric(f"Predicción {ano_prediccion}", format_currency(pred_final), f"{diff:,.2f}", delta_color="normal")
-        c2.metric(f"Real {ano_corte_empresa}", format_currency(ganancia_anterior))
-        
-        if pred_final > 0:
-            st.success(f"Se proyecta una GANANCIA de {format_currency(pred_final)}")
-        else:
-            st.error(f"Se proyecta una PÉRDIDA de {format_currency(abs(pred_final))}")
+# --- Lógica de Proyección ---
+try:
+    # Fila base de la empresa (último dato real)
+    row_data_base = df_filtrado_latest[
+        df_filtrado_latest["RAZON_SOCIAL"] == empresa_seleccionada
+    ].iloc[[0]].copy()
+    
+    ano_corte_empresa = row_data_base["ANO_DE_CORTE"].iloc[0]
+
+    # Ejecutar la función de forecasting recursivo
+    df_prediccion_forecast = run_forecasting(
+        initial_row=row_data_base, 
+        target_year=ano_prediccion, 
+        agr=AGR,
+        model_cls=model_cls, model_reg_gan=model_reg_gan, model_reg_per=model_reg_per,
+        model_feature_names=MODEL_FEATURE_NAMES, label_encoders=label_encoders
+    )
+
+    # --- 3. MOSTRAR RESULTADOS (Tabla y Gráfico) ---
+    
+    st.markdown("#### Detalle de la Proyección Anual")
+    
+    # Prepara los datos para la tabla y gráfico
+    df_resultados = df_prediccion_forecast[['ANO_DE_CORTE', 'GANANCIA_PERDIDA_PRED', 'INGRESOS_OPERACIONALES']].copy()
+    
+    # Obtener el último dato real para comparación
+    last_real_data = row_data_base[['ANO_DE_CORTE', TARGET_COL]].rename(
+        columns={TARGET_COL: 'GANANCIA_PERDIDA_PRED'}
+    )
+    
+    # Combina datos reales y proyectados
+    df_plot_data = pd.concat([last_real_data, df_resultados[['ANO_DE_CORTE', 'GANANCIA_PERDIDA_PRED']]], ignore_index=True)
+    df_plot_data['Tipo'] = df_plot_data['ANO_DE_CORTE'].apply(lambda y: 'Real' if y == ano_corte_empresa else 'Proyectado')
+
+    # KPI final (Año de Predicción)
+    pred_real = df_resultados['GANANCIA_PERDIDA_PRED'].iloc[-1]
+    ganancia_anterior = last_real_data['GANANCIA_PERDIDA_PRED'].iloc[0]
+    
+    diferencia = pred_real - ganancia_anterior
+
+    # Lógica simplificada de Delta para el KPI (mejorado)
+    delta_display = f"vs {ano_corte_empresa}"
+    
+    st.metric(
+        label=f"GANANCIA/PÉRDIDA Predicha Final ({ano_prediccion}) (Billones COP)",
+        value=f"${pred_real:,.2f}",
+        delta=diferencia,
+        delta_color="normal"
+    )
+    st.caption(f"Cambio absoluto en la G/P: ${diferencia:,.2f} {delta_display}")
+
+
+    # Gráfico de Tendencia
+    st.line_chart(
+        df_plot_data.set_index('ANO_DE_CORTE'),
+        y='GANANCIA_PERDIDA_PRED',
+        color='Tipo',
+        use_container_width=True
+    )
+    
+
+    # Mensaje condicional (basado en el último año proyectado)
+    if pred_real >= 0.01:
+        st.success(f"📈 La proyección final indica una **GANANCIA** de ${pred_real:,.2f} Billones COP en {ano_prediccion}.")
+    elif pred_real < -0.01:
+        st.error(f"📉 La proyección final indica una **PÉRDIDA** de ${abs(pred_real):,.2f} Billones COP en {ano_prediccion}.")
+    else:
+        st.info("ℹ️ La proyección final indica un resultado **cercano a cero** (equilibrio financiero).")
+
+    st.markdown("---")
+    st.markdown("Lo invitamos a participar en la **siguiente encuesta**.")
+
 
 except Exception as e:
-    st.error(f"Error en predicción: {e}")
+    st.error(f"❌ ERROR generando la proyección: {e}")
+    st.caption(f"Detalle del error: {e}")
+# ----------------------------------------------------
