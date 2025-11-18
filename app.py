@@ -25,7 +25,7 @@ COLS_TO_PROJECT = [
 OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR']
 LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU']
 
-# Función de normalización (debe coincidir con la del notebook)
+# Función de normalización (debe coincidir con el del notebook)
 def normalize_col(col):
     col = col.strip().upper().replace(" ", "_").replace("(", "").replace(")", "").replace("Ñ", "N")
     return ''.join(c for c in unicodedata.normalize('NFD', col) if unicodedata.category(c) != 'Mn')
@@ -38,7 +38,7 @@ def safe_le_transform(encoder, val):
         return int(np.where(encoder.classes_ == s)[0][0])
     return -1
 
-# Función de formato de año (para OHE, no se usa ya, pero se mantiene por si acaso)
+# Función de formato de año (para OHE, mantenida por compatibilidad, aunque ya no se usa para predicción)
 def format_ano(year):
     """Convierte el año 2024 a '2,024' para la codificación OHE."""
     year_str = str(year)
@@ -46,7 +46,7 @@ def format_ano(year):
         return f'{year_str[0]},{year_str[1:]}' 
     return year_str
 
-# --- 1) CARGA DE DATOS Y ACTIVOS (CORRECCIÓN DE LIMPIEZA NUMÉRICA) ---
+# --- 1) CARGA DE DATOS Y ACTIVOS (CORRECCIÓN DE LIMPIEZA NUMÉRICA ROBUSTA) ---
 @st.cache_data
 def load_data(file_path):
     try:
@@ -59,17 +59,35 @@ def load_data(file_path):
         for col in numeric_cols:
              s = df[col].astype(str).str.strip()
              
-             # 1. Quitar símbolos monetarios y de agrupación, y el signo menos
-             s = s.str.replace(r'[\$\s()]', '', regex=True)
-             s = s.str.replace('−', '-', regex=False) # Maneja el signo 'menos' Unicode
+             # Función de limpieza robusta para formato local (e.g., 1.234.567,89)
+             def clean_locale_number(num_str):
+                 if not isinstance(num_str, str): return np.nan
+                 
+                 # 1. Quitar símbolos, paréntesis y el signo de menos Unicode
+                 num_str = num_str.replace('$', '').replace('(', '').replace(')', '').replace(' ', '').replace('−', '-')
+                 
+                 # 2. Manejo de separadores: asumir formato '1.234.567,89' (Punto miles, Coma decimal)
+                 # Eliminar el punto (separador de miles)
+                 if num_str.count('.') > 0 and num_str.count(',') == 1 and num_str.rfind('.') < num_str.rfind(','):
+                     num_str = num_str.replace('.', '')
+                 elif num_str.count('.') >= 1 and num_str.count(',') == 0:
+                     # Si solo hay puntos, asumimos formato Americano si es el único punto (decimal)
+                     # Si hay varios puntos y no hay comas, asumimos que son separadores de miles y los quitamos.
+                      if num_str.count('.') > 1:
+                           num_str = num_str.replace('.', '')
+                      
+                 # Reemplazar la coma (separador decimal) por punto decimal
+                 num_str = num_str.replace(',', '.')
+                 
+                 # Eliminar cualquier otro caracter no numérico restante (excepto el punto decimal y el signo)
+                 import re
+                 num_str = re.sub(r'[^\d\.\-]', '', num_str)
 
-             # 2. Manejo de separadores: asumir formato '1.234.567,89' (punto miles, coma decimal)
-             # Eliminar el punto (separador de miles)
-             s = s.str.replace('.', '', regex=False)
-             # Reemplazar la coma (separador decimal) por punto decimal
-             s = s.str.replace(',', '.', regex=False)
+                 return num_str
+                 
+             s = s.apply(clean_locale_number)
              
-             # Conversión final a numérico. Coerce errors to NaN.
+             # C. Conversión final a numérico. Coerce errors to NaN.
              df[col] = pd.to_numeric(s, errors='coerce').astype(float)
 
 
@@ -80,7 +98,12 @@ def load_data(file_path):
             df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].fillna(-1).astype(int)
         
         # Filtrar años inválidos
-        return df[df['ANO_DE_CORTE'] > 2000].copy()
+        df = df[df['ANO_DE_CORTE'] > 2000].copy()
+        
+        # Opcional: llenar NaNs en columnas numéricas clave con 0 después de la limpieza
+        df[numeric_cols] = df[numeric_cols].fillna(0.0)
+
+        return df
     
     except Exception as e:
         st.error(f"Error cargando o limpiando el archivo CSV: {e}")
@@ -183,7 +206,7 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
     row_current_base = row_base.copy()
     
     for col in COLS_TO_PROJECT:
-         row_current_base[col] = pd.to_numeric(row_current_base[col], errors='coerce').astype(float)
+         row_current_base[col] = pd.to_numeric(row_current_base[col], errors='coerce').astype(float).fillna(0)
     
     años_a_predecir = range(ano_corte_empresa + 1, ano_prediccion_final + 1)
     pred_real_final = 0.0 
@@ -209,9 +232,6 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
         ohe_cols_to_use = [c for c in OHE_COLS]
         
         for col in ohe_cols_to_use:
-            # Si el modelo NO fue reentrenado correctamente y aún espera OHE de año (PARCHE PARA LEGACY)
-            if col == 'ANO_DE_CORTE' and any(f.startswith('ANO_DE_CORTE_') for f in MODEL_FEATURE_NAMES):
-                row_prediccion[col] = format_ano(row_prediccion[col].iloc[0])
             row_prediccion[col] = row_prediccion[col].astype(str)
 
         row_prediccion_ohe = pd.get_dummies(
@@ -229,7 +249,6 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
         X_pred.loc[0, common] = row_prediccion_ohe.loc[0, common].values
         
         # 3. Inyectar numéricos/LE/Año que deben ser tratados como variables continuas
-        # Se asume que 'ANO_DE_CORTE' es una variable continua en el modelo final.
         cols_to_inject = COLS_TO_PROJECT + LE_COLS + ['ANO_DE_CORTE'] 
 
         for col in cols_to_inject:
@@ -247,6 +266,10 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
         
         
         # D. Lógica de Predicción Condicional
+        # Verificar que X_pred tenga features antes de predecir
+        if X_pred.shape[1] == 0:
+            raise ValueError("El DataFrame de predicción (X_pred) está vacío.")
+
         pred_cls = model_cls.predict(X_pred)[0]
         
         if pred_cls == 1:
@@ -284,7 +307,6 @@ with col_sel_company:
 
 with col_sel_year:
     pred_years = [2026, 2027, 2028, 2029, 2030]
-    # Asegurarse de que el año de predicción sea mayor al año de corte global
     años_futuros = [y for y in pred_years if y > ano_corte_mas_reciente_global]
     if not años_futuros:
         st.warning(f"El año de corte base es {ano_corte_mas_reciente_global}. No hay años futuros disponibles.")
@@ -308,8 +330,7 @@ try:
     row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].iloc[[0]].copy()
     ganancia_anterior = row_data[TARGET_COL].iloc[0]
     
-    # ⚠️ NOTA IMPORTANTE: Si los valores en tu CSV ya están en Billones COP,
-    # comenta la siguiente línea de división:
+    # ⚠️ REVISIÓN CRÍTICA: Desactivar si el CSV ya está en la escala correcta (Billones COP)
     # ganancia_anterior = ganancia_anterior / 100.0 
     
     row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0]
@@ -393,4 +414,4 @@ try:
 
 except Exception as e: 
     st.error(f"❌ ERROR generando la predicción: {e}")
-    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos y que todos los SIETE archivos .pkl sean consistentes con el entrenamiento donde **ANO_DE_CORTE es numérico**.")
+    st.caption("Asegúrate de que la empresa seleccionada tiene datos completos, que todos los SIETE archivos .pkl sean consistentes, y que el formato de números en tu CSV es compatible con el limpiador.")
