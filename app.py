@@ -42,7 +42,7 @@ def safe_le_transform(encoder, val):
         return encoder.transform([s])[0]
     return -1
 
-# --- 1) CARGA DE DATOS Y ACTIVOS (CORREGIDA PARA TU FORMATO) ---
+# --- 1) CARGA DE DATOS Y ACTIVOS ---
 @st.cache_data
 def load_data(file_processed, file_raw):
     
@@ -82,11 +82,7 @@ def load_data(file_processed, file_raw):
         
         df = df[df['ANO_DE_CORTE'] > 2000].copy()
         
-        # NOTA: NO DIVIDIMOS POR 1e9 AQUÍ. 
-        # Asumimos que los datos en el CSV ya vienen en la escala correcta (ej: 129.51)
-        # Si tus KPIs salen gigantescos, entonces descomenta la línea de abajo.
-        # for col in numeric_cols: df[col] = df[col] / 1e9 
-
+        # NOTA: NO DIVIDIMOS POR 1e9 AQUÍ porque los datos ya vienen escalados (según tus KPIs correctos)
         st.success(f"Datos cargados desde **{file_to_load}**.")
         return df
 
@@ -151,7 +147,6 @@ if df_filtrado.empty:
 
 # KPIs
 st.header("2. KPIs Agregados")
-# Asumimos que los datos YA están en Billones. Usamos formato simple.
 def format_currency(val):
     return f"${val:,.2f}"
 
@@ -165,20 +160,20 @@ c2.metric("Patrimonio Promedio (Billones COP)", format_currency(patrimonio_prome
 st.markdown("---")
 
 # ----------------------------------------------------
-# FUNCIÓN DE PREDICCIÓN RECURSIVA (CORREGIDA)
+# FUNCIÓN DE PREDICCIÓN RECURSIVA
 # ----------------------------------------------------
 def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final, 
                       model_cls, model_reg_gan, model_reg_per, 
                       label_encoders, MODEL_FEATURE_NAMES, AGR, 
                       COLS_TO_PROJECT, LE_COLS, OHE_COLS):
     
-    # CORRECCIÓN CRÍTICA: Asegurar que row_base sea una SERIE, no un DataFrame
+    # Asegurar que row_base sea una SERIE
     if isinstance(row_base, pd.DataFrame):
         row_current_base = row_base.iloc[0].copy()
     else:
         row_current_base = row_base.copy()
     
-    # Asegurar tipos float para proyección
+    # Asegurar tipos float
     for col in COLS_TO_PROJECT:
         row_current_base[col] = float(row_current_base[col])
     
@@ -190,33 +185,28 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
         for col in COLS_TO_PROJECT:
             row_current_base[col] = row_current_base[col] * AGR
             
-        # B. Preparar fila de predicción (Convertir Serie a DataFrame de 1 fila)
+        # B. Preparar fila de predicción
         row_prediccion = row_current_base.to_frame().T 
         row_prediccion["ANO_DE_CORTE"] = int(ano_actual)
         
         # C. Codificación
-        # Label Encoding
         for col in LE_COLS:
             val = row_prediccion[col].iloc[0]
             row_prediccion[col] = safe_le_transform(label_encoders[col], val)
         
-        # One-Hot Encoding
         for col in OHE_COLS:
             row_prediccion[col] = row_prediccion[col].astype(str)
             
         row_prediccion_ohe = pd.get_dummies(
             row_prediccion, 
-            columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
+            columns=ohe_cols_to_use=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
         )
         
-        # D. Alineación con features del modelo
+        # D. Alineación
         X_pred = pd.DataFrame(0, index=[0], columns=MODEL_FEATURE_NAMES)
-        
-        # Copiar OHE coincidentes
         common_cols = [c for c in row_prediccion_ohe.columns if c in X_pred.columns]
         X_pred[common_cols] = row_prediccion_ohe[common_cols]
         
-        # Copiar Numéricos y LE (incluyendo ANO_DE_CORTE como numérico)
         cols_direct = COLS_TO_PROJECT + LE_COLS + ['ANO_DE_CORTE']
         for col in cols_direct:
             if col in X_pred.columns:
@@ -244,7 +234,11 @@ def predict_recursive(row_base, ano_corte_empresa, ano_prediccion_final,
 st.header("3. Predicción de Ganancia/Pérdida")
 
 col_sel_company, col_sel_year = st.columns(2) 
-empresas_disponibles = sorted(df_filtrado["RAZON_SOCIAL"].unique().tolist())
+
+# --- CORRECCIÓN DEL ERROR DE SORTED ---
+# Eliminamos nulos y aseguramos que sean string antes de ordenar
+lista_empresas = df_filtrado["RAZON_SOCIAL"].dropna().astype(str).unique().tolist()
+empresas_disponibles = sorted(lista_empresas)
 
 if not empresas_disponibles:
     st.warning("No hay empresas disponibles.")
@@ -264,12 +258,10 @@ try:
     if ano_prediccion <= ano_corte_empresa:
         st.warning(f"Selecciona un año mayor al último corte ({ano_corte_empresa}).")
     else:
-        # Obtener datos base. Usamos reset_index para asegurar que iloc[0] funcione
+        # Obtener datos base
         row_data = df_empresa[df_empresa["ANO_DE_CORTE"] == ano_corte_empresa].reset_index(drop=True).iloc[[0]]
         ganancia_anterior = row_data[TARGET_COL].iloc[0]
         
-        # Preparamos la fila base para la recursión (Serie)
-        # Eliminamos solo las columnas que no sirven para predecir
         row_base = row_data.drop(columns=[TARGET_COL, 'NIT', 'RAZON_SOCIAL'], errors='ignore').iloc[0]
 
         st.info(f"Prediciendo para **{ano_prediccion}** (Base: {ano_corte_empresa}) | AGR: {AGR}")
