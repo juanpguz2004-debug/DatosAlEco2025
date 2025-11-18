@@ -6,9 +6,7 @@ import seaborn as sns
 from sklearn.ensemble import IsolationForest
 from datetime import datetime, date 
 
-# Desactivar advertencias de Matplotlib en Streamlit
-st.set_option('deprecation.showPyplotGlobalUse', False)
-# Configuración inicial de la página
+# Configuración de la página (La línea st.set_option obsoleta ha sido ELIMINADA)
 st.set_page_config(
     page_title="Dashboard de Diagnóstico de Activos",
     layout="wide"
@@ -17,7 +15,7 @@ st.set_page_config(
 # --- Nombre del archivo CSV que Streamlit debe encontrar ---
 ARCHIVO_CSV = "Asset_Inventory_-_Public_20251118.csv"
 
-## --- 1. Funciones de Procesamiento de Datos ---
+## 1. Funciones de Procesamiento de Datos
 
 # Función para limpiar y estandarizar nombres de columnas (snake_case)
 def clean_col_name(col):
@@ -61,7 +59,7 @@ def process_data(df):
     # 1. Limpieza de nombres de columnas
     df.columns = [clean_col_name(col) for col in df.columns]
     
-    # 2. Asunción de CÁLCULOS PREVIOS (Antigüedad y Estado de Actualización)
+    # 2. CÁLCULOS PREVIOS (Antigüedad y Estado de Actualización)
     df['popularidad_score'] = df['vistas'] + df['descargas'] # Score de Popularidad simple
     df = calculate_antiguedad_y_estado(df.copy()) 
     
@@ -109,7 +107,8 @@ def process_data(df):
 
     return df_publico
 
-## --- 2. Título y Carga Directa ---
+## 2. Título y Ejecución Principal
+
 st.title("📊 Dashboard de Priorización de Activos de Datos")
 
 try:
@@ -119,7 +118,7 @@ try:
         df_publico = process_data(df.copy())
 
     st.success(f'✅ Archivo **{ARCHIVO_CSV}** cargado y procesamiento completado. Mostrando resultados para activos PÚBLICOS.')
-    st.info(f"El procesamiento se realiza con el modelo ML Isolation Forest para la detección de anomalías.")
+    st.info(f"El procesamiento incluye un modelo ML Isolation Forest para la detección de anomalías.")
     st.write(f"Total de activos en el inventario: **{len(df)}**")
     st.write(f"Total de activos de modalidad PÚBLICA analizados: **{len(df_publico)}**")
     
@@ -138,7 +137,7 @@ try:
         
         # --- Visualización 1: Prioridad de Intervención ---
         st.subheader("1. Prioridad de Intervención (Score ML)")
-        st.markdown("Este gráfico identifica activos que requieren atención urgente, considerando **Antigüedad**, **Riesgo** (Score ML), y **Demanda** (Tamaño del punto).")
+        st.markdown("Identifica activos que requieren atención urgente, considerando **Antigüedad**, **Riesgo** (Score ML), y **Demanda** (Tamaño del punto).")
         
         fig1, ax1 = plt.subplots(figsize=(12, 7))
         sns.scatterplot(
@@ -221,5 +220,5 @@ except FileNotFoundError:
     st.error(f"❌ Error: No se encontró el archivo **{ARCHIVO_CSV}**.")
     st.info("Asegúrate de que el archivo CSV esté en la misma carpeta que `app.py`.")
 except Exception as e:
-    st.error(f"❌ Ocurrió un error inesperado al procesar el archivo: {e}")
-    st.info("Verifica la integridad del archivo CSV y que todas las librerías estén instaladas.")
+    st.error(f"❌ Ocurrió un error inesperado: {e}")
+    st.info("Verifica que todas las librerías estén instaladas (`pip install streamlit pandas numpy matplotlib seaborn scikit-learn`) y que el CSV no esté corrupto.")
