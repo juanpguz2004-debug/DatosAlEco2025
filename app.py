@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.ensemble import IsolationForest
 from datetime import datetime, date 
+from matplotlib.ticker import PercentFormatter
 
 # Configuración de la página
 st.set_page_config(
@@ -15,7 +16,7 @@ st.set_page_config(
 # --- Nombre del archivo CSV que Streamlit debe encontrar ---
 ARCHIVO_CSV = "Asset_Inventory_-_Public_20251118.csv"
 
-## 1. Funciones de Procesamiento de Datos (Sin Cambios)
+## 1. Funciones de Procesamiento de Datos (Sin Cambios en la Lógica Central)
 def clean_col_name(col):
     name = col.lower().strip()
     name = name.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
@@ -180,7 +181,7 @@ try:
         # --- 2.1 BARRA LATERAL (FILTROS SECUNDARIOS) ---
         st.sidebar.header("⚙️ Filtros para Visualizaciones")
         
-        # NUEVO FILTRO: Nivel de Acceso (Activa/Desactiva 'public', etc.)
+        # FILTRO: Nivel de Acceso (Activa/Desactiva 'public', etc.)
         access_levels = df_analisis_completo['common_core_public_access_level'].dropna().unique().tolist()
         access_levels.sort()
         access_levels.insert(0, "Mostrar Todos")
@@ -232,9 +233,64 @@ try:
             col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
             
             st.markdown("---")
+
+            # --- NUEVA SECCIÓN: 4. Tabla de Búsqueda de Entidades Detallada ---
+            st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
+
+            st.info("""
+                Utiliza la barra de búsqueda para filtrar el diagnóstico por **Entidad Responsable** (`dueño`). 
+                Esta tabla resume el estado de calidad de cada sector en la vista actual, combinando las métricas de:
+                1. **Riesgo Promedio:** La calificación general de prioridad de intervención.
+                2. **Completitud Promedio:** Calidad de los metadatos.
+                3. **Antigüedad Promedio (Coherencia):** Promedio de días desde la última actualización.
+                4. **Incumplimiento:** Porcentaje de activos que no cumplen con su frecuencia de actualización prometida.
+            """)
             
+            # Calculamos el resumen de métricas por DUEÑO
+            resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
+                Activos_Totales=('uid', 'count'),
+                Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
+                Completitud_Promedio=('completitud_score', 'mean'),
+                Antiguedad_Promedio_Dias=('antiguedad_datos_dias', 'mean'),
+                Incumplimiento_Absoluto=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
+            ).reset_index()
+
+            resumen_entidades_busqueda['%_Incumplimiento'] = (resumen_entidades_busqueda['Incumplimiento_Absoluto'] / resumen_entidades_busqueda['Activos_Totales']) * 100
             
-            # --- Visualización 1: Gráfico de Barras de Completitud por Entidad ---
+            # Formato de la tabla
+            resumen_entidades_busqueda = resumen_entidades_busqueda.rename(columns={'dueño': 'Entidad Responsable'})
+            resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
+            
+            # Configuración para búsqueda interactiva
+            columnas_busqueda = {
+                'Entidad Responsable': 'Entidad Responsable',
+                'Activos_Totales': 'Activos Totales',
+                'Riesgo_Promedio': 'Riesgo Promedio',
+                'Completitud_Promedio': 'Completitud Promedio (%)',
+                'Antiguedad_Promedio_Dias': 'Antigüedad Promedio (Días)',
+                '%_Incumplimiento': '% Incumplimiento'
+            }
+
+            st.dataframe(
+                resumen_entidades_busqueda.style.format({
+                    'Riesgo_Promedio': '{:.2f}',
+                    'Completitud_Promedio': '{:.2f}%',
+                    'Antiguedad_Promedio_Dias': '{:.0f}',
+                    '%_Incumplimiento': '{:.2f}%'
+                }), 
+                use_container_width=True,
+                column_config={
+                    'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable", help="Buscar por nombre de la entidad."),
+                    'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio", format="%.2f", help="Score de prioridad de intervención."),
+                    'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%"),
+                    'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d"),
+                    '%_Incumplimiento': st.column_config.ProgressColumn("% Incumplimiento", format="%.2f%%", min_value=0, max_value=100)
+                }
+            )
+
+            st.markdown("---")
+
+            # --- Visualización 1: Gráfico de Barras de Completitud por Entidad (Se mantiene) ---
             st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
             
             st.info("""
@@ -285,57 +341,65 @@ try:
 
             st.markdown("---")
 
-
-            # --- Visualización 2: Top 10 Entidades con Incumplimiento ---
-            st.subheader("2. 🚨 Ranking de Entidades por Porcentaje de Incumplimiento")
+            # --- Visualización 2: Gráfico de PARETO de Riesgo (NUEVO) ---
+            st.subheader("2. 🎯 Gráfico de Pareto de Riesgo (Activos más Críticos)")
             
             st.info("""
-                **Propósito:** Determinar qué entidades tienen el mayor porcentaje de activos que **no se actualizan** con la frecuencia prometida.
-                **Interpretación:** Las entidades con mayor porcentaje de incumplimiento (barras más largas) representan el **mayor riesgo operacional** debido a datos obsoletos. Este ranking utiliza el **conjunto TOTAL** de activos para el ranking general.
+                **Propósito:** Identificar el subconjunto de activos que concentran el **mayor puntaje de riesgo** (principio 80/20).
+                **Interpretación:** La barra azul muestra la contribución de cada activo al riesgo total. La línea naranja muestra la contribución acumulada. El punto donde la línea cruza el **80%** indica la pequeña cantidad de activos que generan la mayor parte del riesgo que debe ser atacado prioritariamente.
             """)
             
-            df_para_ranking = df_analisis_completo.copy() 
-
             try:
-                COLUMNA_ENTIDAD = 'dueño'
-                entidades_con_volumen = df_para_ranking.groupby(COLUMNA_ENTIDAD).filter(lambda x: len(x) >= 5)
-
-                if not entidades_con_volumen.empty:
-                    resumen_entidad = entidades_con_volumen.groupby(COLUMNA_ENTIDAD).agg(
-                        Total_Activos=('uid', 'count'),
-                        Activos_Incumplimiento=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
-                    ).reset_index()
-
-                    resumen_entidad['Porcentaje_Incumplimiento'] = (resumen_entidad['Activos_Incumplimiento'] / resumen_entidad['Total_Activos']) * 100
-                    resumen_entidad_top = resumen_entidad.sort_values(by='Porcentaje_Incumplimiento', ascending=False).head(10)
+                # Filtrar solo activos con score de riesgo > 0 para el Pareto
+                df_riesgo = df_filtrado[df_filtrado['prioridad_riesgo_score'] > 0].sort_values(
+                    by='prioridad_riesgo_score', ascending=False
+                ).copy()
+                
+                if not df_riesgo.empty:
+                    # Cálculo de la curva de Pareto
+                    df_riesgo['Riesgo Acumulado'] = df_riesgo['prioridad_riesgo_score'].cumsum()
+                    df_riesgo['Riesgo Total'] = df_riesgo['prioridad_riesgo_score'].sum()
+                    df_riesgo['% Riesgo Acumulado'] = (df_riesgo['Riesgo Acumulado'] / df_riesgo['Riesgo Total']) * 100
                     
-                    if not resumen_entidad_top.empty:
-                        fig2, ax2 = plt.subplots(figsize=(10, 6))
-                        sns.barplot(
-                            x='Porcentaje_Incumplimiento',
-                            y=COLUMNA_ENTIDAD,
-                            data=resumen_entidad_top,
-                            palette='Reds_d',
-                            ax=ax2
-                        )
-                        ax2.set_title('Top 10 Entidades con Mayor % de Incumplimiento (Ranking Global)', fontsize=14)
-                        ax2.set_xlabel('Porcentaje de Activos en INCUMPLIMIENTO (%)', fontsize=12)
-                        ax2.set_ylabel('Entidad Responsable', fontsize=12)
-                        ax2.grid(axis='x', linestyle='--', alpha=0.6)
-                        st.pyplot(fig2)
-                        
-                        st.markdown("### Datos del Ranking (Incumplimiento)")
-                        st.dataframe(resumen_entidad_top, use_container_width=True)
-                    else:
-                        st.warning("No hay entidades con suficiente volumen (>= 5 activos) o incumplimiento para mostrar el top 10.")
+                    # Generación del gráfico
+                    fig2, ax2 = plt.subplots(figsize=(12, 6))
+                    
+                    # Barras (Riesgo individual)
+                    ax2.bar(df_riesgo.index, df_riesgo['prioridad_riesgo_score'], color="C0")
+                    ax2.set_xlabel("Activos (Ordenados por Riesgo)", fontsize=12)
+                    ax2.set_ylabel("Score de Riesgo Individual", color="C0", fontsize=12)
+                    ax2.tick_params(axis='y', labelcolor="C0")
+                    ax2.tick_params(axis='x', rotation=45)
+                    ax2.set_xticks(range(len(df_riesgo)))
+                    ax2.set_xticklabels([f"Activo {i+1}" for i in range(len(df_riesgo))])
+                    
+                    # Curva (Riesgo acumulado)
+                    ax3 = ax2.twinx()
+                    ax3.plot(df_riesgo.index, df_riesgo["% Riesgo Acumulado"], color="C1", marker="D", ms=4)
+                    ax3.yaxis.set_major_formatter(PercentFormatter())
+                    ax3.set_ylabel("% Riesgo Acumulado", color="C1", fontsize=12)
+                    ax3.tick_params(axis='y', labelcolor="C1")
+
+                    # Línea de 80%
+                    ax3.axhline(80, color='red', linestyle='--', alpha=0.7)
+                    
+                    ax2.set_title("Gráfico de Pareto: Concentración de Riesgo por Activo", fontsize=16)
+                    plt.tight_layout()
+                    st.pyplot(fig2)
+                
+                    st.markdown("### Datos de Riesgo (Top 20 Activos)")
+                    st.dataframe(df_riesgo[['titulo', 'dueño', 'prioridad_riesgo_score', '% Riesgo Acumulado']].head(20), use_container_width=True)
+                
                 else:
-                    st.warning("No hay entidades que cumplan el volumen mínimo de 5 activos para el ranking.")
+                    st.warning("No hay activos con score de riesgo > 0 en la vista actual para generar el Pareto.")
+
             except Exception as e:
-                st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Bar Plot de Entidades. Detalle: {e}")
+                st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Gráfico de Pareto. Detalle: {e}")
             
             st.markdown("---")
 
-            # --- Visualización 3: Top 10 Categorías ---
+
+            # --- Visualización 3: Top 10 Categorías (Se mantiene) ---
             st.subheader("3. 🗺️ Cobertura Temática por Categoría")
             
             st.info("""
