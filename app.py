@@ -28,21 +28,17 @@ def calculate_antiguedad_y_estado(df_temp):
         COL_FECHA_ACTUALIZACION = 'fecha_de_ultima_actualizacion_de_datos_utc'
         COL_FRECUENCIA = 'informacion_de_datos_frecuencia_de_actualizacion'
 
-        # Convertir fechas 
         df_temp[COL_FECHA_ACTUALIZACION] = pd.to_datetime(df_temp[COL_FECHA_ACTUALIZACION], errors='coerce', utc=True)
         
-        # Calcular Antigüedad 
         hoy = pd.to_datetime(datetime.now().date(), utc=True)
         df_temp['antiguedad_datos_dias'] = (hoy - df_temp[COL_FECHA_ACTUALIZACION]).dt.days
         
-        # Mapeo de frecuencia
         mapa_frecuencia = {
             'diario': 1, 'semanal': 7, 'quincenal': 15, 'mensual': 30, 
             'trimestral': 90, 'semestral': 180, 'anual': 365
         }
         df_temp['frecuencia_esperada_dias'] = df_temp[COL_FRECUENCIA].astype(str).str.lower().str.strip().map(mapa_frecuencia).fillna(9999)
 
-        # Calcular Estado de Actualización
         df_temp['estado_actualizacion'] = np.where(
             (df_temp['antiguedad_datos_dias'] > df_temp['frecuencia_esperada_dias']) & 
             (df_temp['frecuencia_esperada_dias'] < 9999), 
@@ -66,11 +62,8 @@ def process_data(df):
 
     # --- CORRECCIÓN y VERIFICACIÓN DE POPULARIDAD ---
     try:
-        # Conversión a numérico (maneja el error de 'str' y 'int')
         df['vistas'] = pd.to_numeric(df.get('vistas'), errors='coerce')
         df['descargas'] = pd.to_numeric(df.get('descargas'), errors='coerce')
-        
-        # El fillna(0) asegura que la suma sea numérica y no haya NaN en el score
         df['popularidad_score'] = df['vistas'].fillna(0) + df['descargas'].fillna(0) 
     except Exception as e:
         st.error(f"❌ ERROR [Paso Popularidad]: Falló la conversión o suma de 'vistas'/'descargas'. Detalle: {e}")
@@ -80,7 +73,6 @@ def process_data(df):
     try:
         df = calculate_antiguedad_y_estado(df.copy()) 
     except Exception as e:
-        # El error ya se maneja en calculate_antiguedad_y_estado
         return pd.DataFrame() 
     
     # 3. CÁLCULO DE MÉTRICA DE COMPLETITUD
@@ -103,7 +95,7 @@ def process_data(df):
         df['anomalia_score'] = 0 
         df_modelo = df[(df['antiguedad_datos_dias'] < 9999) & (df['popularidad_score'] > 0)].copy()
         
-        if not df_modelo.empty and len(df_modelo) > 1: # Isolation Forest necesita al menos 2 muestras
+        if not df_modelo.empty and len(df_modelo) > 1: 
             features = df_modelo[['antiguedad_datos_dias', 'popularidad_score', 'completitud_score']]
             model = IsolationForest(contamination=0.01, random_state=42)
             model.fit(features)
@@ -134,9 +126,6 @@ def process_data(df):
         st.error(f"❌ ERROR [Paso Score Riesgo]: Falló el cálculo del score final. Detalle: {e}")
         return pd.DataFrame() 
     
-    # --- 6. Filtrar Públicos (ESTE PASO HA SIDO ELIMINADO/MODIFICADO) ---
-    # Ya no se filtra por 'publico'. Se devuelve el DataFrame completo.
-    
     return df
 
 ## 2. Título y Ejecución Principal
@@ -145,113 +134,192 @@ st.title("📊 Dashboard de Priorización de Activos de Datos (Todos los Activos
 
 try:
     with st.spinner(f'Cargando y procesando el archivo: **{ARCHIVO_CSV}**...'):
-        # Carga del archivo
         df = pd.read_csv(ARCHIVO_CSV, low_memory=False)
-        # Llamamos al DataFrame final 'df_analisis' para diferenciarlo del original
-        df_analisis = process_data(df.copy()) 
+        df_analisis_completo = process_data(df.copy()) 
         
-    if df_analisis.empty:
+    if df_analisis_completo.empty:
         st.error("🛑 Proceso de datos detenido debido a errores previos. Revisa los mensajes de error ❌ para depurar.")
     else:
-        st.success(f'✅ Archivo **{ARCHIVO_CSV}** cargado y procesamiento completado.')
-        st.info(f"Analizando **TODOS** los activos en el inventario, incluyendo aquellos no clasificados como públicos.")
-        st.write(f"Total de activos analizados: **{len(df_analisis)}**")
+        st.success(f'✅ Archivo **{ARCHIVO_CSV}** cargado y procesamiento completado. Total de activos: **{len(df_analisis_completo)}**')
         
-        # --- 3. Métricas y Visualizaciones ---
+        # --- 2.1 BARRA LATERAL (FILTROS) ---
+        st.sidebar.header("⚙️ Filtros de Análisis")
         
-        st.header("🔍 Resultados Clave de Calidad y Prioridad")
+        # Opción para filtrar por DUEÑO (Entidad)
+        owners = df_analisis_completo['dueño'].dropna().unique().tolist()
+        owners.sort()
+        owners.insert(0, "Mostrar Todos los Activos")
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Completitud Promedio", f"{df_analisis['completitud_score'].mean():.2f}%")
-        col2.metric("Activos en Incumplimiento", f"{(df_analisis['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_analisis)}")
-        col3.metric("Anomalías Detectadas (ML)", f"{(df_analisis['anomalia_score'] == -1).sum()}")
+        filtro_dueño = st.sidebar.selectbox(
+            "Filtrar por Entidad Responsable:",
+            owners
+        )
         
+        # Opción para filtrar por CATEGORÍA
+        categories = df_analisis_completo['categoria'].dropna().unique().tolist()
+        categories.sort()
+        categories.insert(0, "Mostrar Todos")
         
-        # --- Visualización 1: Prioridad de Intervención ---
-        st.subheader("1. Prioridad de Intervención (Score ML)")
-        try:
-            fig1, ax1 = plt.subplots(figsize=(12, 7))
-            sns.scatterplot(
-                x='antiguedad_datos_dias',
-                y='prioridad_riesgo_score', 
-                data=df_analisis, # Usamos df_analisis
-                hue='estado_actualizacion',
-                palette={'🔴 INCUMPLIMIENTO': 'red', '🟢 CUMPLE': 'green'},
-                size='popularidad_score',
-                sizes=(20, 400),
-                alpha=0.7,
-                ax=ax1
-            )
-            ax1.set_title('Prioridad de Intervención vs. Antigüedad (Score ML)', fontsize=16)
-            ax1.set_xlabel('Antigüedad de Datos (Días desde la última actualización)', fontsize=12)
-            ax1.set_ylabel('Score de Prioridad de Intervención (Riesgo)', fontsize=12)
-            ax1.axhline(y=df_analisis['prioridad_riesgo_score'].quantile(0.75), color='red', linestyle='--', label='Prioridad Alta (Q3)')
-            ax1.legend(title='Estado de Actualización')
-            ax1.grid(True, linestyle='--', alpha=0.5)
-            st.pyplot(fig1)
-        except Exception as e:
-            st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Scatter Plot. Detalle: {e}")
+        filtro_categoria = st.sidebar.selectbox(
+            "Filtrar por Categoría:",
+            categories
+        )
 
-        st.markdown("---")
+        # --- 2.2 APLICAR FILTROS ---
+        df_filtrado = df_analisis_completo.copy()
+        
+        if filtro_dueño != "Mostrar Todos los Activos":
+            df_filtrado = df_filtrado[df_filtrado['dueño'] == filtro_dueño]
+            st.info(f"Filtro aplicado: **Entidad = {filtro_dueño}**")
 
+        if filtro_categoria != "Mostrar Todos":
+            df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
+            st.info(f"Filtro aplicado: **Categoría = {filtro_categoria}**")
 
-        # --- Visualización 2: Top 10 Entidades con Incumplimiento ---
-        st.subheader("2. Top 10 Entidades con Mayor Porcentaje de Incumplimiento")
-        try:
-            COLUMNA_ENTIDAD = 'dueño'
-            resumen_entidad = df_analisis.groupby(COLUMNA_ENTIDAD).agg(
-                Total_Activos=('uid', 'count'),
-                Activos_Incumplimiento=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
-            ).reset_index()
+        st.markdown(f"---")
+        st.write(f"Activos en la vista actual: **{len(df_filtrado)}**")
 
-            resumen_entidad['Porcentaje_Incumplimiento'] = (resumen_entidad['Activos_Incumplimiento'] / resumen_entidad['Total_Activos']) * 100
-            resumen_entidad_top = resumen_entidad[resumen_entidad['Total_Activos'] >= 5].sort_values(by='Porcentaje_Incumplimiento', ascending=False).head(10)
+        if df_filtrado.empty:
+            st.warning("⚠️ No hay datos para mostrar con los filtros seleccionados.")
+        else:
             
-            if not resumen_entidad_top.empty:
-                fig2, ax2 = plt.subplots(figsize=(10, 6))
-                sns.barplot(
-                    x='Porcentaje_Incumplimiento',
-                    y=COLUMNA_ENTIDAD,
-                    data=resumen_entidad_top,
-                    palette='Reds_d',
-                    ax=ax2
-                )
-                ax2.set_title('Top 10 Entidades con Mayor Porcentaje de Incumplimiento de Actualización', fontsize=14)
-                ax2.set_xlabel('Porcentaje de Activos en INCUMPLIMIENTO (%)', fontsize=12)
-                ax2.set_ylabel('Entidad Responsable', fontsize=12)
-                ax2.grid(axis='x', linestyle='--', alpha=0.6)
-                st.pyplot(fig2)
-                
-                st.markdown("### Resumen de Entidades")
-                st.dataframe(resumen_entidad_top)
-            else:
-                st.info("No hay entidades con suficiente volumen (>= 5 activos) o incumplimiento para mostrar el top 10.")
-        except Exception as e:
-            st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Bar Plot de Entidades. Detalle: {e}")
-        
-        st.markdown("---")
-
-        # --- Visualización 3: Top 10 Categorías ---
-        st.subheader("3. Top 10 Categorías con Mayor Cobertura Temática")
-        try:
-            COLUMNA_CATEGORIA = 'categoria'
-            conteo_categoria = df_analisis[COLUMNA_CATEGORIA].value_counts().head(10)
+            # --- 3. Métricas y Visualizaciones ---
             
-            if not conteo_categoria.empty:
-                fig3, ax3 = plt.subplots(figsize=(10, 7))
-                sns.barplot(x=conteo_categoria.values, y=conteo_categoria.index, palette='viridis', ax=ax3)
+            st.header("🔍 Resultados Clave de Calidad y Prioridad")
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
+            col2.metric("Activos en Incumplimiento", f"{(df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_filtrado)}")
+            col3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
+            
+            
+            # --- Visualización 1: Gráfico de Cuadrantes de Prioridad (Burbujas) ---
+            st.subheader("1. 🔴 Matriz de Priorización de Activos (Score Riesgo vs. Antigüedad)")
+            st.markdown("Este gráfico segmenta los activos por su **Score de Riesgo** (Y) y **Antigüedad** (X). Los activos en el cuadrante superior derecho (🔥🔥 PRIORIDAD ALTA) requieren atención inmediata. El **tamaño de la burbuja** indica su **Popularidad** (Demanda).")
+            
+            try:
+                # Se deben calcular los umbrales solo si hay suficientes datos
+                if len(df_filtrado) > 1:
+                    
+                    # Calcular umbrales (Mediana) para los cuadrantes
+                    umbral_riesgo = df_filtrado['prioridad_riesgo_score'].median()
+                    umbral_antiguedad = df_filtrado['antiguedad_datos_dias'].median()
+                    
+                    # Ajuste si la mediana es 0 (usar el 60 percentil)
+                    if umbral_riesgo <= 0:
+                        umbral_riesgo = df_filtrado['prioridad_riesgo_score'].quantile(0.6)
+                    if umbral_antiguedad <= 0:
+                        umbral_antiguedad = df_filtrado['antiguedad_datos_dias'].quantile(0.6)
+                    
+                    # Clasificación de cuadrantes
+                    df_filtrado['cuadrante'] = 'Baja Prioridad'
+                    df_filtrado.loc[df_filtrado['prioridad_riesgo_score'] >= umbral_riesgo, 'cuadrante'] = 'Riesgo Alto'
+                    df_filtrado.loc[df_filtrado['antiguedad_datos_dias'] >= umbral_antiguedad, 'cuadrante'] = 'Antigüedad Alta'
+                    df_filtrado.loc[(df_filtrado['prioridad_riesgo_score'] >= umbral_riesgo) & (df_filtrado['antiguedad_datos_dias'] >= umbral_antiguedad), 'cuadrante'] = '🔥🔥 PRIORIDAD ALTA'
+                    
+                    # Gráfico de Burbujas
+                    fig1, ax1 = plt.subplots(figsize=(12, 7))
+                    sns.scatterplot(
+                        x='antiguedad_datos_dias',
+                        y='prioridad_riesgo_score', 
+                        data=df_filtrado,
+                        hue='cuadrante',
+                        palette={'🔥🔥 PRIORIDAD ALTA': 'red', 'Riesgo Alto': 'orange', 'Antigüedad Alta': 'blue', 'Baja Prioridad': 'green'},
+                        size='popularidad_score',
+                        sizes=(20, 500),
+                        alpha=0.6,
+                        ax=ax1
+                    )
+                    
+                    # Dibujar líneas de cuadrantes
+                    ax1.axvline(x=umbral_antiguedad, color='gray', linestyle='--')
+                    ax1.axhline(y=umbral_riesgo, color='gray', linestyle='--')
+                    
+                    ax1.set_title('Matriz de Priorización de Activos', fontsize=16)
+                    ax1.set_xlabel(f'Antigüedad de Datos (Días) | Umbral: {umbral_antiguedad:.0f} días', fontsize=12)
+                    ax1.set_ylabel(f'Score de Prioridad de Intervención | Umbral: {umbral_riesgo:.2f}', fontsize=12)
+                    ax1.legend(title='Prioridad', loc='upper right')
+                    st.pyplot(fig1)
+                else:
+                    st.info("Se requiere más de un activo para generar la Matriz de Priorización.")
 
-                ax3.set_title('Top 10 Categorías con Mayor Cobertura Temática', fontsize=16)
-                ax3.set_xlabel('Número de Activos', fontsize=12)
-                ax3.set_ylabel('Categoría', fontsize=12)
-                st.pyplot(fig3)
+            except Exception as e:
+                st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Cuadrantes. Detalle: {e}")
+
+            st.markdown("---")
+
+
+            # --- Visualización 2: Top 10 Entidades con Incumplimiento ---
+            st.subheader("2. Top 10 Entidades con Mayor Porcentaje de Incumplimiento (Vista Total)")
+            
+            # NOTA: Esta visualización SÍ usa el análisis COMPLETO (df_analisis_completo) 
+            # para dar una vista general de las entidades, sin importar el filtro individual.
+            # Si se prefiere que use df_filtrado, se cambia aquí la variable.
+            
+            df_para_ranking = df_analisis_completo.copy() 
+
+            try:
+                COLUMNA_ENTIDAD = 'dueño'
+                # Asegurar que la entidad tenga al menos 5 activos para ser relevante
+                entidades_con_volumen = df_para_ranking.groupby(COLUMNA_ENTIDAD).filter(lambda x: len(x) >= 5)
+
+                if not entidades_con_volumen.empty:
+                    resumen_entidad = entidades_con_volumen.groupby(COLUMNA_ENTIDAD).agg(
+                        Total_Activos=('uid', 'count'),
+                        Activos_Incumplimiento=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
+                    ).reset_index()
+
+                    resumen_entidad['Porcentaje_Incumplimiento'] = (resumen_entidad['Activos_Incumplimiento'] / resumen_entidad['Total_Activos']) * 100
+                    resumen_entidad_top = resumen_entidad.sort_values(by='Porcentaje_Incumplimiento', ascending=False).head(10)
+                    
+                    if not resumen_entidad_top.empty:
+                        fig2, ax2 = plt.subplots(figsize=(10, 6))
+                        sns.barplot(
+                            x='Porcentaje_Incumplimiento',
+                            y=COLUMNA_ENTIDAD,
+                            data=resumen_entidad_top,
+                            palette='Reds_d',
+                            ax=ax2
+                        )
+                        ax2.set_title('Top 10 Entidades con Mayor % de Incumplimiento (Min. 5 activos)', fontsize=14)
+                        ax2.set_xlabel('Porcentaje de Activos en INCUMPLIMIENTO (%)', fontsize=12)
+                        ax2.set_ylabel('Entidad Responsable', fontsize=12)
+                        ax2.grid(axis='x', linestyle='--', alpha=0.6)
+                        st.pyplot(fig2)
+                        
+                        st.markdown("### Resumen de Entidades (Top Global)")
+                        st.dataframe(resumen_entidad_top, use_container_width=True)
+                    else:
+                        st.info("No hay entidades con suficiente volumen (>= 5 activos) o incumplimiento para mostrar el top 10.")
+                else:
+                    st.info("No hay entidades que cumplan el volumen mínimo de 5 activos para el ranking.")
+            except Exception as e:
+                st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Bar Plot de Entidades. Detalle: {e}")
+            
+            st.markdown("---")
+
+            # --- Visualización 3: Top 10 Categorías ---
+            st.subheader("3. Top 10 Categorías con Mayor Cobertura Temática (Vista Actual)")
+            
+            try:
+                COLUMNA_CATEGORIA = 'categoria'
+                conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10)
                 
-                st.markdown("### Conteo de Categorías")
-                st.dataframe(conteo_categoria.to_frame())
-            else:
-                st.info("La columna 'categoria' no contiene valores para generar la visualización.")
-        except Exception as e:
-            st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
+                if not conteo_categoria.empty:
+                    fig3, ax3 = plt.subplots(figsize=(10, 7))
+                    sns.barplot(x=conteo_categoria.values, y=conteo_categoria.index, palette='viridis', ax=ax3)
+
+                    ax3.set_title('Top 10 Categorías con Mayor Cobertura Temática (Vista Actual)', fontsize=16)
+                    ax3.set_xlabel('Número de Activos', fontsize=12)
+                    ax3.set_ylabel('Categoría', fontsize=12)
+                    st.pyplot(fig3)
+                    
+                    st.markdown("### Conteo de Categorías (Vista Actual)")
+                    st.dataframe(conteo_categoria.to_frame(), use_container_width=True)
+                else:
+                    st.info("La columna 'categoria' no contiene valores para generar la visualización con los filtros seleccionados.")
+            except Exception as e:
+                st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
 
 except FileNotFoundError:
     st.error(f"❌ ERROR FATAL: No se encontró el archivo **{ARCHIVO_CSV}**.")
