@@ -1,375 +1,267 @@
+# ==============================================================================
+# 1. IMPORTS Y CONFIGURACIÓN INICIAL
+# ==============================================================================
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+from sklearn.ensemble import IsolationForest
+import warnings
 import os
-import unicodedata
-from sklearn.preprocessing import LabelEncoder
-from typing import Dict, List, Tuple, Any
-import sys # Importado para debugging en la consola
 
-# ----------------------------------------------------
-# 0) CONFIGURACIÓN INICIAL Y CONSTANTES
-# ----------------------------------------------------
-st.set_page_config(
-    page_title="📊 Dashboard ALECO",
-    layout="wide"
-)
+warnings.filterwarnings('ignore')
 
-# Nombres de columnas clave
-TARGET_COL = 'GANANCIA_PERDIDA'
-OHE_COLS = ['SUPERVISOR', 'REGION', 'MACROSECTOR']
-LE_COLS = ['DEPARTAMENTO_DOMICILIO', 'CIUDAD_DOMICILIO', 'CIIU']
-COLS_TO_PROJECT = ['INGRESOS_OPERACIONALES', 'TOTAL_ACTIVOS', 'TOTAL_PASIVOS', 'TOTAL_PATRIMONIO']
+# Configuración de la página (amplia para dashboards)
+st.set_page_config(layout="wide")
 
-# Función de normalización de columna
-def normalize_col(col: str) -> str:
-    """Normaliza y limpia los nombres de columna."""
-    col = col.strip().upper().replace(" ", "_").replace("(", "").replace(")", "").replace("Ñ", "N")
-    return ''.join(c for c in unicodedata.normalize('NFD', col) if unicodedata.category(c) != 'Mn')
+# ==============================================================================
+# 2. FUNCIONES DE PROCESAMIENTO Y CACHEO (ETL + MÉTRICAS + ML)
+# ==============================================================================
 
+# Función para estandarizar nombres de columnas (de la Celda 3)
+def clean_col_name(col):
+    name = col.lower().strip()
+    name = name.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
+    name = name.replace(' ', '_').replace('.', '').replace('/', '_').replace(':', '').replace('(', '').replace(')', '')
+    return name
 
-# Función de Label Encoding segura
-def safe_le_transform(encoder: LabelEncoder, value: Any) -> int:
-    """Aplica la transformación de LabelEncoder, devolviendo -1 para valores no vistos."""
-    try:
-        # El valor debe ser una lista/array para transform
-        return int(encoder.transform([str(value).strip().upper()])[0])
-    except ValueError:
-        # Devuelve un valor que será manejado como missing o 0 por el modelo
-        return -1 
-
-
-# ----------------------------------------------------
-# 1) CARGAR DATOS Y LIMPIEZA
-# ----------------------------------------------------
+# La función principal de procesamiento que se cachea
 @st.cache_data
-def load_data():
-    csv_file = "10.000_Empresas_mas_Grandes_del_País_20251115.csv"
-    if not os.path.exists(csv_file):
-        st.error(f"❌ ERROR: Archivo CSV no encontrado: {csv_file}")
-        return pd.DataFrame()
-
+def load_and_process_data(file_path):
+    
+    # ----------------------------------------
+    # I. Carga y Limpieza (Celdas 2 y 3)
+    # ----------------------------------------
     try:
-        df = pd.read_csv(csv_file)
-        df.columns = [normalize_col(c) for c in df.columns]
-
-        numeric_cols = COLS_TO_PROJECT + [TARGET_COL]
-        for col in numeric_cols:
-            df[col] = (
-                df[col].astype(str)
-                .str.replace("$","",regex=False).str.replace(" ","",regex=False)
-                .str.replace("−","-",regex=False).str.replace("(","",regex=False)
-                .str.replace(")","",regex=False).str.replace('.', '', regex=False) 
-                .str.replace(',', '.', regex=False) # Convierte coma a punto decimal
-            )
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        if 'ANO_DE_CORTE' in df.columns:
-            df['ANO_DE_CORTE'] = df['ANO_DE_CORTE'].astype(str).str.replace(",", "", regex=False)
-            df['ANO_DE_CORTE'] = pd.to_numeric(df['ANO_DE_CORTE'], errors='coerce').fillna(-1).astype(int)
-        
-        df = df[df['ANO_DE_CORTE'] > 2000].copy()
-        df.dropna(subset=numeric_cols, inplace=True)
-        
-        # Rellenar NaNs en categóricas con un valor seguro
-        for col in LE_COLS + OHE_COLS:
-            if col in df.columns:
-                 df[col] = df[col].astype(str).fillna('MISSING')
-        
-        return df
-
+        df = pd.read_csv(file_path, low_memory=False)
+        df.columns = [clean_col_name(col) for col in df.columns]
     except Exception as e:
-        st.error(f"❌ ERROR al leer o limpiar el CSV: {e}")
-        return pd.DataFrame()
-
-
-# ----------------------------------------------------
-# 2) CARGAR SIETE MODELOS Y REFERENCIAS (Corregida)
-# ----------------------------------------------------
-@st.cache_resource
-def load_assets():
-    """Carga los 7 activos (3 modelos, 4 referencias) necesarios."""
-    assets = {}
-    files_to_load = [
-        "model_clasificacion.pkl", "model_reg_ganancia.pkl", "model_reg_perdida.pkl",
-        "model_features.pkl", "label_encoders.pkl", "growth_rate.pkl", "base_year.pkl" # <--- Ahora son 7
+        st.error(f"Error al cargar o limpiar el CSV: {e}")
+        return pd.DataFrame() # Devuelve vacío si falla
+    
+    # ----------------------------------------
+    # II. Métrica de Completitud (Celda 5 original)
+    # ----------------------------------------
+    campos_minimos = [
+        'titulo', 'descripcion', 'dueño', 'correo_electronico_de_contacto', 
+        'licencia', 'dominio', 'categoria', 'informacion_de_datos_frecuencia_de_actualizacion', 
+        'common_core_public_access_level', 'informacion_de_datos_cobertura_geografica'
     ]
+    campos_existentes = [col for col in campos_minimos if col in df.columns]
+    num_campos_totales = len(campos_existentes)
     
-    if not all(os.path.exists(f) for f in files_to_load):
-        st.error(f"❌ ERROR FATAL: Faltan archivos .pkl. Asegúrate de tener los {len(files_to_load)} archivos.")
-        return [None] * len(files_to_load)
+    if num_campos_totales > 0:
+        df['campos_diligenciados'] = df[campos_existentes].notna().sum(axis=1)
+        df['completitud_score'] = (df['campos_diligenciados'] / num_campos_totales) * 100
+    else:
+        df['completitud_score'] = 0
+
+    # ----------------------------------------
+    # III. Métricas de Tiempo y Uso (Celda 6 original)
+    # ----------------------------------------
+    COLUMNA_FECHA_ACTUALIZACION = 'fecha_de_ultima_actualizacion_de_datos_utc' 
+    COLUMNA_FRECUENCIA = 'informacion_de_datos_frecuencia_de_actualizacion'
     
-    try:
-        assets['cls'] = joblib.load(files_to_load[0])
-        assets['reg_gan'] = joblib.load(files_to_load[1])
-        assets['reg_per'] = joblib.load(files_to_load[2])
-        assets['features'] = joblib.load(files_to_load[3])
-        assets['encoders'] = joblib.load(files_to_load[4])
-        assets['agr'] = joblib.load(files_to_load[5]) 
-        assets['base_year'] = joblib.load(files_to_load[6]) # <--- Cargando base_year
-        
-        return (assets['cls'], assets['reg_gan'], assets['reg_per'], 
-                assets['features'], assets['encoders'], assets['agr'], assets['base_year'])
-    except Exception as e:
-        st.error(f"❌ ERROR al cargar activos: {e}")
-        return [None] * len(files_to_load)
+    # Antigüedad
+    df[COLUMNA_FECHA_ACTUALIZACION] = pd.to_datetime(df[COLUMNA_FECHA_ACTUALIZACION], errors='coerce', utc=True)
+    HOY = pd.Timestamp.now(tz='utc') 
+    df['antiguedad_datos_dias'] = (HOY - df[COLUMNA_FECHA_ACTUALIZACION]).dt.days.fillna(9999) 
 
-
-# ----------------------------------------------------
-# 3) FUNCIÓN DE FORECASTING RECURSIVO (Corregida)
-# ----------------------------------------------------
-
-def run_forecasting(
-    initial_row: pd.DataFrame, 
-    target_year: int, 
-    agr: float,
-    model_cls, model_reg_gan, model_reg_per,
-    model_feature_names: List[str], label_encoders: Dict[str, LabelEncoder]
-) -> pd.DataFrame:
-    """
-    Realiza la predicción recursiva aplicando el AGR a las variables financieras
-    y ejecutando el Hurdle Model para cada año hasta target_year.
-    """
-    # Usamos .iloc[0] para obtener la serie de la fila inicial
-    current_data = initial_row.iloc[0].copy() 
-    start_year = current_data['ANO_DE_CORTE']
-    df_forecast = pd.DataFrame()
+    # Frecuencia y Cumplimiento
+    mapa_frecuencia = {'diaria': 1, 'diario': 1, 'continuamente': 1, 'semanal': 7, 'quincenal': 15, 'mensual': 30, 'mensualmente': 30, 'bimestral': 60, 'trimestral': 90, 'semestral': 182, 'anual': 365, 'anualmente': 365, 'no aplica': 365 * 10, 'null': 365 * 10 }
+    df['frecuencia_esperada_dias'] = df[COLUMNA_FRECUENCIA].astype(str).str.lower().str.strip().map(mapa_frecuencia).fillna(365 * 10) 
+    UMBRAL_GRACIA_DIAS = 15 
+    df['estado_actualizacion'] = np.where(
+        df['antiguedad_datos_dias'] > (df['frecuencia_esperada_dias'] + UMBRAL_GRACIA_DIAS),
+        '🔴 INCUMPLIMIENTO',
+        '🟢 CUMPLE'
+    )
     
-    #st.warning("🚨 INICIO DEBUG: Revisa la consola/terminal de Streamlit para la traza.")
+    # Popularidad
+    df['vistas'] = pd.to_numeric(df['vistas'], errors='coerce')
+    df['descargas'] = pd.to_numeric(df['descargas'], errors='coerce')
+    df['popularidad_score'] = (df['vistas'].fillna(0) * 0.6) + (df['descargas'].fillna(0) * 0.4)
 
-    for year in range(int(start_year) + 1, target_year + 1):
-        
-        # --- Paso 1: Proyección Acumulativa ---
-        for col in COLS_TO_PROJECT:
-            try:
-                # La proyección solo se aplica a los valores numéricos
-                current_data[col] = float(current_data[col] * agr) 
-            except Exception:
-                # Si falla, mantiene el valor o lo resetea si es NaN
-                current_data[col] = current_data[col] if not pd.isna(current_data[col]) else 0.0
-                
-        current_data['ANO_DE_CORTE'] = year
-        
-        # --- Paso 1.5: Feature Engineering (CRUCIAL CORRECCIÓN) ---
-        
-        # 1. Transformación no lineal para INGRESOS
-        ingresos = current_data['INGRESOS_OPERACIONALES']
-        current_data['INGRESOS_SQRT'] = np.sqrt(ingresos) if ingresos > 0 else 0
-        
-        # 2. Ratios Financieros
-        activos = current_data['TOTAL_ACTIVOS']
-        pasivos = current_data['TOTAL_PASIVOS']
-        patrimonio = current_data['TOTAL_PATRIMONIO']
-
-        # Ratio Deuda/Activo
-        current_data['DEUDA_ACTIVO_RATIO'] = pasivos / activos if activos != 0 else 0
-        
-        # Ratio Patrimonio/Activo
-        current_data['PATRIMONIO_ACTIVO_RATIO'] = patrimonio / activos if activos != 0 else 0
-
-        # --- Paso 2: Preprocesamiento para el Modelo (Alineación) ---
-        try:
-            # Crear DataFrame de una sola fila para la predicción
-            X_pred_temp = pd.DataFrame([current_data.to_dict()])
-            
-            # Aplicar Label Encoding seguro
-            for col in LE_COLS:
-                encoder = label_encoders[col]
-                # str(X_pred_temp[col].iloc[0]) asegura que el valor sea un string
-                X_pred_temp[col] = safe_le_transform(encoder, X_pred_temp[col].iloc[0])
-            
-            # Aplicar One-Hot Encoding (OHE) a las categóricas restantes
-            X_ohe_temp = X_pred_temp[OHE_COLS]
-            X_ohe_encoded = pd.get_dummies(
-                X_ohe_temp, columns=OHE_COLS, drop_first=True, dtype=int
-            )
-            
-            # Combinar features numéricas, LE y OHE
-            X_numeric_le = X_pred_temp.drop(columns=OHE_COLS)
-            X_combined = pd.concat([X_numeric_le, X_ohe_encoded], axis=1)
-
-            # Alinear y Ordenar las columnas para el input del modelo
-            final_input_data = {}
-            for feature in model_feature_names:
-                # Si la feature existe en el DF combinado, la toma. Si no (OHE no visto), es 0.
-                if feature in X_combined.columns:
-                    final_input_data[feature] = X_combined[feature].iloc[0]
-                else:
-                    final_input_data[feature] = 0.0 # Valor seguro para OHE no vistas
-            
-            X_pred = pd.DataFrame([final_input_data])
-            # Asegurar orden y llenar NaNs de seguridad (aunque ya deberían estar limpios)
-            X_pred = X_pred[model_feature_names].fillna(0.0) 
-            
-        except Exception as e:
-            st.error(f"DEBUG ERROR: Fallo en el preprocesamiento en {year}. Error: {e}")
-            X_pred = pd.DataFrame(0.0, index=[0], columns=model_feature_names)
-            
-        # --- Paso 3: Predicción con Hurdle Model ---
-        try:
-            # Predicción de clasificación (Ganancia=1 / Pérdida=0)
-            pred_cls = model_cls.predict(X_pred)[0]
-            
-            if pred_cls == 1:
-                # Si clasifica como Ganancia, usar regresor de Ganancia
-                pred_log = model_reg_gan.predict(X_pred)[0]
-                pred_real = np.expm1(pred_log) # Inversa de log1p: exp(x) - 1
-            else:
-                # Si clasifica como Pérdida/Cero, usar regresor de Pérdida (Magnitud)
-                pred_log = model_reg_per.predict(X_pred)[0]
-                pred_real = -np.expm1(pred_log) # Aplicar el negativo a la magnitud
-            
-            # Asegurar que el resultado no sea NaN/Inf
-            if not np.isfinite(pred_real):
-                 pred_real = 0.0
-            
-            # 📣 PUNTO DE DEBUG 3: Mostrar el resultado de la predicción en la consola
-            print(f"DEBUG AÑO {year}: G/P Proyectada: {pred_real:,.2f} (Clasificación: {pred_cls})", file=sys.stderr)
-            
-        except Exception as e:
-            st.error(f"DEBUG ERROR: Fallo en la predicción del modelo en {year}. Error: {e}")
-            pred_real = 0.0 # Valor seguro
-            
-        # --- Paso 4: Almacenar Resultado ---
-        current_data_for_output = current_data.to_dict()
-        current_data_for_output['GANANCIA_PERDIDA_PRED'] = pred_real 
-        df_forecast = pd.concat([df_forecast, pd.DataFrame([current_data_for_output])], ignore_index=True)
+    # ----------------------------------------
+    # IV. Detección de Anomalías (Isolation Forest - Celda 4 modificada)
+    # ----------------------------------------
+    df['anomalia_score'] = 0 # Inicializar
+    df_modelo = df[(df['antiguedad_datos_dias'] < 9999) & (df['popularidad_score'] > 0)].copy()
     
-    #st.warning("🚨 FIN DEBUG. Revisar si la G/P Predicha tiene sentido en la consola.")
-    return df_forecast
+    if not df_modelo.empty:
+        features = df_modelo[['antiguedad_datos_dias', 'popularidad_score', 'completitud_score']]
+        model = IsolationForest(contamination=0.01, random_state=42)
+        model.fit(features)
+        anomalias = model.predict(features)
+        df.loc[df_modelo.index, 'anomalia_score'] = anomalias
 
-
-# ----------------------------------------------------
-# --- INICIO DE LA APLICACIÓN ---
-# ----------------------------------------------------
-
-# Cargar activos
-df = load_data()
-(model_cls, model_reg_gan, model_reg_per, 
- MODEL_FEATURE_NAMES, label_encoders, AGR, BASE_YEAR) = load_assets()
-
-# Validaciones de carga
-if df.empty:
-    st.error("❌ ERROR FATAL: No se encontraron datos válidos en el CSV.")
-    st.stop()
+    # ----------------------------------------
+    # V. Score de Prioridad/Riesgo (Celda 6 modificada)
+    # ----------------------------------------
+    df['riesgo_incumplimiento'] = np.where(df['estado_actualizacion'] == '🔴 INCUMPLIMIENTO', 3.0, 0.0)
+    df['riesgo_completitud'] = np.where(df['completitud_score'] < 50, 1.5, 0.0)
+    max_popularidad = df['popularidad_score'].max()
+    df['riesgo_demanda'] = (df['popularidad_score'] / max_popularidad) * 1.0 if max_popularidad > 0 else 0.0
+    df['riesgo_anomalia'] = np.where(df['anomalia_score'] == -1, 2.0, 0.0)
     
-if None in [model_cls, model_reg_gan, model_reg_per, MODEL_FEATURE_NAMES, label_encoders, AGR, BASE_YEAR]:
-    st.error("❌ ERROR FATAL: Faltan activos. Verifica que los 7 archivos .pkl estén en la carpeta.")
-    st.stop()
+    df['prioridad_riesgo_score'] = (
+        df['riesgo_incumplimiento'] + 
+        df['riesgo_completitud'] + 
+        df['riesgo_demanda'] +
+        df['riesgo_anomalia']
+    )
+    
+    # ----------------------------------------
+    # VI. Filtrado Público (Celda 7)
+    # ----------------------------------------
+    df_publico = df[df['publico'].astype(str).str.lower().str.strip() == 'public'].copy()
+    
+    return df_publico
 
-st.title("📊 Dashboard ALECO: Modelo de Dos Partes")
-st.markdown(f"""
-**Predicción de Ganancia/Pérdida (incluyendo pérdidas reales) usando Modelado de Dos Partes.**
-Todas las cifras se muestran en **Billones de Pesos**. Tasa de Crecimiento Anual (AGR) aplicada: **{AGR*100-100:.1f}%**
-""")
+# ==============================================================================
+# 3. EJECUCIÓN DEL PROCESAMIENTO Y MANEJO DE ARCHIVOS
+# ==============================================================================
+
+# Se asume que el archivo CSV está en la carpeta 'data/' del repositorio
+FILE_PATH = 'data/inventory.csv' # ¡Asegúrate de que este nombre sea correcto!
+
+try:
+    df_publico = load_and_process_data(FILE_PATH)
+except FileNotFoundError:
+    st.error(f"Error: No se encontró el archivo '{FILE_PATH}'. Asegúrate de subirlo a la carpeta 'data/' en GitHub.")
+    df_publico = pd.DataFrame()
+
+if df_publico.empty:
+    st.warning("No hay datos públicos para mostrar. Revisa la carga de datos o los filtros.")
+    st.stop() # Detiene la ejecución si no hay datos
+
+# ==============================================================================
+# 4. DISEÑO DE LA INTERFAZ STREAMLIT
+# ==============================================================================
+
+st.title("🛡️ Agente de Datos Abiertos: Diagnóstico de Calidad y Riesgo")
 st.markdown("---")
 
-ano_corte_mas_reciente_global = df["ANO_DE_CORTE"].max()
+# --- BARRA LATERAL Y FILTROS ---
+st.sidebar.header("Filtros de Análisis")
+entidad_seleccionada = st.sidebar.selectbox(
+    "Filtrar Entidad Dueña:", 
+    options=['Todas'] + df_publico['dueño'].dropna().unique().tolist()
+)
 
-# ----------------------------------------------------
-# 5) PREDICCIÓN CON LÓGICA DE FORECASTING
-# ----------------------------------------------------
-st.header("2. Proyección de Ganancia/Pérdida")
+# Aplicar filtro a la vista principal
+if entidad_seleccionada != 'Todas':
+    df_filtrado = df_publico[df_publico['dueño'] == entidad_seleccionada]
+else:
+    df_filtrado = df_publico.copy()
 
-# --- SELECTORES: Año y Empresa ---
-col_sel_company, col_sel_year = st.columns(2)
+# --- PESTAÑAS PRINCIPALES ---
+tab1, tab2, tab3 = st.tabs(["🚨 Prioridad de Intervención (OE2)", "🔍 Diagnóstico (OE1)", "💡 Agente de Datos (LLM)"])
 
-empresas_disponibles = df[df["ANO_DE_CORTE"] == ano_corte_mas_reciente_global]["RAZON_SOCIAL"].unique().tolist()
-
-if not empresas_disponibles:
-    st.warning("No hay empresas disponibles con datos recientes.")
-    st.stop()
-
-with col_sel_company:
-    empresa_seleccionada = st.selectbox("Selecciona la Empresa para proyectar", empresas_disponibles)
-
-with col_sel_year:
-    max_forecast_year = 2030
-    años_futuros = list(range(int(ano_corte_mas_reciente_global) + 1, max_forecast_year + 1))
+# ------------------------------------------------------------------------------
+# PESTAÑA 1: PRIORIDAD DE INTERVENCIÓN (OE2/ML)
+# ------------------------------------------------------------------------------
+with tab1:
+    st.header("1. Score de Riesgo y Prioridad de Intervención")
     
-    if not años_futuros:
-        st.warning(f"El año de corte base ({ano_corte_mas_reciente_global}) ya es el máximo permitido para proyectar.")
-        st.stop()
+    # KPIs Rápidos
+    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
     
-    ano_prediccion = st.slider(
-        "Selecciona el Año Final de Proyección", 
-        min_value=años_futuros[0], 
-        max_value=años_futuros[-1], 
-        value=min(2028, años_futuros[-1])
-    )
-
-# --- Lógica de Proyección ---
-try:
-    # Obtener la fila base del año más reciente
-    row_data_base = df[(df["RAZON_SOCIAL"] == empresa_seleccionada) & 
-                       (df["ANO_DE_CORTE"] == ano_corte_mas_reciente_global)].iloc[[0]].copy()
+    num_incumplimiento = (df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()
+    pct_incumplimiento = num_incumplimiento / len(df_filtrado) * 100 if len(df_filtrado) > 0 else 0
     
-    ano_corte_empresa = row_data_base["ANO_DE_CORTE"].iloc[0]
-
-    df_prediccion_forecast = run_forecasting(
-        initial_row=row_data_base, 
-        target_year=ano_prediccion, 
-        agr=AGR,
-        model_cls=model_cls, model_reg_gan=model_reg_gan, model_reg_per=model_reg_per,
-        model_feature_names=MODEL_FEATURE_NAMES, label_encoders=label_encoders
-    )
-
-    # --- 3. MOSTRAR RESULTADOS (Gráfico y KPIs) ---
+    num_anomalias = (df_filtrado['anomalia_score'] == -1).sum()
+    avg_completitud = df_filtrado['completitud_score'].mean()
+    avg_riesgo = df_filtrado['prioridad_riesgo_score'].mean()
     
-    df_resultados = df_prediccion_forecast[['ANO_DE_CORTE', 'GANANCIA_PERDIDA_PRED', 'INGRESOS_OPERACIONALES']].copy()
-    
-    # Añadir el punto real (base) al gráfico
-    last_real_data = row_data_base[['ANO_DE_CORTE', TARGET_COL]].rename(
-        columns={TARGET_COL: 'GANANCIA_PERDIDA_PRED'}
-    )
-    
-    df_plot_data = pd.concat([last_real_data, df_resultados[['ANO_DE_CORTE', 'GANANCIA_PERDIDA_PRED']]], ignore_index=True)
-    df_plot_data['Tipo'] = df_plot_data['ANO_DE_CORTE'].apply(lambda y: 'Real' if y == ano_corte_empresa else 'Proyectado')
-
-    # Cálculos para KPIs
-    pred_real = df_resultados['GANANCIA_PERDIDA_PRED'].iloc[-1]
-    ganancia_anterior = last_real_data['GANANCIA_PERDIDA_PRED'].iloc[0]
-    diferencia = pred_real - ganancia_anterior
-
-    st.markdown("#### Resultado Final de la Proyección")
-    col_kpi1, col_kpi2 = st.columns(2)
-    
-    with col_kpi1:
-        st.metric(
-            label=f"GANANCIA/PÉRDIDA Predicha Final ({ano_prediccion}) (Billones COP)",
-            value=f"${pred_real:,.2f}",
-            delta=f"{diferencia:,.2f}",
-            delta_color="normal"
-        )
-        st.caption(f"Cambio absoluto en la G/P vs {ano_corte_empresa}")
-    
-    with col_kpi2:
-        st.metric(
-            label=f"Ingresos Proyectados Final ({ano_prediccion}) (Billones COP)",
-            value=f"${df_resultados['INGRESOS_OPERACIONALES'].iloc[-1]:,.2f}",
-            delta_color="off"
-        )
-        
-    st.line_chart(
-        df_plot_data.set_index('ANO_DE_CORTE'),
-        y='GANANCIA_PERDIDA_PRED',
-        color='Tipo',
-        use_container_width=True
-    )
-    
-
-    # Mensaje condicional (basado en el último año proyectado)
-    if pred_real >= 0.01:
-        st.success(f"📈 La proyección final indica una **GANANCIA** de ${pred_real:,.2f} Billones COP en {ano_prediccion}.")
-    elif pred_real < -0.01:
-        st.error(f"📉 La proyección final indica una **PÉRDIDA** de ${abs(pred_real):,.2f} Billones COP en {ano_prediccion}.")
-    else:
-        st.info("ℹ️ La proyección final indica un resultado **cercano a cero** (equilibrio financiero).")
+    col_kpi1.metric("Activos en Incumplimiento", f"{num_incumplimiento} ({pct_incumplimiento:.1f}%)")
+    col_kpi2.metric("Anomalías ML Detectadas", num_anomalias)
+    col_kpi3.metric("Completitud Promedio", f"{avg_completitud:.1f}%")
+    col_kpi4.metric("Riesgo Promedio (Score)", f"{avg_riesgo:.2f}")
 
     st.markdown("---")
+    
+    # Gráfico de Prioridad (Celda 8)
+    st.subheader("Visualización de Riesgo: Antigüedad vs. Score de Prioridad")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.scatterplot(
+        x='antiguedad_datos_dias', 
+        y='prioridad_riesgo_score', 
+        data=df_filtrado, 
+        hue='estado_actualizacion', 
+        palette={'🔴 INCUMPLIMIENTO': 'red', '🟢 CUMPLE': 'green'}, 
+        size='popularidad_score',
+        sizes=(50, 800),
+        alpha=0.7,
+        ax=ax
+    )
+    ax.set_title('Antigüedad vs. Score de Prioridad de Intervención')
+    ax.set_xlabel('Antigüedad de Datos (Días)')
+    ax.set_ylabel('Score de Prioridad de Riesgo')
+    ax.axhline(y=df_filtrado['prioridad_riesgo_score'].quantile(0.75), color='red', linestyle='--', label='Prioridad Alta (Q3)')
+    st.pyplot(fig)
+    
+    # Tabla de Top 20 Riesgosos
+    st.subheader("Top 20 Activos de Mayor Riesgo (Prioridad de Intervención)")
+    top_riesgo = df_filtrado.sort_values('prioridad_riesgo_score', ascending=False).head(20)
+    st.dataframe(top_riesgo[[
+        'titulo', 'dueño', 'antiguedad_datos_dias', 'completitud_score', 
+        'popularidad_score', 'prioridad_riesgo_score', 'anomalia_score'
+    ]].style.background_gradient(cmap='Reds', subset=['prioridad_riesgo_score']))
 
 
-except Exception as e:
-    st.error(f"❌ ERROR generando la proyección: {e}")
-    st.caption(f"Detalle del error: {e}")
+# ------------------------------------------------------------------------------
+# PESTAÑA 2: DIAGNÓSTICO DE COHERENCIA Y COBERTURA (OE1)
+# ------------------------------------------------------------------------------
+with tab2:
+    st.header("2. Diagnóstico de Coherencia y Cobertura")
+    
+    col_viz2_1, col_viz2_2 = st.columns(2)
+    
+    # Incumplimiento por Entidad (Celda 9)
+    with col_viz2_1:
+        st.subheader("Incumplimiento por Entidad")
+        resumen_entidad = df_publico.groupby('dueño').agg(
+            Total_Activos=('titulo', 'count'),
+            Activos_Incumplimiento=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
+        ).reset_index()
+
+        resumen_entidad['Porcentaje_Incumplimiento'] = (resumen_entidad['Activos_Incumplimiento'] / resumen_entidad['Total_Activos']) * 100
+        resumen_entidad_top = resumen_entidad[resumen_entidad['Total_Activos'] >= 5].sort_values('Porcentaje_Incumplimiento', ascending=False).head(10)
+        
+        fig2, ax2 = plt.subplots(figsize=(8, 6))
+        sns.barplot(x='Porcentaje_Incumplimiento', y='dueño', data=resumen_entidad_top, palette='Reds_d', ax=ax2)
+        ax2.set_xlabel('Porcentaje de Activos en INCUMPLIMIENTO (%)')
+        ax2.set_ylabel('Entidad Responsable')
+        st.pyplot(fig2)
+
+    # Cobertura Temática (Celda 10 original)
+    with col_viz2_2:
+        st.subheader("Cobertura Temática (por Categoría)")
+        conteo_categoria = df_publico['categoria'].value_counts().head(10)
+        
+        fig3, ax3 = plt.subplots(figsize=(8, 6))
+        sns.barplot(x=conteo_categoria.values, y=conteo_categoria.index, palette='viridis', ax=ax3)
+        ax3.set_xlabel('Número de Activos')
+        ax3.set_ylabel('Categoría')
+        st.pyplot(fig3)
+
+# ------------------------------------------------------------------------------
+# PESTAÑA 3: ASISTENTE LLM (SIMULACIÓN)
+# ------------------------------------------------------------------------------
+with tab3:
+    st.header("3. Asistente Inteligente Agente de Datos")
+    st.markdown("""
+        Esta sección simula el **Agente de Datos** basado en LLM.
+        En el proyecto final, un modelo (como GPT4All) usaría las métricas calculadas 
+        (Riesgo, Completitud, Cumplimiento) para responder preguntas en lenguaje natural 
+        y generar recomendaciones accionables.
+    """)
+    
+    st.subheader("Simulador de Recomendaciones Clave")
+    
+    # En un entorno real, el LLM generaría este texto. Aquí lo generamos con pandas.
+    
+    # 1. Hallazgo de Ries
