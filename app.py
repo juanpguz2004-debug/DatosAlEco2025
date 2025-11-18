@@ -1,138 +1,144 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
-import os
+import cloudpickle as pickle
 
-# -------------------------------------------------
-#                 CONFIGURACIÓN UI
-# -------------------------------------------------
-st.set_page_config(
-    page_title="ALECO — Predicción Multianual",
-    layout="wide"
-)
+st.set_page_config(page_title="ALECO — Modelo de Dos Partes", layout="wide")
+
+# ============================================
+#          CARGA DE MODELOS Y DATASET
+# ============================================
+
+@st.cache_resource
+def load_all():
+    try:
+        with open("model_clasificacion.pkl", "rb") as f:
+            model_clf = pickle.load(f)
+
+        with open("model_reg_ganancia.pkl", "rb") as f:
+            model_gain = pickle.load(f)
+
+        with open("model_reg_perdida.pkl", "rb") as f:
+            model_loss = pickle.load(f)
+
+        with open("label_encoders.pkl", "rb") as f:
+            encoders = pickle.load(f)
+
+        with open("model_features.pkl", "rb") as f:
+            model_features = pickle.load(f)
+
+        with open("base_year.pkl", "rb") as f:
+            base_year = pickle.load(f)
+
+        with open("growth_rate.pkl", "rb") as f:
+            growth_rate = pickle.load(f)
+
+        df = pd.read_csv("dataset_procesado.csv")
+
+        return model_clf, model_gain, model_loss, encoders, model_features, base_year, growth_rate, df
+
+    except Exception as e:
+        st.error(f"❌ Error cargando los modelos: {e}")
+        raise
+
+(
+    model_clf,
+    model_gain,
+    model_loss,
+    encoders,
+    MODEL_FEATURE_NAMES,
+    BASE_YEAR,
+    GROWTH_RATE,
+    df
+) = load_all()
+
+st.success("✓ Modelos y dataset procesado cargados correctamente.")
+
+# ============================================
+#          FUNCIONES DE PREDICCIÓN
+# ============================================
+
+def predict_next_year(row_input):
+    """Predice si es ganancia o pérdida, y calcula el valor correspondiente."""
+    X = row_input[MODEL_FEATURE_NAMES].values.reshape(1, -1)
+
+    clase = model_clf.predict(X)[0]
+
+    if clase == 1:
+        pred = model_gain.predict(X)[0]
+    else:
+        pred = -abs(model_loss.predict(X)[0])
+
+    return pred
+
+
+def recursive_forecast(df, empresa, target_year):
+    df_emp = df[df["RAZON_SOCIAL"] == empresa].copy()
+
+    if df_emp.empty:
+        raise ValueError("La empresa seleccionada no existe en el dataset procesado.")
+
+    last_year = df_emp["ANO_DE_CORTE"].max()
+
+    if target_year <= last_year:
+        raise ValueError(f"El año objetivo ({target_year}) debe ser > último año disponible ({last_year})")
+
+    df_emp = df_emp.sort_values("ANO_DE_CORTE")
+
+    current_row = df_emp.iloc[-1].copy()
+    current_year = int(last_year)
+
+    history = []
+
+    while current_year < target_year:
+        next_year = current_year + 1
+
+        # Aplicar crecimiento recursivo
+        current_row["INGRESOS_OPERACIONALES"] *= GROWTH_RATE
+        current_row["TOTAL_ACTIVOS"] *= GROWTH_RATE
+        current_row["TOTAL_PASIVOS"] *= GROWTH_RATE
+        current_row["TOTAL_PATRIMONIO"] *= GROWTH_RATE
+
+        pred_value = predict_next_year(current_row)
+
+        history.append((next_year, pred_value))
+
+        current_row["ANO_DE_CORTE"] = next_year
+        current_year = next_year
+
+    return history
+
+# ============================================
+#               INTERFAZ STREAMLIT
+# ============================================
 
 st.title("📊 ALECO — Modelo de Dos Partes (Ganancia / Pérdida)")
 st.write("Predicción multianual usando modelos XGBoost entrenados en Colab.")
 
-
-# -------------------------------------------------
-#          ARCHIVOS NECESARIOS EN GITHUB
-# -------------------------------------------------
-REQUIRED_FILES = [
-    "dataset_procesado.csv",
-    "label_encoders.pkl",
-    "model_features.pkl",
-    "base_year.pkl",
-    "growth_rate.pkl",
-    "model_clasificacion.pkl",
-    "model_reg_ganancia.pkl",
-    "model_reg_perdida.pkl"
-]
-
-missing = [f for f in REQUIRED_FILES if not os.path.exists(f)]
-
-if missing:
-    st.error("❌ Faltan archivos necesarios:\n" + "\n".join(missing))
-    st.stop()
-
-
-# -------------------------------------------------
-#           CARGAR MODELOS Y ARCHIVOS
-# -------------------------------------------------
-try:
-    df = pd.read_csv("dataset_procesado.csv")
-
-    with open("label_encoders.pkl", "rb") as f:
-        encoders = pickle.load(f)
-
-    with open("model_features.pkl", "rb") as f:
-        MODEL_FEATURE_NAMES = pickle.load(f)
-
-    with open("base_year.pkl", "rb") as f:
-        base_year_model = pickle.load(f)
-
-    with open("growth_rate.pkl", "rb") as f:
-        growth_model = pickle.load(f)
-
-    with open("model_clasificacion.pkl", "rb") as f:
-        model_clasificacion = pickle.load(f)
-
-    with open("model_reg_ganancia.pkl", "rb") as f:
-        model_reg_ganancia = pickle.load(f)
-
-    with open("model_reg_perdida.pkl", "rb") as f:
-        model_reg_perdida = pickle.load(f)
-
-    st.success("✓ Modelos y dataset procesado cargados correctamente.")
-
-except Exception as e:
-    st.error(f"❌ Error cargando los modelos: {e}")
-    st.stop()
-
-
-# -------------------------------------------------
-#           VERIFICAR QUE EXISTA RAZON_SOCIAL
-# -------------------------------------------------
-if "RAZON_SOCIAL" not in df.columns:
-    st.error("❌ El CSV procesado debe contener la columna 'RAZON_SOCIAL'.")
-    st.stop()
-
-
-# -------------------------------------------------
-#           SELECCIÓN DE EMPRESA
-# -------------------------------------------------
+# Selección de empresa
 empresa = st.selectbox(
-    "Selecciona una empresa para predecir:",
-    df["RAZON_SOCIAL"].unique()
+    "Selecciona una empresa:",
+    options=sorted(df["RAZON_SOCIAL"].unique())
 )
 
-df_emp = df[df["RAZON_SOCIAL"] == empresa]
+# Año target
+anio_target = st.number_input(
+    "Selecciona Año de Predicción",
+    min_value=int(df["ANO_DE_CORTE"].min()) + 1,
+    max_value=2050,
+    value=2026,
+    step=1
+)
 
-if df_emp.empty:
-    st.error("❌ No se encontró la empresa en el dataset.")
-    st.stop()
-
-# Remover columna identificadora
-X = df_emp.drop(columns=["RAZON_SOCIAL"]).copy()
-
-# Asegurar orden exacto de columnas
-X = X.reindex(columns=MODEL_FEATURE_NAMES, fill_value=0)
-
-
-# -------------------------------------------------
-#             BOTÓN DE PREDICCIÓN
-# -------------------------------------------------
-if st.button("🔮 Predecir Escenario Multianual"):
-
+# Botón predecir
+if st.button("🔮 Generar Predicción"):
     try:
-        # 1️⃣ Clasificación ganancia/pérdida
-        clase = model_clasificacion.predict(X)[0]
+        forecast = recursive_forecast(df, empresa, anio_target)
 
-        # 2️⃣ Predicción regresiva según clase
-        if clase == 1:
-            pred_base = model_reg_ganancia.predict(X)[0]
-        else:
-            pred_base = model_reg_perdida.predict(X)[0]
+        st.subheader(f"📈 Predicción para {empresa}")
 
-        pred_base = float(pred_base)
-
-        # 3️⃣ Predicción multianual
-        base_year = int(base_year_model)
-        growth_rate = float(growth_model)
-
-        years = list(range(base_year, base_year + 6))
-        preds = [pred_base * ((1 + growth_rate) ** i) for i in range(6)]
-
-        # Mostrar resultados
-        st.subheader(f"📈 Proyección para {empresa}")
-
-        df_pred = pd.DataFrame({
-            "Año": years,
-            "Predicción ($)": preds
-        })
-
-        st.dataframe(df_pred, use_container_width=True)
+        for year, value in forecast:
+            st.write(f"**{year}:** {value:,.2f} millones COP")
 
     except Exception as e:
-        st.error(f"❌ Error generando predicción: {e}")
+        st.error(f"❌ ERROR generando la predicción: {e}")
