@@ -23,7 +23,9 @@ st.set_page_config(layout="wide")
 # Función para estandarizar nombres de columnas (de la Celda 3)
 def clean_col_name(col):
     name = col.lower().strip()
+    # Limpieza de tildes
     name = name.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
+    # Limpieza de caracteres especiales y reemplazo por guión bajo
     name = name.replace(' ', '_').replace('.', '').replace('/', '_').replace(':', '').replace('(', '').replace(')', '')
     return name
 
@@ -32,9 +34,10 @@ def clean_col_name(col):
 def load_and_process_data(file_path):
     
     # ----------------------------------------
-    # I. Carga y Limpieza (Celdas 2 y 3)
+    # I. Carga y Limpieza 
     # ----------------------------------------
     try:
+        # Streamlit Cloud descarga el archivo grande de LFS automáticamente aquí
         df = pd.read_csv(file_path, low_memory=False)
         df.columns = [clean_col_name(col) for col in df.columns]
     except Exception as e:
@@ -42,13 +45,14 @@ def load_and_process_data(file_path):
         return pd.DataFrame() 
     
     # ----------------------------------------
-    # II. Métrica de Completitud (Celda 5 original)
+    # II. Métrica de Completitud
     # ----------------------------------------
     campos_minimos = [
         'titulo', 'descripcion', 'dueño', 'correo_electronico_de_contacto', 
         'licencia', 'dominio', 'categoria', 'informacion_de_datos_frecuencia_de_actualizacion', 
         'common_core_public_access_level', 'informacion_de_datos_cobertura_geografica'
     ]
+    # Filtra solo las columnas que existen en tu DF actual
     campos_existentes = [col for col in campos_minimos if col in df.columns]
     num_campos_totales = len(campos_existentes)
     
@@ -59,7 +63,7 @@ def load_and_process_data(file_path):
         df['completitud_score'] = 0
 
     # ----------------------------------------
-    # III. Métricas de Tiempo y Uso (Celda 6 original)
+    # III. Métricas de Tiempo y Uso 
     # ----------------------------------------
     COLUMNA_FECHA_ACTUALIZACION = 'fecha_de_ultima_actualizacion_de_datos_utc' 
     COLUMNA_FRECUENCIA = 'informacion_de_datos_frecuencia_de_actualizacion'
@@ -85,20 +89,21 @@ def load_and_process_data(file_path):
     df['popularidad_score'] = (df['vistas'].fillna(0) * 0.6) + (df['descargas'].fillna(0) * 0.4)
 
     # ----------------------------------------
-    # IV. Detección de Anomalías (Isolation Forest - Celda 4 modificada)
+    # IV. Detección de Anomalías (Isolation Forest)
     # ----------------------------------------
     df['anomalia_score'] = 0 # Inicializar
     df_modelo = df[(df['antiguedad_datos_dias'] < 9999) & (df['popularidad_score'] > 0)].copy()
     
     if not df_modelo.empty:
         features = df_modelo[['antiguedad_datos_dias', 'popularidad_score', 'completitud_score']]
+        # Usa un número fijo de estimadores (ej: 100) en lugar de un archivo pkl
         model = IsolationForest(contamination=0.01, random_state=42)
         model.fit(features)
         anomalias = model.predict(features)
         df.loc[df_modelo.index, 'anomalia_score'] = anomalias
 
     # ----------------------------------------
-    # V. Score de Prioridad/Riesgo (Celda 6 modificada)
+    # V. Score de Prioridad/Riesgo 
     # ----------------------------------------
     df['riesgo_incumplimiento'] = np.where(df['estado_actualizacion'] == '🔴 INCUMPLIMIENTO', 3.0, 0.0)
     df['riesgo_completitud'] = np.where(df['completitud_score'] < 50, 1.5, 0.0)
@@ -114,9 +119,16 @@ def load_and_process_data(file_path):
     )
     
     # ----------------------------------------
-    # VI. Filtrado Público (Celda 7)
+    # VI. Filtrado Público (Solo activos con acceso "public")
     # ----------------------------------------
-    df_publico = df[df['publico'].astype(str).str.lower().str.strip() == 'public'].copy()
+    # Corregido: La columna es common_core_public_access_level
+    COL_PUBLICO = 'common_core_public_access_level'
+    
+    if COL_PUBLICO in df.columns:
+        df_publico = df[df[COL_PUBLICO].astype(str).str.lower().str.strip() == 'public'].copy()
+    else:
+        # Si la columna no existe, asumimos que todos son públicos para continuar el dashboard
+        df_publico = df.copy() 
     
     return df_publico
 
@@ -124,7 +136,7 @@ def load_and_process_data(file_path):
 # 3. EJECUCIÓN DEL PROCESAMIENTO Y MANEJO DE ARCHIVOS
 # ==============================================================================
 
-# RUTA CORREGIDA: Usa el nombre del archivo subido con Git LFS
+# RUTA CORREGIDA con el nombre de tu archivo grande subido por LFS
 FILE_PATH = 'data/Asset_Inventory_-_Public_20251118.csv' 
 
 try:
@@ -183,8 +195,15 @@ with tab1:
 
     st.markdown("---")
     
-    # Gráfico de Prioridad (Celda 8)
+    # Gráfico de Prioridad 
     st.subheader("Visualización de Riesgo: Antigüedad vs. Score de Prioridad")
+    
+    # Prevenir errores si el dataframe filtrado es muy pequeño para el quantile
+    if df_filtrado['prioridad_riesgo_score'].nunique() > 1:
+        prioridad_q3 = df_filtrado['prioridad_riesgo_score'].quantile(0.75)
+    else:
+        prioridad_q3 = df_filtrado['prioridad_riesgo_score'].max()
+        
     fig, ax = plt.subplots(figsize=(10, 6))
     sns.scatterplot(
         x='antiguedad_datos_dias', 
@@ -200,7 +219,7 @@ with tab1:
     ax.set_title('Antigüedad vs. Score de Prioridad de Intervención')
     ax.set_xlabel('Antigüedad de Datos (Días)')
     ax.set_ylabel('Score de Prioridad de Riesgo')
-    ax.axhline(y=df_filtrado['prioridad_riesgo_score'].quantile(0.75), color='red', linestyle='--', label='Prioridad Alta (Q3)')
+    ax.axhline(y=prioridad_q3, color='red', linestyle='--', label='Prioridad Alta (Q3)')
     st.pyplot(fig)
     
     # Tabla de Top 20 Riesgosos
@@ -209,7 +228,7 @@ with tab1:
     st.dataframe(top_riesgo[[
         'titulo', 'dueño', 'antiguedad_datos_dias', 'completitud_score', 
         'popularidad_score', 'prioridad_riesgo_score', 'anomalia_score'
-    ]].style.background_gradient(cmap='Reds', subset=['prioridad_riesgo_score']))
+    ]].style.background_gradient(cmap='Reds', subset=['prioridad_riesgo_score']), use_container_width=True)
 
 
 # ------------------------------------------------------------------------------
@@ -220,7 +239,7 @@ with tab2:
     
     col_viz2_1, col_viz2_2 = st.columns(2)
     
-    # Incumplimiento por Entidad (Celda 9)
+    # Incumplimiento por Entidad 
     with col_viz2_1:
         st.subheader("Incumplimiento por Entidad")
         resumen_entidad = df_publico.groupby('dueño').agg(
@@ -237,7 +256,7 @@ with tab2:
         ax2.set_ylabel('Entidad Responsable')
         st.pyplot(fig2)
 
-    # Cobertura Temática (Celda 10 original - por Categoría)
+    # Cobertura Temática (por Categoría)
     with col_viz2_2:
         st.subheader("Cobertura Temática (por Categoría)")
         conteo_categoria = df_publico['categoria'].value_counts().head(10)
@@ -262,30 +281,34 @@ with tab3:
     st.subheader("Simulador de Recomendaciones Clave")
     
     # KPIs para el LLM
-    peor_activo = df_filtrado.sort_values('prioridad_riesgo_score', ascending=False).iloc[0]
-    peor_entidad = resumen_entidad_top.iloc[0] if not resumen_entidad_top.empty else None
+    if not df_filtrado.empty:
+        peor_activo = df_filtrado.sort_values('prioridad_riesgo_score', ascending=False).iloc[0]
+        # Garantizar que resumen_entidad_top no esté vacío antes de acceder a iloc[0]
+        peor_entidad = resumen_entidad_top.iloc[0] if not resumen_entidad_top.empty else None
 
-    # Simular la respuesta del LLM
-    respuesta_llm = f"""
-    Basado en el análisis de Machine Learning y las métricas de completitud y actualización, estos son los hallazgos clave para **{entidad_seleccionada}**:
-    
-    **🔴 Alerta de Alto Riesgo:**
-    - El activo de más alta prioridad para intervención es: **'{peor_activo['titulo']}'**.
-    - Su Score de Riesgo es de **{peor_activo['prioridad_riesgo_score']:.2f}** (máx. 7.5).
-    - **Motivo de Riesgo:** El activo está en **{peor_activo['estado_actualizacion']}** y tiene una Completitud de solo **{peor_activo['completitud_score']:.1f}%**.
-    
-    **📢 Recomendación de Gobernanza:**
-    """
-    if peor_entidad is not None and entidad_seleccionada == 'Todas':
-        respuesta_llm += f"""
-        - La entidad con el mayor desafío en cumplimiento de actualización es **{peor_entidad['dueño']}**, con un **{peor_entidad['Porcentaje_Incumplimiento']:.1f}%** de sus activos en incumplimiento. Se recomienda iniciar un plan de seguimiento con este equipo.
-        """
-    else:
-         respuesta_llm += f"""
-        - Su entidad tiene un Score de Completitud promedio de **{avg_completitud:.1f}%**. Enfoque los esfuerzos de diligenciamiento de metadatos en aquellos activos con menos del 50% de completitud.
-        """
+        # Simular la respuesta del LLM
+        respuesta_llm = f"""
+        Basado en el análisis de Machine Learning y las métricas de completitud y actualización, estos son los hallazgos clave para **{entidad_seleccionada}**:
         
-    st.info(respuesta_llm)
+        **🔴 Alerta de Alto Riesgo:**
+        - El activo de más alta prioridad para intervención es: **'{peor_activo['titulo']}'**.
+        - Su Score de Riesgo es de **{peor_activo['prioridad_riesgo_score']:.2f}** (máx. 7.5).
+        - **Motivo de Riesgo:** El activo está en **{peor_activo['estado_actualizacion']}** y tiene una Completitud de solo **{peor_activo['completitud_score']:.1f}%**.
+        
+        **📢 Recomendación de Gobernanza:**
+        """
+        if peor_entidad is not None and entidad_seleccionada == 'Todas':
+            respuesta_llm += f"""
+            - La entidad con el mayor desafío en cumplimiento de actualización es **{peor_entidad['dueño']}**, con un **{peor_entidad['Porcentaje_Incumplimiento']:.1f}%** de sus activos en incumplimiento. Se recomienda iniciar un plan de seguimiento con este equipo.
+            """
+        else:
+            respuesta_llm += f"""
+            - Su entidad tiene un Score de Completitud promedio de **{avg_completitud:.1f}%**. Enfoque los esfuerzos de diligenciamiento de metadatos en aquellos activos con menos del 50% de completitud.
+            """
+            
+        st.info(respuesta_llm)
+    else:
+        st.warning("No hay datos filtrados para generar recomendaciones.")
     
     # Campo de Chat
     st.subheader("Consulta Interactiva")
