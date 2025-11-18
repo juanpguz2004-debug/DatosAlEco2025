@@ -6,3 +6,4 @@ xgboost
 gpt4all
 numpy
 scikit-learn
+cloudpickle
