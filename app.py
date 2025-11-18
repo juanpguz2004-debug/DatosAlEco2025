@@ -119,7 +119,7 @@ def load_assets():
 
 
 # ----------------------------------------------------
-# 3) FUNCIÓN DE FORECASTING RECURSIVO (CORREGIDA)
+# 3) FUNCIÓN DE FORECASTING RECURSIVO (CORRECCIÓN V3: ALINEACIÓN REFORZADA)
 # ----------------------------------------------------
 
 def run_forecasting(
@@ -133,7 +133,7 @@ def run_forecasting(
     Realiza la predicción recursiva aplicando el AGR a las variables financieras
     y ejecutando el Hurdle Model para cada año hasta target_year.
     """
-    # 🚨 CORRECCIÓN CLAVE: Usamos una copia que será MUTADA en el bucle para la recursividad.
+    # Usamos una copia que será MUTADA en el bucle para la recursividad.
     current_data = initial_row.iloc[0].copy()
     start_year = current_data['ANO_DE_CORTE']
     
@@ -143,12 +143,14 @@ def run_forecasting(
         
         # --- Paso 1: Proyección Acumulativa ---
         for col in COLS_TO_PROJECT:
-            # Multiplica el valor del AÑO ANTERIOR (current_data) por AGR.
+            # Multiplica el valor del AÑO ANTERIOR por AGR.
             current_data[col] *= agr 
+            # 🚨 Refuerzo: Aseguramos que las variables proyectadas sigan siendo numéricas.
+            current_data[col] = float(current_data[col]) 
             
         current_data['ANO_DE_CORTE'] = year
         
-        # --- Paso 2: Preprocesamiento para el Modelo ---
+        # --- Paso 2: Preprocesamiento para el Modelo (Alineación) ---
         row_prediccion = pd.DataFrame([current_data.to_dict()])
         X_pred_temp = row_prediccion.copy()
         
@@ -156,20 +158,32 @@ def run_forecasting(
         for col in LE_COLS:
             encoder = label_encoders[col]
             X_pred_temp[col] = X_pred_temp[col].apply(lambda x: safe_le_transform(encoder, x))
+            
+        # Refuerzo: Convertir las columnas categóricas a tipo 'category' para OHE
+        for col in OHE_COLS:
+            X_pred_temp[col] = X_pred_temp[col].astype('category')
 
-        # Aplicar One-Hot Encoding (OHE) y Alinear
+
+        # Aplicar One-Hot Encoding (OHE)
         X_pred_temp = pd.get_dummies(
             X_pred_temp, columns=OHE_COLS, prefix=OHE_COLS, drop_first=True, dtype=int
         )
         
-        missing_cols = set(model_feature_names) - set(X_pred_temp.columns)
-        for c in missing_cols:
-            X_pred_temp[c] = 0 
+        # 🚨 CORRECCIÓN CLAVE: Alinear y Ordenar las columnas para el input del modelo
+        X_pred = pd.DataFrame(columns=model_feature_names)
         
-        X_pred = X_pred_temp[model_feature_names].copy()
-        X_pred = X_pred.apply(pd.to_numeric, errors='coerce').fillna(0) # Limpieza final
-
+        # Llenar X_pred con los valores calculados/codificados
+        for feature in model_feature_names:
+            if feature in X_pred_temp.columns:
+                X_pred[feature] = X_pred_temp[feature]
+            else:
+                # Si es una columna OHE que no existe en esta fila (e.g., una región no seleccionada)
+                X_pred[feature] = 0
+        
+        X_pred = X_pred.fillna(0)
+        
         # --- Paso 3: Predicción con Hurdle Model ---
+        
         pred_cls = model_cls.predict(X_pred)[0]
         pred_real = 0.0
         
@@ -183,6 +197,14 @@ def run_forecasting(
             magnitud_perdida_real = np.expm1(pred_log)
             pred_real = -magnitud_perdida_real
 
+        # --- Paso 4: Almacenar Resultado ---
+        
+        current_data_for_output = current_data.to_dict()
+        current_data_for_output['GANANCIA_PERDIDA_PRED'] = pred_real 
+        
+        df_forecast = pd.concat([df_forecast, pd.DataFrame([current_data_for_output])], ignore_index=True)
+        
+    return df_forecast
         # --- Paso 4: Almacenar Resultado ---
         
         # Almacena G/P en el DataFrame de resultados (usando los datos proyectados de current_data)
@@ -363,3 +385,4 @@ except Exception as e:
     st.error(f"❌ ERROR generando la proyección: {e}")
     st.caption(f"Detalle del error: {e}")
 # ----------------------------------------------------
+
