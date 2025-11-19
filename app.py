@@ -1270,7 +1270,8 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
      
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
 
-   # --- BLOQUE TEMPORAL DE DEPURACIÓN DE COLUMNAS ---
+  # =================================================================
+        # --- BLOQUE TEMPORAL DE DEPURACIÓN DE COLUMNAS ---
         # =================================================================
         
         if 'df_analisis_completo' in locals() and not df_analisis_completo.empty:
@@ -1278,5 +1279,8 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
                 st.info("Estas son todas las columnas en tu DataFrame procesado `df_analisis_completo`:")
                 # Usamos .columns.tolist() para obtener una lista fácil de leer
                 st.code(df_analisis_completo.columns.tolist())
+        
+        # =================================================================
+
 
 
