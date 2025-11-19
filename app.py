@@ -17,7 +17,7 @@ ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" # Usamos el archivo pre-calc
 UMBRAL_RIESGO_ALTO = 1.0 
 
 # =================================================================
-# 1. Funciones de Carga y Procesamiento (Optimizadas y Simplificadas)
+# 1. Funciones de Carga y Procesamiento
 # =================================================================
 
 @st.cache_data
@@ -31,35 +31,43 @@ def load_processed_data(file_path):
         return pd.DataFrame()
 
 def process_external_data(df):
-    """Lógica de riesgo universal para el archivo externo subido (NO DEPENDE DE COLUMNAS ESPECÍFICAS)."""
+    """
+    Lógica de riesgo universal para el archivo externo subido. 
+    Se basa en métricas de calidad de datos que aplican a cualquier DataFrame,
+    independiente del esquema del Inventario Principal.
+    """
     
-    # 1. Asegurar la existencia de las columnas mínimas para filtros/títulos
+    # --- AJUSTE PRELIMINAR: Asegurar columnas MÍNIMAS para el despliegue ---
     if 'titulo' not in df.columns:
         df['titulo'] = 'Activo sin título'
     if 'dueño' not in df.columns:
         df['dueño'] = 'Desconocido'
 
-    # 2. CÁLCULO DE RIESGO UNIVERSAL
-    # Completitud de Metadatos (Usando el mismo set de 10 columnas clave como referencia)
-    campos_minimos = [
-        'titulo', 'descripcion', 'dueño', 'correo_electronico_de_contacto',
-        'licencia', 'dominio', 'categoria', 'informacion_de_datos_frecuencia_de_actualizacion',
-        'common_core_public_access_level', 'informacion_de_datos_cobertura_geografica'
-    ]
-    campos_existentes = [col for col in campos_minimos if col in df.columns]
-    num_campos_totales_base = len(campos_minimos)
-
-    df['campos_diligenciados'] = df[campos_existentes].notna().sum(axis=1)
-    df['completitud_score'] = (df['campos_diligenciados'] / num_campos_totales_base) * 100
-    
-    # Completitud de Datos por Fila (universal: porcentaje de celdas llenas)
+    # 1. Métrica Universal: Completitud de Datos por Fila (Densidad de datos)
     df['datos_por_fila_score'] = (df.notna().sum(axis=1) / df.shape[1]) * 100
     
+    # 2. Métrica Universal: Completitud de Metadatos (Verifica si existen columnas básicas de descripción)
+    # Usamos tres columnas comunes a cualquier metadata de catálogo como referencia base.
+    campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
+    
+    # Calcular cuántos de estos campos existen en el DF subido
+    campos_existentes = [col for col in campos_clave_universal if col in df.columns]
+    num_campos_totales_base = len(campos_clave_universal) # Base 3
+    
+    # Calcular el score de completitud basado SOLO en los campos que existen en este archivo
+    df['campos_diligenciados_universal'] = df[campos_existentes].notna().sum(axis=1)
+    df['completitud_metadatos_universal'] = (df['campos_diligenciados_universal'] / num_campos_totales_base) * 100
+
+    
+    # 3. CÁLCULO DE SCORE DE RIESGO UNIVERSAL (Máximo teórico 3.5)
+    
     # Penalización 1: Score bajo de Datos por Fila (riesgo de datos incompletos)
+    # Penaliza si la fila está menos del 70% llena (Riesgo 2.0)
     df['riesgo_datos_incompletos'] = np.where(df['datos_por_fila_score'] < 70, 2.0, 0.0)
     
-    # Penalización 2: Completitud de Metadatos (si es menor a 10%)
-    df['riesgo_metadatos_nulo'] = np.where(df['completitud_score'] < 10, 1.0, 0.0)
+    # Penalización 2: Metadatos insuficientes (Riesgo 1.5)
+    # Penaliza si la completitud de metadatos universal está por debajo del 50%.
+    df['riesgo_metadatos_nulo'] = np.where(df['completitud_metadatos_universal'] < 50, 1.5, 0.0)
     
     # Score de riesgo universal
     df['prioridad_riesgo_score'] = df['riesgo_datos_incompletos'] + df['riesgo_metadatos_nulo']
@@ -122,7 +130,6 @@ try:
         # --- BARRA LATERAL (FILTROS SECUNDARIOS) ---
         st.sidebar.header("⚙️ Filtros para Visualizaciones")
         
-        # Nota: Estas columnas deberían existir en el archivo PROCESADO
         filtro_acceso = "Mostrar Todos"
         if 'common_core_public_access_level' in df_analisis_completo.columns:
             access_levels = df_analisis_completo['common_core_public_access_level'].dropna().unique().tolist()
@@ -166,7 +173,7 @@ try:
             
             st.markdown("---")
 
-            # --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) RESTAURADO ---
+            # --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) ---
             st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 
             st.info(f"""
@@ -219,7 +226,7 @@ try:
 
             st.markdown("---")
 
-            # --- Visualización 1: Ranking de Completitud (Peor Rendimiento) RESTAURADO ---
+            # --- Visualización 1: Ranking de Completitud (Peor Rendimiento) ---
             st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
             
             try:
@@ -245,7 +252,7 @@ try:
 
             st.markdown("---")
 
-            # --- Visualización 2: Gráfico de PARETO de Riesgo (Activos más Críticos) RESTAURADO ---
+            # --- Visualización 2: Gráfico de PARETO de Riesgo (Activos más Críticos) ---
             st.subheader("2. 🎯 Gráfico de Pareto de Riesgo (Activos más Críticos)")
             
             try:
@@ -273,7 +280,7 @@ try:
             
             st.markdown("---")
 
-            # --- Visualización 3: Cobertura Temática por Categoría RESTAURADO ---
+            # --- Visualización 3: Cobertura Temática por Categoría ---
             st.subheader("3. 🗺️ Cobertura Temática por Categoría")
             
             try:
@@ -297,11 +304,11 @@ try:
             st.markdown("---")
         
         # ----------------------------------------------------------------------
-        # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO (RESULTADOS RESTAURADOS)
+        # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
         # ----------------------------------------------------------------------
         st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
         st.header("💾 Diagnóstico de Archivo CSV Externo (Riesgo Universal)")
-        st.markdown("Sube un archivo CSV. El riesgo se calcula basándose en la Completitud de Datos por Fila y Metadatos.")
+        st.markdown("Sube un archivo CSV. El riesgo se calcula basándose en la Completitud de Datos por Fila y Metadatos UNIVERSALES.")
 
         uploaded_file = st.file_uploader(
             "Selecciona el Archivo CSV", 
@@ -317,16 +324,22 @@ try:
                     if uploaded_df.empty:
                         st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío.")
                     else:
-                        # Llama a la lógica universal DE RIESGO
+                        # Llama a la lógica universal DE RIESGO (Agnóstica al esquema)
                         df_diagnostico = process_external_data(uploaded_df.copy())
                         
                         if not df_diagnostico.empty:
                             total_activos_subidos = len(df_diagnostico)
                             riesgo_promedio_general = df_diagnostico['prioridad_riesgo_score'].mean()
                             
+                            # Usamos la métrica universal
+                            completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].mean()
+                            
                             if riesgo_promedio_general >= 1.0:
                                 estado = "🔴 RIESGO ALTO (REQUIERE INTERVENCIÓN)"
                                 color = "red"
+                            elif riesgo_promedio_general > 0.0:
+                                estado = "🟡 RIESGO MEDIO (ATENCIÓN REQUERIDA)"
+                                color = "orange"
                             else:
                                 estado = "🟢 RIESGO BAJO (CALIDAD ACEPTABLE)"
                                 color = "green"
@@ -335,16 +348,16 @@ try:
                             
                             st.subheader("Resultados del Diagnóstico Rápido")
                             
-                            # --- DESPLIEGUE DE MÉTRICAS RESTAURADO ---
+                            # --- DESPLIEGUE DE MÉTRICAS ---
                             col_info1, col_info2, col_info3 = st.columns(3)
                             col_info1.metric("Activos Analizados", total_activos_subidos)
-                            col_info2.metric("Completitud de Metadatos", f"{df_diagnostico['completitud_score'].mean():.2f}%")
+                            col_info2.metric("Completitud de Metadatos", f"{completitud_universal_promedio:.2f}%") 
                             col_info3.metric("Riesgo Promedio Universal", f"{riesgo_promedio_general:.2f}")
 
                             st.markdown(f"""
                                 <div style='border: 2px solid {color}; padding: 15px; border-radius: 5px; background-color: #f9f9f9;'>
                                     <h4 style='color: {color}; margin-top: 0;'>Diagnóstico General: {estado}</h4>
-                                    <p>El Score de Riesgo Universal de **{riesgo_promedio_general:.2f}** indica la prioridad de intervención. (Máximo teórico: 3.0)</p>
+                                    <p>El Score de Riesgo Universal de **{riesgo_promedio_general:.2f}** indica la prioridad de intervención. (Máximo teórico: 3.5)</p>
                                     <p><b>Promedio de Datos por Fila:</b> {datos_fila_promedio:.2f}% (Indica cuántas celdas están llenas).</p>
                                 </div>
                             """, unsafe_allow_html=True)
@@ -352,11 +365,15 @@ try:
                             st.markdown("---")
                             st.subheader("Desglose de Calidad de las Filas (Top 10 Riesgo)")
                             
+                            # Función de estilo para garantizar que el texto sea negro (Arreglo de Visibilidad)
+                            def make_text_black(s):
+                                return ['color: black' for v in s]
+
                             cols_diagnostico = ['prioridad_riesgo_score', 'datos_por_fila_score', 'riesgo_datos_incompletos', 'riesgo_metadatos_nulo']
                             df_cols_disponibles = df_diagnostico[[col for col in cols_diagnostico if col in df_diagnostico.columns]]
                             
                             st.dataframe(
-                                df_cols_disponibles.sort_values(by='prioridad_riesgo_score', ascending=False).head(10), 
+                                df_cols_disponibles.sort_values(by='prioridad_riesgo_score', ascending=False).head(10).style.apply(make_text_black, axis=1), 
                                 use_container_width=True
                             )
 
