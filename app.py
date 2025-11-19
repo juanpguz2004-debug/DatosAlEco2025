@@ -168,7 +168,7 @@ def setup_data_assistant(df):
     
     # --- 1. CONFIGURACIÓN DE CLAVE API (HARDCODEADA) ---
     # REEMPLAZA EL VALOR DE ABAJO con tu clave secreta real de Gemini (comienza con AIza...).
-    GEMINI_API_SECRET_VALUE = "REEMPLAZA_ESTO_CON_TU_CLAVE_SECRETA_AIza..."
+    GEMINI_API_SECRET_VALUE = "DatosEco121212"
     
     if GEMINI_API_SECRET_VALUE == "REEMPLAZA_ESTO_CON_TU_CLAVE_SECRETA_AIza...":
         st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
@@ -628,3 +628,4 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
