@@ -35,9 +35,9 @@ UMBRAL_COMPLETITUD_BAJA = 70.0
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0 	
-PENALIZACION_INCONSISTENCIA_TIPO = 0.5 	 
+PENALIZACION_INCONSISTENCIA_TIPO = 0.5 	# Valor de penalización por cada columna con error de tipo
 PENALIZACION_DUPLICADO = 1.0 	 	 	 
-RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5 
+RIESGO_MAXIMO_TEORICO_UNIVERSAL = 10.0 # <--- AJUSTADO: Se asume que el riesgo puede ser hasta 10.0
 
 # ⚠️ CLAVE SECRETA DE GEMINI
 GEMINI_API_SECRET_VALUE = "Aiza"
@@ -90,12 +90,14 @@ def calculate_universal_metrics(df):
 		df['datos_por_fila_score'] < UMBRAL_COMPLETITUD_BAJA, PENALIZACION_DATOS_INCOMPLETOS, 0.0
 	)
 
-	# --- 2. CONSISTENCIA: Mezcla de Tipos ---
+	# --- 2. CONSISTENCIA: Mezcla de Tipos (¡CORREGIDO: Riesgo Acumulativo por Columna!) ---
 	df['riesgo_consistencia_tipo'] = 0.0
+	# Recorre CADA columna y acumula el riesgo si detecta un problema de tipo
 	for col in df.select_dtypes(include='object').columns:
 		inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
 		if inconsistencies.any():
-			df.loc[inconsistencies, 'riesgo_consistencia_tipo'] = PENALIZACION_INCONSISTENCIA_TIPO
+			# Utiliza += para sumar la penalización por cada columna con inconsistencia
+			df.loc[inconsistencies, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO 
 		
 	# --- 3. UNICIDAD: Duplicados Exactos ---
 	df['es_duplicado'] = df.duplicated(keep=False) 
@@ -244,7 +246,7 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 	return df_sample, variance_ratio, None
 
 # =================================================================
-# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) (SIN CAMBIOS)
+# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
 # =================================================================
 
 def setup_data_assistant(df):
@@ -444,7 +446,7 @@ try:
 			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades ---
 			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 			
-			# Se actualiza la descripción para reflejar que sólo se usa color de texto
+			# Se mantiene la descripción de color de texto
 			st.info(f"""
 				La tabla usa **color de texto** condicional para identificar problemas de calidad rápidamente:
 				* 🔴 **Riesgo Promedio** > **{UMBRAL_RIESGO_ALTO:.1f}** (Prioridad Máxima).
@@ -470,7 +472,7 @@ try:
 				resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
 				
 				
-				# 🟢 CORRECCIÓN: Función de estilo para usar SÓLO color de texto en todas las columnas de riesgo
+				# Función de estilo para usar SÓLO color de texto en todas las columnas de riesgo
 				def highlight_metrics_text_color(s):
 					"""Aplica color de texto (rojo/verde) a TODAS las métricas críticas."""
 					styles = [''] * len(s)
@@ -555,16 +557,15 @@ try:
 						
 						if not df_top_10_peor_completitud.empty:
 							
-							# 🟢 CORRECCIÓN: Se mantiene esta configuración. 'color' define la columna que determina el color,
-							# y 'color_continuous_scale' aplica el gradiente.
+							# *** CÓDIGO CLAVE PARA EL GRADIENTE (Confirmado) ***
 							fig1 = px.bar(
 								df_top_10_peor_completitud,
 								x='Completitud_Promedio', 
 								y=COLUMNA_ENTIDAD,
 								orientation='h',
 								title='Top 10 Entidades con Peor Completitud Promedio',
-								color='Completitud_Promedio', # <--- Asigna el color basado en la métrica (clave para el gradiente)
-								color_continuous_scale=px.colors.sequential.Reds_r, # <--- Define la escala de gradiente
+								color='Completitud_Promedio', 
+								color_continuous_scale=px.colors.sequential.Reds_r, # Usa un gradiente de rojo
 								labels={
 									'Completitud_Promedio': 'Score de Completitud Promedio (%)',
 									COLUMNA_ENTIDAD: 'Entidad Responsable'
@@ -575,7 +576,10 @@ try:
 								}
 							)
 							
-							fig1.update_layout(yaxis={'categoryorder':'total ascending'}) 
+							fig1.update_layout(
+                                yaxis={'categoryorder':'total ascending'},
+                                coloraxis_showscale=True # Se asegura de mostrar la leyenda de la escala continua
+                            ) 
 							
 							st.plotly_chart(fig1, use_container_width=True)
 						else:
@@ -639,7 +643,7 @@ try:
 
 
 			with tab3:
-				# --- Visualización 3: Cobertura Temática por Categoría (Plotly - SIN CAMBIOS) ---
+				# --- Visualización 3: Cobertura Temática por Categoría (Plotly) ---
 				st.subheader("3. 🗺️ Cobertura Temática por Categoría")
 				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
