@@ -202,7 +202,7 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 	
 	missing_cols = [col for col in ML_FEATURES if col not in df_input.columns]
 	if missing_cols:
-		# 🚨 CORRECCIÓN DE SYNTAX ERROR: La f-string ahora está en una sola línea
+		# Corregido de SyntaxError
 		return pd.DataFrame(), None, f"Faltan métricas de riesgo para el ML: **{', '.join(missing_cols)}**. Asegúrate de que el archivo precargado contenga los scores de calidad."
 
 
@@ -255,7 +255,7 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 	return df_sample, variance_ratio, None
 
 # =================================================================
-# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) (SIN CAMBIOS)
+# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
 # =================================================================
 
 def setup_data_assistant(df):
@@ -271,16 +271,15 @@ def setup_data_assistant(df):
 	# --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
 	if GEMINI_API_SECRET_VALUE == "Aiza":
 		st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
-		st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu 
-clave `AIza...`.")
+		# 🚨 CORRECCIÓN DE SYNTAX ERROR: Se une la cadena en una sola línea.
+		st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
 		st.markdown("---")
 		return
 
 	# --- 2. INICIALIZAR EL CLIENTE GEMINI ---
 	try:
-		# Sustituir por la inicialización real del cliente Gemini si se usa Google GenAI
-		# Aquí se mantiene la estructura para la integración del Streamlit app
-		client = object() # Simulacion de cliente para evitar errores de importación si la clave es "Aiza"
+		# Se asume la existencia del cliente genai para el entorno real
+		client = object() # Esto es solo para evitar errores de IDE/ejecución simulada
 		
 	except Exception as e:
 		st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API.
@@ -312,21 +311,16 @@ Detalle: {e}")
 			system_prompt = (
 				"Eres un Asistente de Análisis de Datos experto. Tu objetivo es responder preguntas sobre la ESTRUCTURA y las MUESTRAS "
 				"de un DataFrame de Pandas. NO PUEDES EJECUTAR CÓDIGO de Python para cálculos complejos (sumas, promedios, filtrados extensos), "
-				"solo 
-puedes analizar la información de la MUESTRA y el ESQUEMA que se te proporciona.\n"
+				"solo puedes analizar la información de la MUESTRA y el ESQUEMA que se te proporciona.\n"
 				
 				"CONTEXTO DEL DATAFRAME:\n"
 				f"Esquema (df.info()):\n{df_info_str}\n"
 				f"Muestra de Datos (df.head()):\n{data_head}\n"
 				
 				"REGLAS CRÍTICAS DE RESPUESTA:\n"
-				"1.
-Si la pregunta del usuario puede ser respondida directamente con la MUESTRA o el ESQUEMA (ej: '¿Cuáles son las columnas?', '¿De qué tipo es la columna dueño?', '¿Qué valores aparecen en la muestra para la columna X?'), responde de manera concisa y profesional.\n"
-				"2.
-Si la pregunta requiere CÁLCULOS O AGREGACIONES COMPLEJAS sobre todo el dataset (ej: 'Suma de activos', 'Promedio de riesgo', 'Cuántos hay en la categoría X'), DEBES responder ÚNICAMENTE con el siguiente texto exacto:\n"
-				"'No puedo responder esa pregunta basándome en los datos disponibles.
-Mi funcionalidad actual solo me permite analizar el esquema y una pequeña muestra de los datos.
-Te sugiero preguntar: [SUGERENCIA DE PREGUNTA ALTERNATIVA].'\n"
+				"1. Si la pregunta del usuario puede ser respondida directamente con la MUESTRA o el ESQUEMA (ej: '¿Cuáles son las columnas?', '¿De qué tipo es la columna dueño?', '¿Qué valores aparecen en la muestra para la columna X?'), responde de manera concisa y profesional.\n"
+				"2. Si la pregunta requiere CÁLCULOS O AGREGACIONES COMPLEJAS sobre todo el dataset (ej: 'Suma de activos', 'Promedio de riesgo', 'Cuántos hay en la categoría X'), DEBES responder ÚNICAMENTE con el siguiente texto exacto:\n"
+				"'No puedo responder esa pregunta basándome en los datos disponibles. Mi funcionalidad actual solo me permite analizar el esquema y una pequeña muestra de los datos. Te sugiero preguntar: [SUGERENCIA DE PREGUNTA ALTERNATIVA].'\n"
 				"3. La SUGESTIÓN DE PREGUNTA ALTERNATIVA debe ser una pregunta que SÍ se pueda responder con la muestra o el esquema (ej: '¿Qué columnas son de tipo object?', '¿Qué valores tiene la columna dueño en la muestra?', '¿Qué tan viejo es el activo de la primera fila?')."
 			)
 
