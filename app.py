@@ -1,28 +1,31 @@
-import streamlit as st
-import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.ticker import PercentFormatter
-import io 
+import io
 from datetime import datetime
-import re 
+import re
 import warnings
 import os # Necesario para la conexión con el LLM
 from openai import OpenAI # Importar la librería del LLM
+import pandas as pd
+import streamlit as st
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
 # --- Variables Globales ---
-ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
+ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv"
 # CRITERIO DE RIESGO
-UMBRAL_RIESGO_ALTO = 3.0 
+UMBRAL_RIESGO_ALTO = 3.0
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
-PENALIZACION_DATOS_INCOMPLETOS = 2.0  
-PENALIZACION_INCONSISTENCIA_TIPO = 0.5   
-PENALIZACION_DUPLICADO = 1.0             
-# RIESGO MÁXIMO TEÓRICO: 2.0 + 0.5 + 1.0 = 3.5
-RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5 
+PENALIZACION_DATOS_INCOMPLETOS = 2.0
+PENALIZACION_INCONSISTENCIA_TIPO = 0.5
+PENALIZACION_DUPLICADO = 1.0
+PENALIZACION_METADATO_CLAVE_FALTA = 1.0
+PENALIZACION_VENCIMIENTO_ML = 1.5 # Penalización por anomalía detectada
+
+# RIESGO MÁXIMO TEÓRICO (Universal + Metadatos + ML): 2.0 + 0.5 + 1.0 + 1.0 + 1.5 = 6.0
+RIESGO_MAXIMO_TEORICO_UNIVERSAL_COMPLETO = 6.0
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -32,16 +35,17 @@ RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5
 def load_processed_data(file_path):
     """Carga el archivo CSV YA PROCESADO y lo cachea."""
     try:
+        # Asegúrate de que el archivo preprocess.py haya generado este archivo
         df = pd.read_csv(file_path, low_memory=False)
         return df
     except FileNotFoundError:
         return pd.DataFrame()
 
 def clean_and_convert_types_external(df):
-    """Fuerza a las columnas a ser tipo string para asegurar la detección de inconsistencias."""
+    """Fuerza a las columnas a ser tipo object para asegurar la detección de inconsistencias."""
     
     # Columnas que suelen ser de tipo 'object' (string)
-    object_cols = ['titulo', 'descripcion', 'dueño'] 
+    object_cols = ['titulo', 'descripcion', 'dueño']
     
     # Columnas que contienen los datos que queremos chequear por tipo mixto
     data_cols = [col for col in df.columns if col not in object_cols]
@@ -49,16 +53,15 @@ def clean_and_convert_types_external(df):
     for col in data_cols:
         if df[col].dtype != 'object':
             try:
-                df[col] = df[col].astype(object) 
+                df[col] = df[col].astype(object)
             except:
-                pass 
+                pass
 
     return df
 
 def check_universals_external(df):
     """
-    Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad 
-    para el diagnóstico rápido.
+    Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad.
     """
     n_cols = df.shape[1]
     
@@ -68,59 +71,150 @@ def check_universals_external(df):
         df['datos_por_fila_score'] < 70, PENALIZACION_DATOS_INCOMPLETOS, 0.0
     )
 
-    # --- 2. CONSISTENCIA: Mezcla de Tipos ---
+    # --- 2. CONSISTENCIA: Mezcla de Tipos (LÓGICA CORREGIDA) ---
     df['riesgo_consistencia_tipo'] = 0.0
-    for col in df.select_dtypes(include='object').columns:
-        inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
-        df.loc[inconsistencies, 'riesgo_consistencia_tipo'] = PENALIZACION_INCONSISTENCIA_TIPO
+    
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            inconsistencies_mask = df[col].apply(lambda x: pd.notna(x) and not isinstance(x, str))
+            df.loc[inconsistencies_mask, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO
+    
+    df['riesgo_consistencia_tipo'] = np.clip(df['riesgo_consistencia_tipo'], 0.0, PENALIZACION_INCONSISTENCIA_TIPO)
         
     # --- 3. UNICIDAD: Duplicados Exactos ---
-    df['es_duplicado'] = df.duplicated(keep=False) 
+    df['es_duplicado'] = df.duplicated(keep=False)
     df['riesgo_duplicado'] = np.where(
         df['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
     )
     
     return df
 
-def process_external_data(df):
+# =================================================================
+# 2. Funciones de Riesgos Específicos (Restaurado del Código Viejo)
+# =================================================================
+
+def check_specific_metadata(df):
     """
-    Lógica de riesgo universal para el archivo externo subido (AJUSTADA).
+    Evalúa la calidad de metadatos clave que definen el activo:
+    1. Existencia de campos clave.
+    2. Formato de la fecha de creación/modificación.
     """
     
-    # PASO CLAVE CORREGIDO: Asegurar que los tipos permitan la detección
-    df = clean_and_convert_types_external(df)
-
-    # --- 1. EVALUACIÓN DE UNIVERSALES (Completitud, Consistencia, Unicidad) ---
-    df = check_universals_external(df)
+    campos_clave_metadatos = ['fecha_creacion', 'formato_archivo', 'categoria']
     
-    # --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO (SOLO PARA MÉTRICA) ---
-    campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
-    campos_existentes_y_llenos = 0
-    num_campos_totales_base = len(campos_clave_universal)
-
-    for campo in campos_clave_universal:
-        if campo in df.columns and pd.notna(df[campo].iloc[0]):
-            campos_existentes_y_llenos += 1
+    # Inicializa la penalización de metadatos
+    df['riesgo_metadato_faltante'] = 0.0
+    
+    # --- 1. Penalización por Metadato Clave Faltante/Incompleto ---
+    
+    for campo in campos_clave_metadatos:
+        if campo in df.columns:
+            # Penaliza si el campo existe pero está vacío (NaN)
+            df.loc[df[campo].isna(), 'riesgo_metadato_faltante'] += PENALIZACION_METADATO_CLAVE_FALTA / len(campos_clave_metadatos)
+        else:
+            # Penaliza a todos los registros si el campo clave NO existe
+            df['riesgo_metadato_faltante'] += PENALIZACION_METADATO_CLAVE_FALTA / len(campos_clave_metadatos)
             
-    completitud_metadatos_universal = (campos_existentes_y_llenos / num_campos_totales_base) * 100
-    df['completitud_metadatos_universal'] = completitud_metadatos_universal
+    # Asegura que la penalización máxima no exceda el límite
+    df['riesgo_metadato_faltante'] = np.clip(df['riesgo_metadato_faltante'], 0.0, PENALIZACION_METADATO_CLAVE_FALTA)
+
+    # --- 2. Validación de Formato de Fecha (Solo para métrica, no para riesgo) ---
+    # Esto impacta el 'completitud_score' general, no el 'riesgo_metadato_faltante'
     
-    # --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD ---
+    def is_valid_date(date_str):
+        if pd.isna(date_str):
+            return False
+        try:
+            # Intenta parsear la fecha. Se puede ajustar el formato
+            datetime.strptime(str(date_str).split(' ')[0], '%Y-%m-%d')
+            return True
+        except:
+            return False
+
+    if 'fecha_creacion' in df.columns:
+        df['fecha_valida'] = df['fecha_creacion'].apply(is_valid_date)
+    else:
+        df['fecha_valida'] = False # Si la columna no existe
+
+    return df
+
+def run_ml_anomaly_detection(df):
+    """
+    Simula una Detección de Anomalías (Machine Learning) basada en la antigüedad.
+    En un entorno real, esto sería un modelo como Isolation Forest o One-Class SVM.
+    """
     
-    # Score de riesgo universal (SOLO 3 DIMENSIONES)
-    df['prioridad_riesgo_score'] = (
-        df['riesgo_datos_incompletos'] + 
-        df['riesgo_consistencia_tipo'] +
-        df['riesgo_duplicado']
+    # Si la columna ya existe, se asume que el pre-proceso ya la corrió.
+    if 'anomalia_score' in df.columns:
+        return df
+
+    # Simulación de detección:
+    # 1. Calcular la antigüedad promedio.
+    # 2. Asignar un valor anómalo (ej. -1) si el activo tiene una antigüedad muy baja (ej. 1 día)
+    #    y el score de riesgo es bajo (lo que indicaría un 'activo fantasma' o un error de carga).
+    
+    if 'antiguedad_datos_dias' in df.columns:
+        # Penaliza activos muy nuevos (antigüedad <= 1 día) que tienen un riesgo universal muy bajo (casi perfecto)
+        # Esto podría indicar una carga de datos falsa o de prueba.
+        anomalia_mask = (df['antiguedad_datos_dias'] <= 1) & (df['prioridad_riesgo_score'] < 0.5)
+        df['anomalia_score'] = np.where(anomalia_mask, -1, 1) # -1 indica anomalía
+    else:
+        # Si la columna no está disponible, no penalizamos
+        df['anomalia_score'] = 1 
+        
+    # Asignar penalización por anomalía
+    df['riesgo_anomalia_ml'] = np.where(
+        df['anomalia_score'] == -1, PENALIZACION_VENCIMIENTO_ML, 0.0
     )
     
-    # CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
+    return df
+
+# =================================================================
+# 3. Función de Procesamiento Global (Integra todos los riesgos)
+# =================================================================
+
+def process_external_data(df):
+    """
+    Lógica de riesgo universal completa para el archivo externo subido.
+    """
+    
+    # PASO 1: Limpieza y Evaluación de UNIVERSALES (Completitud, Consistencia, Unicidad)
+    df = clean_and_convert_types_external(df)
+    df = check_universals_external(df)
+    
+    # PASO 2: Evaluación de Metadatos Específicos
+    df = check_specific_metadata(df)
+
+    # PASO 3: Cálculo del Score de Riesgo Preliminar (para ML)
+    df['prioridad_riesgo_score_pre_ml'] = (
+        df['riesgo_datos_incompletos'] + 
+        df['riesgo_consistencia_tipo'] +
+        df['riesgo_duplicado'] +
+        df['riesgo_metadato_faltante']
+    )
+    
+    # PASO 4: Detección de Anomalías (ML)
+    df = run_ml_anomaly_detection(df)
+    
+    # --- 5. CÁLCULO FINAL DE RIESGO Y CALIDAD (INTEGRACIÓN COMPLETA) ---
+    
+    # Score de riesgo total (las 4 dimensiones + ML)
+    df['prioridad_riesgo_score'] = (
+        df['prioridad_riesgo_score_pre_ml'] + 
+        df['riesgo_anomalia_ml']
+    )
+    
+    # CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%) - BASADO EN EL RIESGO MÁXIMO GLOBAL
     avg_file_risk = df['prioridad_riesgo_score'].mean()
-    quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100)
+    quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL_COMPLETO * 100)
     
     df['calidad_total_score'] = np.clip(quality_score, 0, 100)
 
     return df
+
+# =================================================================
+# 4. Funciones de Soporte y Recomendación
+# =================================================================
 
 def generate_specific_recommendation(risk_dimension):
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
@@ -146,20 +240,30 @@ def generate_specific_recommendation(risk_dimension):
 
 **Acción:** Normaliza el tipo de dato para la columna afectada. Si es una columna numérica, **elimina los valores de texto** o conviértelos a `NaN` para una limpieza posterior. Define el **tipo de dato esperado** (Schema) para cada columna y aplica una validación estricta al inicio del proceso.
         """
+    # 4. Metadatos Clave Faltantes
+    elif 'Metadatos Clave Faltantes' in risk_dimension:
+        return """
+**Identificación:** Faltan campos esenciales del esquema de metadatos (ej., `fecha_creacion`, `formato_archivo`). Estos campos son cruciales para el ciclo de vida del dato.
+
+**Acción:** **Prioriza la documentación**. Asegura que las tres columnas clave (`fecha_creacion`, `formato_archivo`, `categoria`) existan y contengan valores válidos para el activo.
+        """
+    # 5. Anomalía Detectada (ML)
+    elif 'Anomalía Detectada (ML)' in risk_dimension:
+        return """
+**Identificación:** El sistema de Machine Learning ha detectado que el activo tiene una combinación inusual de atributos (ej. un activo **muy nuevo** pero con un **riesgo de calidad extremadamente bajo**).
+
+**Acción:** **Revisa la fuente y el proceso de ingesta de este activo**. Podría ser un error de carga, un dato de prueba que se quedó en producción, o un problema con la etiqueta de tiempo.
+        """
     else:
         return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
 # =================================================================
-# NUEVA SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
+# 5. ASISTENTE DE CONSULTA DE DATOS (NLP)
 # =================================================================
 
 def setup_data_assistant(df):
     """
     Configura el asistente de consulta de datos usando LLM.
-    
-    Esta implementación simula la respuesta para las consultas más comunes 
-    de riesgo/completitud. Para la funcionalidad completa de ejecución de código, 
-    se debe usar un LLM real y una ejecución segura (LangChain/Agente).
     """
     
     st.markdown("---")
@@ -208,31 +312,37 @@ def setup_data_assistant(df):
                 # --- SIMULACIÓN AVANZADA DE RESPUESTAS (para demostrar la funcionalidad) ---
                 
                 if 'riesgo' in user_query.lower() or 'peor' in user_query.lower():
-                     simulated_code = "df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)"
-                     simulated_result = df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)
-                     
-                     st.success(f"✅ Resultado de la consulta: Entidades con Mayor Riesgo Promedio")
-                     st.code(f"Código ejecutado:\n{simulated_code}", language='python')
-                     st.dataframe(simulated_result.reset_index().rename(columns={'prioridad_riesgo_score': 'Riesgo_Promedio'}), hide_index=True)
-                     
+                    if 'dueño' in df.columns and 'prioridad_riesgo_score' in df.columns:
+                        simulated_code = "df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)"
+                        simulated_result = df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)
+                        
+                        st.success(f"✅ Resultado de la consulta: Entidades con Mayor Riesgo Promedio")
+                        st.code(f"Código ejecutado:\n{simulated_code}", language='python')
+                        st.dataframe(simulated_result.reset_index().rename(columns={'prioridad_riesgo_score': 'Riesgo_Promedio'}), hide_index=True)
+                    else:
+                        st.warning("Columnas 'dueño' o 'prioridad_riesgo_score' no encontradas para esta consulta.")
+                    
                 elif 'completitud' in user_query.lower() or 'promedio' in user_query.lower():
-                     simulated_code = "df['completitud_score'].mean()"
-                     simulated_result = df['completitud_score'].mean()
-                     
-                     st.success(f"✅ Resultado de la consulta: Completitud Promedio Global")
-                     st.code(f"Código ejecutado:\n{simulated_code}", language='python')
-                     st.write(f"El score de Completitud Promedio Global es: **{simulated_result:.2f}%**")
+                    if 'completitud_score' in df.columns:
+                        simulated_code = "df['completitud_score'].mean()"
+                        simulated_result = df['completitud_score'].mean()
+                        
+                        st.success(f"✅ Resultado de la consulta: Completitud Promedio Global")
+                        st.code(f"Código ejecutado:\n{simulated_code}", language='python')
+                        st.write(f"El score de Completitud Promedio Global es: **{simulated_result:.2f}%**")
+                    else:
+                        st.warning("Columna 'completitud_score' no encontrada para esta consulta.")
 
                 else:
-                     st.warning("⚠️ El agente LLM (motor de IA) no ejecutó el código. Esta es una **simulación** que requiere un LLM real y una ejecución segura (por ejemplo, con LangChain) para obtener resultados exactos de consultas complejas.")
-                     st.code("Consulta enviada al LLM. El modelo generaría y ejecutaría el código Pandas aquí.")
+                    st.warning("⚠️ El agente LLM (motor de IA) no ejecutó el código. Esta es una **simulación** que requiere un LLM real y una ejecución segura (por ejemplo, con LangChain) para obtener resultados exactos de consultas complejas.")
+                    st.code("Consulta enviada al LLM. El modelo generaría y ejecutaría el código Pandas aquí.")
 
             except Exception as e:
                 st.error(f"❌ Error durante la consulta al LLM: {e}. Asegúrate que la librería **openai** está instalada y la clave API es correcta.")
 
 
 # =================================================================
-# 2. Ejecución Principal del Dashboard
+# 6. Ejecución Principal del Dashboard
 # =================================================================
 
 st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Completo)")
@@ -320,17 +430,20 @@ try:
             st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
         else:
             
-            # --- 3. Métricas de la Vista Actual ---
+            # --- 7. Métricas de la Vista Actual ---
             st.subheader("Métricas de la Vista Actual")
             col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
             col_metrica1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
             col_metrica2.metric("Activos en Incumplimiento", f"{(df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_filtrado)}")
-            col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
+            if 'anomalia_score' in df_filtrado.columns:
+                 col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
+            else:
+                 col_metrica3.metric("Anomalías Detectadas (ML)", "N/A")
             
             st.markdown("---")
 
-            # --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) ---
-            st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
+            # --- 8. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) ---
+            st.header("🔍 8. Tabla de Búsqueda y Diagnóstico de Entidades")
 
             # TEXTO CORREGIDO PARA EL NUEVO UMBRAL (3.0)
             st.info(f"""
@@ -431,7 +544,7 @@ try:
                         fig2, ax2 = plt.subplots(figsize=(12, 8))
                         
                         max_volumen = df_bubble['Volumen'].max()
-                        s_volumen = (df_bubble['Volumen'] / max_volumen) * 2000 
+                        s_volumen = (df_bubble['Volumen'] / max_volumen) * 2000
                         
                         scatter = ax2.scatter(
                             x=df_bubble['Riesgo_Promedio'], 
@@ -444,6 +557,7 @@ try:
                             linewidth=1
                         )
                         
+                        # Anotar las 5 burbujas más grandes (mayor volumen)
                         for i in df_bubble.nlargest(5, 'Volumen').index:
                              ax2.annotate(df_bubble.loc[i, 'dueño'], 
                                          (df_bubble.loc[i, 'Riesgo_Promedio'], df_bubble.loc[i, 'Completitud_Promedio']), 
@@ -493,11 +607,11 @@ try:
 
         
         # ----------------------------------------------------------------------
-        # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
+        # --- SECCIÓN 9: DIAGNÓSTICO DE ARCHIVO EXTERNO
         # ----------------------------------------------------------------------
         st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
-        st.header("💾 Diagnóstico de Archivo CSV Externo (Calidad Universal)")
-        st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a 3 dimensiones universales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL:.1f}**).")
+        st.header(f"💾 Diagnóstico de Archivo CSV Externo (Calidad Integral)")
+        st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a 5 dimensiones integrales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL_COMPLETO:.1f}**).")
 
         uploaded_file = st.file_uploader(
             "Selecciona el Archivo CSV", 
@@ -509,6 +623,7 @@ try:
                 try:
                     uploaded_filename = uploaded_file.name
                     # Lógica de lectura robusta con detección de delimitadores
+                    uploaded_file.seek(0)
                     uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False)
                     if len(uploaded_df.columns) <= 1:
                         uploaded_file.seek(0)
@@ -527,35 +642,56 @@ try:
                             
                             # Métricas consolidadas
                             calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
-                            completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
                             riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
 
-                            # Desglose de Riesgos Promedio (ELIMINANDO METADATOS)
+                            # Desglose de Riesgos Promedio
                             riesgos_reporte = pd.DataFrame({
                                 'Dimensión de Riesgo': [
                                     '1. Datos Incompletos (Completitud)',
                                     '2. Duplicados Exactos (Unicidad)',
                                     '3. Consistencia de Tipo (Coherencia)',
+                                    '4. Metadatos Clave Faltantes',
+                                    '5. Anomalía Detectada (ML)',
                                 ],
                                 'Riesgo Promedio (0-Máx)': [
                                     df_diagnostico['riesgo_datos_incompletos'].mean(),
                                     df_diagnostico['riesgo_duplicado'].mean(),
                                     df_diagnostico['riesgo_consistencia_tipo'].mean(),
+                                    df_diagnostico['riesgo_metadato_faltante'].mean(),
+                                    df_diagnostico['riesgo_anomalia_ml'].mean(),
                                 ]
                             })
                             riesgos_reporte = riesgos_reporte.sort_values(by='Riesgo Promedio (0-Máx)', ascending=False)
                             riesgos_reporte['Riesgo Promedio (0-Máx)'] = riesgos_reporte['Riesgo Promedio (0-Máx)'].round(2)
                             
                             
-                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (CORREGIDA) ===
+                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA ===
                             
                             recomendacion_final_md = ""
                             
                             riesgo_max_reportado = riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']
+                            dimension_riesgo_max = riesgos_reporte.iloc[0]['Dimensión de Riesgo']
+
+                            # Determinar la penalización máxima de la dimensión más riesgosa
+                            if 'Datos Incompletos' in dimension_riesgo_max:
+                                PENALIZACION_MAX = PENALIZACION_DATOS_INCOMPLETOS
+                            elif 'Duplicados Exactos' in dimension_riesgo_max:
+                                PENALIZACION_MAX = PENALIZACION_DUPLICADO
+                            elif 'Consistencia de Tipo' in dimension_riesgo_max:
+                                PENALIZACION_MAX = PENALIZACION_INCONSISTENCIA_TIPO
+                            elif 'Metadatos Clave Faltantes' in dimension_riesgo_max:
+                                PENALIZACION_MAX = PENALIZACION_METADATO_CLAVE_FALTA
+                            elif 'Anomalía Detectada (ML)' in dimension_riesgo_max:
+                                PENALIZACION_MAX = PENALIZACION_VENCIMIENTO_ML
+                            else:
+                                PENALIZACION_MAX = 0.0
                             
-                            if riesgo_max_reportado > 0.15:
+                            # Umbral: Se activa si el riesgo promedio excede el 10% de la penalización máxima de esa dimensión
+                            UMBRAL_ACTIVACION_RECOMENDACION = 0.10 * PENALIZACION_MAX
+
+                            if riesgo_max_reportado > UMBRAL_ACTIVACION_RECOMENDACION:
                                 # Identificar el riesgo más alto
-                                riesgo_dimension_max = riesgos_reporte.iloc[0]['Dimensión de Riesgo']
+                                riesgo_dimension_max = dimension_riesgo_max
                                 
                                 # Generar la explicación específica
                                 explicacion_especifica = generate_specific_recommendation(riesgo_dimension_max)
@@ -588,13 +724,12 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
                             # === FIN LÓGICA DE RECOMENDACIÓN ===
                             
+                            # --- DESPLIEGUE DE MÉTRICAS SIMPLIFICADO ---
                             st.subheader("Resultados del Diagnóstico Rápido")
                             
-                            # --- DESPLIEGUE DE MÉTRICAS SIMPLIFICADO ---
-                            col_calidad, col_meta, col_riesgo = st.columns(3)
+                            col_calidad, col_riesgo = st.columns(2)
                             
                             col_calidad.metric("⭐ Calidad Total del Archivo", f"{calidad_total_final:.1f}%")
-                            col_meta.metric("Completitud Metadatos (Avg)", f"{completitud_universal_promedio:.2f}%") 
                             col_riesgo.metric("Riesgo Promedio Total", f"{riesgo_promedio_total:.2f}")
 
                             # Despliegue de la Recomendación
@@ -606,24 +741,24 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
                             
                             st.markdown("#### 🔬 Desglose de Riesgos (Auditoría)")
                             
-                            # CORRECCIÓN DE VISUALIZACIÓN DE TABLA DE RIESGOS
-                            st.table(
-                                riesgos_reporte.set_index('Dimensión de Riesgo') 
+                            # VISUALIZACIÓN DE TABLA DE RIESGOS
+                            st.dataframe(
+                                riesgos_reporte.style.format({'Riesgo Promedio (0-Máx)': '{:.2f}'}),
+                                use_container_width=True,
+                                hide_index=True
                             )
-
-                            st.markdown(f"#### ✨ Recomendación de Acciones:")
-                            st.markdown(recomendacion_final_md, unsafe_allow_html=True)
-
-                        else:
-                            st.error(f"❌ El archivo subido **{uploaded_filename}** no pudo ser procesado.")
                             
+                            st.markdown("#### 🚀 Recomendación Prioritaria")
+                            st.markdown(recomendacion_final_md)
+
+
                 except Exception as e:
-                    st.error(f"❌ Error al leer o procesar el archivo CSV: {e}")
-        
+                    st.error(f"❌ Error al procesar el archivo subido: {e}. Asegúrate de que el formato (CSV, delimitador) es correcto.")
+
         # ----------------------------------------------------------------------
-        # --- LLAMADA A LA NUEVA SECCIÓN: ASISTENTE DE DATOS (NLP) ---
+        # --- SECCIÓN 10: ASISTENTE DE CONSULTA DE DATOS (LLM)
         # ----------------------------------------------------------------------
-        setup_data_assistant(df_analisis_completo) 
+        setup_data_assistant(df_analisis_completo)
 
 except Exception as e:
-    st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+    st.error(f"Se produjo un error crítico en el flujo principal del dashboard: {e}")
