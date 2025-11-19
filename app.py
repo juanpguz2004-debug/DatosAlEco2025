@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.ticker import PercentFormatter
 import io 
+from datetime import datetime # Necesario para la función de fecha, aunque no se use en el diagnóstico externo
 
 # Configuración de la página
 st.set_page_config(
@@ -32,46 +33,53 @@ def load_processed_data(file_path):
 
 def process_external_data(df):
     """
-    Lógica de riesgo universal para el archivo externo subido. 
-    Se basa en métricas de calidad de datos que aplican a cualquier DataFrame,
-    independiente del esquema del Inventario Principal.
+    Lógica de riesgo universal para el archivo externo subido, separando la 
+    evaluación de datos (fila por fila) y la evaluación de metadatos (archivo).
     """
     
-    # --- AJUSTE PRELIMINAR: Asegurar columnas MÍNIMAS para el despliegue ---
-    if 'titulo' not in df.columns:
-        df['titulo'] = 'Activo sin título'
-    if 'dueño' not in df.columns:
-        df['dueño'] = 'Desconocido' # Mantenemos 'dueño' pero solo para despliegue.
-
-    # 1. Métrica Universal: Completitud de Datos por Fila (Densidad de datos)
-    df['datos_por_fila_score'] = (df.notna().sum(axis=1) / df.shape[1]) * 100
+    # --- 1. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO ---
     
-    # 2. Métrica Universal: Completitud de Metadatos 
     campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
-    campos_existentes = [col for col in campos_clave_universal if col in df.columns]
+    
+    # Lógica de detección de falta de metadatos
+    riesgo_metadatos = 0.0
+    
+    # Calculamos la completitud de metadatos (necesario para la recomendación)
+    campos_existentes_y_llenos = 0
     num_campos_totales_base = len(campos_clave_universal) # Base 3
-    
-    df['campos_diligenciados_universal'] = df[campos_existentes].notna().sum(axis=1)
-    df['completitud_metadatos_universal'] = (df['campos_diligenciados_universal'] / num_campos_totales_base) * 100
 
+    for campo in campos_clave_universal:
+        # Penalización: Si la columna no existe O si existe pero el primer valor es nulo
+        if campo not in df.columns or pd.isna(df[campo].iloc[0]):
+            riesgo_metadatos = 1.5
+        else:
+            campos_existentes_y_llenos += 1
+            
+    # Aplicamos el riesgo a TODAS las filas (es un riesgo del activo completo)
+    df['riesgo_metadatos_nulo'] = riesgo_metadatos
     
-    # 3. CÁLCULO DE SCORE DE RIESGO UNIVERSAL (Máximo teórico 3.5)
+    # Calculamos el porcentaje de completitud de metadatos
+    completitud_metadatos_universal = (campos_existentes_y_llenos / num_campos_totales_base) * 100
+    df['completitud_metadatos_universal'] = completitud_metadatos_universal
+    
+    # --- 2. EVALUACIÓN DE DATOS (FILA POR FILA) ---
+    
+    # Métrica Universal: Completitud de Datos por Fila (Densidad de datos)
+    df['datos_por_fila_score'] = (df.notna().sum(axis=1) / df.shape[1]) * 100
     
     # Penalización 1: Riesgo por Datos Incompletos (Máx 2.0)
     df['riesgo_datos_incompletos'] = np.where(df['datos_por_fila_score'] < 70, 2.0, 0.0)
     
-    # Penalización 2: Riesgo por Metadatos Insuficientes (Máx 1.5)
-    df['riesgo_metadatos_nulo'] = np.where(df['completitud_metadatos_universal'] < 50, 1.5, 0.0)
+    # --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD ---
     
-    # Score de riesgo universal
+    # Score de riesgo universal (Sigue siendo un máximo de 3.5)
     df['prioridad_riesgo_score'] = df['riesgo_datos_incompletos'] + df['riesgo_metadatos_nulo']
     
-    # 4. NUEVO: CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
+    # CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
     max_risk = 3.5
     avg_file_risk = df['prioridad_riesgo_score'].mean()
     quality_score = 100 - (avg_file_risk / max_risk * 100)
     
-    # Aseguramos que el score no sea negativo y lo asignamos al DataFrame
     df['calidad_total_score'] = np.clip(quality_score, 0, 100)
 
     return df
@@ -101,8 +109,6 @@ try:
             "Selecciona una Entidad para ver su Desglose de Estadísticas:",
             owners
         )
-        
-        # ... (Resto del código de la sección 2 que no toca el diagnóstico externo se mantiene) ...
         
         # --- DESGLOSE DE ESTADÍSTICAS (KPIs) ---
         if filtro_dueño != "Mostrar Análisis General":
@@ -332,25 +338,24 @@ try:
                         
                         if not df_diagnostico.empty:
                             
-                            # Nuevas métricas consolidadas
+                            # Métricas consolidadas
                             calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
-                            riesgo_promedio_general = df_diagnostico['prioridad_riesgo_score'].mean()
-                            completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].mean()
+                            completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] # Es el mismo valor para todas las filas
                             datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
                             
-                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (Corregida) ===
+                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (Final) ===
                             avg_riesgo_datos_incompletos = df_diagnostico['riesgo_datos_incompletos'].mean()
-                            avg_riesgo_metadatos_nulo = df_diagnostico['riesgo_metadatos_nulo'].mean()
                             
                             recomendacion_lista = []
                             
-                            # 1. Recomendación: Datos por Fila (Umbral de Riesgo > 0.5)
+                            # 1. Recomendación: Datos por Fila 
                             if avg_riesgo_datos_incompletos > 0.5: 
-                                recomendacion_lista.append("Llene las **celdas vacías o nulas** en las filas. Esto mejora la **Completitud de Datos por Fila** (actualmente: {datos_fila_promedio:.2f}%).")
+                                recomendacion_lista.append(f"Mejore la **Completitud de Datos por Fila** (actualmente: {datos_fila_promedio:.2f}%) llenando las celdas vacías o nulas. Cerca de {int((avg_riesgo_datos_incompletos/2.0) * 100)}% de sus activos tienen baja densidad de datos.")
 
-                            # 2. Recomendación: Metadatos (Umbral de Riesgo > 0.1 Y Completitud < 99.9%)
-                            if completitud_universal_promedio < 99.9:
-                                recomendacion_lista.append(f"Asegure que las columnas de **metadatos básicos** (`titulo`, `descripcion`, `dueño`) estén diligenciadas. La Completitud de Metadatos es actualmente **{completitud_universal_promedio:.2f}%**.")
+                            # 2. Recomendación: Metadatos (Siempre que no sea 100%)
+                            if completitud_universal_promedio < 100.0:
+                                faltantes = 100.0 - completitud_universal_promedio
+                                recomendacion_lista.append(f"Asegure el **Metadato Universal**: La Completitud de Metadatos es de **{completitud_universal_promedio:.2f}%**. Es crítico que el archivo contenga las columnas diligenciadas (`titulo`, `descripcion`, `dueño`) para evitar que el activo sea huérfano.")
                             
                             if not recomendacion_lista:
                                 recomendacion_final = "La **Calidad** es excelente. No se requieren mejoras prioritarias."
@@ -382,7 +387,6 @@ try:
                             col_meta.metric("Completitud Metadatos (Avg)", f"{completitud_universal_promedio:.2f}%") 
 
                             # Despliegue de la Recomendación (CORRECCIÓN FINAL DE VISIBILIDAD)
-                            # Usamos un bloque de código HTML simple para el marco y st.markdown para el contenido.
                             st.markdown(f"""
                                 <div style='border: 2px solid {color}; padding: 15px; border-radius: 5px; background-color: #f9f9f9;'>
                                     <h4 style='color: {color}; margin-top: 0;'>Diagnóstico General: {estado}</h4>
@@ -393,13 +397,8 @@ try:
                             # Nuevo bloque para las recomendaciones para evitar problemas de anidación HTML/Markdown
                             st.markdown(f"#### ✨ Recomendación de Acciones:")
                             st.markdown(recomendacion_final)
-
-                            # Eliminamos la tabla de desglose.
-                            # st.markdown("---")
-                            # st.subheader("Desglose de Calidad de las Filas (Top 10 Riesgo)")
-                            # ... (código de la tabla eliminado)
-                            # ========================================
-
+                            # Eliminamos la tabla de desglose final.
+                            
                         else:
                             st.error(f"❌ El archivo subido **{uploaded_filename}** no pudo ser procesado.")
                             
