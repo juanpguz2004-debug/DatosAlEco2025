@@ -41,7 +41,7 @@ RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5
 GEMINI_API_SECRET_VALUE = "REEMPLAZA_ESTO_CON TU_CLAVE_SECRETA_AIza..."
 
 # =================================================================
-# 1. Funciones de Carga y Procesamiento (No se modifican)
+# 1. Funciones de Carga y Procesamiento (Se mantienen igual)
 # =================================================================
 
 @st.cache_data
@@ -100,16 +100,12 @@ def check_universals_external(df):
 
 def process_external_data(df):
     """
-    Lógica de riesgo universal para el archivo externo subido (AJUSTADA).
+    Lógica de riesgo universal para el archivo externo subido.
     """
     
-    # PASO CLAVE CORREGIDO: Asegurar que los tipos permitan la detección
     df = clean_and_convert_types_external(df)
-
-    # --- 1. EVALUACIÓN DE UNIVERSALES (Completitud, Consistencia, Unicidad) ---
     df = check_universals_external(df)
     
-    # --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO (SOLO PARA MÉTRICA) ---
     campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
     campos_existentes_y_llenos = 0
     num_campos_totales_base = len(campos_clave_universal)
@@ -121,16 +117,12 @@ def process_external_data(df):
     completitud_metadatos_universal = (campos_existentes_y_llenos / num_campos_totales_base) * 100
     df['completitud_metadatos_universal'] = completitud_metadatos_universal
     
-    # --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD ---
-    
-    # Score de riesgo universal (SOLO 3 DIMENSIONES)
     df['prioridad_riesgo_score'] = (
         df['riesgo_datos_incompletos'] + 
         df['riesgo_consistencia_tipo'] +
         df['riesgo_duplicado']
     )
     
-    # CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
     avg_file_risk = df['prioridad_riesgo_score'].mean()
     quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100)
     
@@ -141,21 +133,18 @@ def process_external_data(df):
 def generate_specific_recommendation(risk_dimension):
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
     
-    # 1. Datos Incompletos (Completitud)
     if 'Datos Incompletos' in risk_dimension:
         return """
 **Identificación:** Localiza las columnas o filas con un alto porcentaje de valores **Nulos (NaN)**. El umbral de alerta se activa si el promedio de datos por fila es **menor al 70%**.
 
 **Acción:** Revisa los procesos de ingesta de datos. Si el campo es **obligatorio**, asegúrate de que todos los registros lo contengan. Si el campo es **opcional**, considera si es crucial para el análisis antes de llenarlo con un valor por defecto.
         """
-    # 2. Duplicados Exactos (Unicidad)
     elif 'Duplicados Exactos' in risk_dimension:
         return """
 **Identificación:** Encuentra las filas que son **copias exactas** (duplicados de todo el registro).
 
 **Acción:** Revisa tu proceso de extracción/carga. Un duplicado exacto generalmente indica un error de procesamiento o ingesta. **Elimina las copias** y asegúrate de que exista una **clave única** (UID) para cada registro que evite la re-ingesta accidental.
         """
-    # 3. Consistencia de Tipo (Coherencia)
     elif 'Consistencia de Tipo' in risk_dimension:
         return """
 **Identificación:** Una columna contiene **datos mezclados** (ej. números, fechas, y texto en una columna que debería ser solo números). Esto afecta seriamente el análisis.
@@ -166,7 +155,7 @@ def generate_specific_recommendation(risk_dimension):
         return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
 # =================================================================
-# NUEVA SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) - (API NATIVA ESTABLE)
+# NUEVA SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
 # =================================================================
 
 def setup_data_assistant(df):
@@ -181,7 +170,9 @@ def setup_data_assistant(df):
     
     # --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
     if GEMINI_API_SECRET_VALUE == "REEMPLAZA_ESTO_CON TU_CLAVE_SECRETA_AIza...":
-        # ... (Bloque de error de configuración)
+        st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
+        st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
+        st.markdown("---")
         return
 
     # --- 2. INICIALIZAR EL CLIENTE GEMINI ---
@@ -189,7 +180,8 @@ def setup_data_assistant(df):
         client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
         
     except Exception as e:
-        # ... (Bloque de error de inicialización)
+        st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}")
+        st.markdown("---")
         return
 
     # --- 3. PREPARAR CONTEXTO DE DATOS (SCHEMA) ---
@@ -374,7 +366,6 @@ try:
                     'antiguedad_datos_dias': 'Antiguedad_Dias'
                 }).sort_values(by='Riesgo_Score', ascending=False)
                 
-                # Definición de color para la tabla (se usa en ambos casos)
                 def color_riesgo_score(val):
                     color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
                     return color
@@ -460,36 +451,35 @@ try:
 
             st.markdown("---")
             
-            # --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES (CON PLOTLY EXPRESS) ---
-            tab1, tab2, tab3 = st.tabs(["1. Ranking de Priorización", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática"])
+            # ----------------------------------------------------------------------
+            # --- BLOQUE CLAVE DE PESTAÑAS ---
+            # ----------------------------------------------------------------------
+            
+            if filtro_acceso_publico:
+                # 📌 CASO: Activos Públicos (Priorización)
+                tab1, tab2, tab3 = st.tabs(["1. Ranking de Priorización (Riesgo/Incompletitud)", "2. K-Means Clustering", "3. Activos Menos Actualizados (Antigüedad)"])
+            else:
+                # 📌 CASO: Vista General (Completitud/Riesgo)
+                tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática"])
 
             with tab1:
-                # --- Visualización 1: Ranking de Completitud / RIESGO COMBINADO (MODIFICADO) ---
+                # --- Visualización 1: Ranking de Priorización (Combinado o por Entidad) ---
                 
                 if filtro_acceso_publico:
                     st.subheader("1. 🔴 Ranking Top 10 Activos Públicos (Incompletos y Riesgo Alto)")
                     st.info("Este ranking prioriza activos públicos con el **peor rendimiento combinado**: Bajo Score de Completitud y Alto Score de Riesgo. La puntuación de visualización es un promedio simple de estos dos factores normalizados.")
                     
-                    # 1. Normalizar las dos métricas clave (Riesgo y Completitud)
-                    # La completitud se invierte (100 - score) para que un valor alto signifique "incompleto"
                     df_viz1_public = df_filtrado.copy()
                     
-                    # Asegurar que los datos sean float para la normalización
                     df_viz1_public['prioridad_riesgo_score'] = df_viz1_public['prioridad_riesgo_score'].astype(float)
                     df_viz1_public['completitud_score_inv'] = (100 - df_viz1_public['completitud_score']).astype(float)
 
-                    # Crear un score combinado de priorización (mayor es peor)
-                    # Usamos una normalización simple (min-max) en el rango [0, 1] para combinar
-                    
-                    # Normalizar Riesgo (0=Bajo, 1=Alto)
                     max_riesgo = df_viz1_public['prioridad_riesgo_score'].max()
                     df_viz1_public['riesgo_norm'] = df_viz1_public['prioridad_riesgo_score'] / max_riesgo if max_riesgo > 0 else 0
                     
-                    # Normalizar Incompletitud (0=Completo, 1=Muy Incompleto)
                     max_incomp = df_viz1_public['completitud_score_inv'].max()
                     df_viz1_public['incomp_norm'] = df_viz1_public['completitud_score_inv'] / max_incomp if max_incomp > 0 else 0
                     
-                    # Score Combinado (Peor es 1.0, Mejor es 0.0)
                     df_viz1_public['prioridad_combinada'] = (df_viz1_public['riesgo_norm'] + df_viz1_public['incomp_norm']) / 2
                     
                     df_viz1 = df_viz1_public.sort_values(by='prioridad_combinada', ascending=False).head(10)
@@ -541,9 +531,8 @@ try:
                 st.subheader("2. 💡 K-Means Clustering: Segmentación de Calidad (3 Grupos)")
                 st.markdown("Se aplica el algoritmo K-Means para segmentar los activos en **3 grupos de calidad** basándose en su **Riesgo** y **Completitud**.")
                 
-                # ... (El código de K-Means Clustering permanece sin cambios en su lógica central, 
-                #     ya que siempre opera a nivel de activo y no requiere la interpretación extra)
                 try:
+                    # ... (Lógica de K-Means, se mantiene)
                     features = ['prioridad_riesgo_score', 'completitud_score']
                     df_cluster = df_filtrado[features].dropna().copy()
                     
@@ -598,50 +587,67 @@ try:
                         )
                         
                         st.plotly_chart(fig2, use_container_width=True)
-
                     
                 except Exception as e:
                     st.error(f"❌ ERROR [Visualización 2]: Falló la generación del K-Means Clustering. Detalle: Asegúrate de tener suficientes datos ({len(df_cluster)}) para el clustering. Error técnico: {e}")
 
 
             with tab3:
-                # --- Visualización 3: Cobertura Temática (Mantenida para Públicos) ---
+                # --- Visualización 3: Cobertura Temática (General) o Activos Menos Actualizados (Público) ---
                 
-                st.subheader("3. 🗺️ Cobertura Temática por Categoría (Mayor a Menor)")
-                
-                # --- LÓGICA DE VISUALIZACIÓN UNIFICADA ---
-                # Esta lógica ahora es la misma para ambos casos (Entidad vs. Público)
-                
-                try:
+                if filtro_acceso_publico:
+                    # 📌 NUEVO GRÁFICO: Activos Menos Actualizados (Antigüedad)
+                    st.subheader("3. ⏰ Ranking Top 10 Activos Públicos Menos Actualizados")
+                    st.info("Estos activos requieren una revisión inmediata de su proceso de recolección de datos, ya que su antigüedad es la más alta en el inventario público.")
+                    
+                    df_viz3 = df_filtrado.sort_values(by='antiguedad_datos_dias', ascending=False).head(10)
+                    EJE_Y = 'titulo'
+                    X_COLUMN = 'antiguedad_datos_dias'
+                    TITULO = 'Top 10 Activos Públicos con Mayor Antigüedad (Menos Actualizados)'
+                    X_TITLE = 'Antigüedad (Días)'
+                    Y_TITLE = 'Activo'
+                    COLOR_SCALE = px.colors.sequential.YlOrRd # Escala que va a rojo (peor)
+
+                else:
+                    # 📌 GRÁFICO EXISTENTE: Cobertura Temática (General)
+                    st.subheader("3. 🗺️ Cobertura Temática por Categoría (Mayor a Menor)")
+                    
                     COLUMNA_CATEGORIA = 'categoria'
                     if COLUMNA_CATEGORIA in df_filtrado.columns:
                         conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10).reset_index()
                         conteo_categoria.columns = ['Categoria', 'Numero_de_Activos']
-                        
-                        # Ordenar de forma descendente (Mayor a Menor)
                         conteo_categoria = conteo_categoria.sort_values(by='Numero_de_Activos', ascending=False)
-                        
                     else:
                         conteo_categoria = pd.DataFrame({'Categoria': [], 'Numero_de_Activos': []})
+                        
+                    df_viz3 = conteo_categoria
+                    EJE_Y = 'Categoria'
+                    X_COLUMN = 'Numero_de_Activos'
+                    TITULO = 'Top 10 Categorías con Mayor Cobertura Temática'
+                    X_TITLE = 'Número de Activos'
+                    Y_TITLE = 'Categoría'
+                    COLOR_SCALE = px.colors.sequential.Viridis
+                    
 
-                    if not conteo_categoria.empty:
+                try:
+                    if not df_viz3.empty:
                         fig3 = px.bar(
-                            conteo_categoria, 
-                            x='Numero_de_Activos', 
-                            y='Categoria', 
+                            df_viz3, 
+                            x=X_COLUMN, 
+                            y=EJE_Y, 
                             orientation='h',
-                            title='Top 10 Categorías con Mayor Cobertura Temática',
-                            labels={'Numero_de_Activos': 'Número de Activos', 'Categoria': 'Categoría'},
-                            color='Numero_de_Activos',
-                            color_continuous_scale=px.colors.sequential.Viridis,
+                            title=TITULO,
+                            labels={X_COLUMN: X_TITLE, EJE_Y: Y_TITLE},
+                            color=X_COLUMN,
+                            color_continuous_scale=COLOR_SCALE,
                             height=500
                         )
-                        fig3.update_layout(xaxis_title='Número de Activos', yaxis_title='Categoría')
+                        fig3.update_layout(xaxis_title=X_TITLE, yaxis_title=Y_TITLE)
                         st.plotly_chart(fig3, use_container_width=True)
                     else:
-                        st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización.")
+                        st.warning("La columna 'antiguedad_datos_dias' o 'categoria' no contiene suficientes valores para generar la visualización.")
                 except Exception as e:
-                    st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
+                    st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot. Detalle: {e}")
 
 
             
@@ -658,7 +664,6 @@ try:
             )
 
             if uploaded_file is not None:
-                # ... (El código de procesamiento de archivo externo permanece sin cambios)
                 with st.spinner('Analizando archivo...'):
                     try:
                         uploaded_filename = uploaded_file.name
@@ -684,7 +689,7 @@ try:
                                 completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
                                 riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
 
-                                # Desglose de Riesgos Promedio (ELIMINANDO METADATOS)
+                                # Desglose de Riesgos Promedio
                                 riesgos_reporte = pd.DataFrame({
                                     'Dimensión de Riesgo': [
                                         '1. Datos Incompletos (Completitud)',
@@ -701,20 +706,16 @@ try:
                                 riesgos_reporte['Riesgo Promedio (0-Máx)'] = riesgos_reporte['Riesgo Promedio (0-Máx)'].round(2)
                                 
                                 
-                                # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (CORREGIDA) ===
+                                # === LÓGICA DE RECOMENDACIÓN PRÁCTICA ===
                                 
                                 recomendacion_final_md = ""
                                 
                                 riesgo_max_reportado = riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']
                                 
                                 if riesgo_max_reportado > 0.15:
-                                    # Identificar el riesgo más alto
                                     riesgo_dimension_max = riesgos_reporte.iloc[0]['Dimensión de Riesgo']
-                                    
-                                    # Generar la explicación específica
                                     explicacion_especifica = generate_specific_recommendation(riesgo_dimension_max)
                                     
-                                    # Formato de salida con bloques de código para claridad
                                     recomendacion_final_md = f"""
 El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f}). Enfoca tu esfuerzo en corregir este problema primero.
 
