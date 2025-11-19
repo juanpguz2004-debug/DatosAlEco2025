@@ -21,6 +21,8 @@ from google import genai
 # --- NUEVAS IMPORTACIONES PARA CLUSTERING NO SUPERVISADO (K-MEANS) ---
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+# 🚀 ADICIÓN: Importación para Detección de Anomalías con ML
+from sklearn.ensemble import IsolationForest
 # --- FIN DE NUEVAS IMPORTACIONES ---
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
@@ -32,7 +34,7 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 KNOWLEDGE_FILE = "knowledge_base.txt" 
 # CRITERIO DE RIESGO
-# 🔄 MODIFICACIÓN 1: UMBRAL_RIESGO_ALTO cambiado a 3.5 según la solicitud del usuario
+# Umbral de Riesgo Alto (Crítico) según tu última solicitud
 UMBRAL_RIESGO_ALTO = 3.5 
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
@@ -143,7 +145,54 @@ def process_external_data(df):
 
     return df
 
-# --- NUEVA FUNCIÓN PARA CHEQUEOS AVANZADOS (Implementa la lógica solicitada) ---
+# 🚀 ADICIÓN: FUNCIÓN PARA DETECCIÓN DE ANOMALÍAS CON ISOLATION FOREST
+@st.cache_data
+def apply_anomaly_detection(df):
+    """
+    Detecta anomalías en los activos de datos utilizando Isolation Forest
+    basado en métricas clave (Riesgo, Completitud, Antigüedad, Popularidad).
+    Asigna -1 para anomalía (outlier) y 1 para normal (inlier).
+    """
+    df_copy = df.copy()
+    
+    # 1. Definir features
+    # Las columnas deben existir en el DataFrame cargado (pre-procesado)
+    features = ['prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias', 'popularidad_score']
+    
+    # 2. Preparar los datos
+    df_model = df_copy[features].dropna().astype(float)
+    
+    if len(df_model) < 10: # Mínimo recomendado para Isolation Forest
+        st.sidebar.warning("Advertencia: Menos de 10 filas de datos completos. ML Anomaly Detection se omitirá.")
+        df_copy['anomalia_score'] = 1 # Por defecto, no es una anomalía
+        return df_copy
+    
+    # 3. Inicializar y entrenar Isolation Forest
+    # contamination='auto' permite al modelo estimar la proporción de outliers
+    iso_forest = IsolationForest(
+        random_state=42, 
+        contamination='auto',
+        n_estimators=100
+    )
+    
+    # 4. Ajustar y predecir: 1 (inlier) o -1 (outlier/anomalía)
+    predictions = iso_forest.fit_predict(df_model)
+    
+    # 5. Mapear las predicciones al DataFrame original
+    # Inicializar la columna anomalia_score en el df_copy
+    df_copy['anomalia_score'] = 1 # Valor por defecto (no es anomalía)
+    
+    # Mapear las predicciones de vuelta usando el índice
+    df_copy.loc[df_model.index, 'anomalia_score'] = predictions
+    
+    # Reportar el número de anomalías detectadas
+    num_anomalies = (df_copy['anomalia_score'] == -1).sum()
+    st.sidebar.markdown(f"**🔍 Detección ML:** {num_anomalies} anomalías detectadas.")
+    
+    return df_copy
+# 🚀 FIN ADICIÓN
+
+# --- FUNCIÓN PARA CHEQUEOS AVANZADOS (Implementa la lógica solicitada) ---
 @st.cache_data
 def apply_advanced_risk_checks(df):
     """
@@ -164,9 +213,7 @@ def apply_advanced_risk_checks(df):
     )
 
     # 2. Duplicidad Semántica/Cambios Abruptos (Proxy: Anomalía detectada pero baja popularidad)
-    # Asume: Una anomalía detectada por ML (-1 en 'anomalia_score') que nadie usa (baja 'popularidad_score') 
-    # podría ser un activo inestable, deprecado o con una colisión semántica silenciosa.
-    
+    # ⚠️ Esta lógica ahora usa el score generado por Isolation Forest.
     df_copy['riesgo_semantico_actualizacion'] = np.where(
         (df_copy['anomalia_score'] == -1) & (df_copy['popularidad_score'] < 0.1),
         PENALIZACION_ANOMALIA_SILENCIOSA,
@@ -198,10 +245,11 @@ def apply_advanced_risk_checks(df):
     df_copy.drop(columns=['prioridad_riesgo_score_v2'], inplace=True, errors='ignore')
     
     return df_copy
-# --- FIN NUEVA FUNCIÓN ---
+# --- FIN CHEQUEOS AVANZADOS ---
 
-# 🚀 ADICIÓN 2: Función de Generación de Reporte HTML
+# 🚀 Función de Generación de Reporte HTML (Se mantiene igual)
 def generate_report_html(df_filtrado, umbral_riesgo):
+# ... (Contenido de generate_report_html se mantiene sin cambios)
     """
     Genera el contenido HTML del reporte final que compila insights, tablas y visualizaciones.
     """
@@ -389,7 +437,6 @@ def get_table_download_link(html_content, filename, text):
     b64 = base64.b64encode(html_content.encode()).decode()
     href = f'<a href="data:text/html;base64,{b64}" download="{filename}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px;">{text}</a>'
     return href
-# 🚀 FIN ADICIÓN 2 ---
 
 def generate_specific_recommendation(risk_dimension):
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
@@ -516,7 +563,12 @@ try:
     if df_analisis_completo.empty:
         st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
     else:
+        # 🚀 ADICIÓN: APLICAR DETECCIÓN DE ANOMALÍAS CON ML (Isolation Forest)
+        df_analisis_completo = apply_anomaly_detection(df_analisis_completo)
+        # 🚀 FIN ADICIÓN: DETECCIÓN DE ANOMALÍAS
+        
         # --- APLICAR CHEQUEOS DE RIESGO AVANZADOS (NUEVA LÓGICA) ---
+        # Ahora apply_advanced_risk_checks usa el resultado de anomalia_score
         df_analisis_completo = apply_advanced_risk_checks(df_analisis_completo) 
         # --- FIN DE APLICACIÓN DE CHEQUEOS AVANZADOS ---
         
@@ -555,18 +607,12 @@ try:
                 categories.insert(0, "Mostrar Todos")
                 filtro_categoria = st.selectbox("Filtrar por Categoría:", categories)
                 
-            # 🚀 ADICIÓN 3: Botón de Descarga del Reporte en el Sidebar
+            # 🚀 Botón de Descarga del Reporte en el Sidebar
             st.markdown("---")
             st.subheader("📥 Generar Reporte Final")
             
             if st.button("Generar y Descargar Reporte (HTML)"):
-                # Se genera el reporte con el DataFrame completo (df_analisis_completo) 
-                # o el filtrado (df_filtrado) dependiendo de la necesidad.
-                # Usaremos df_filtrado para que el reporte respete los filtros del usuario.
-                report_html = generate_report_html(df_analisis_completo, UMBRAL_RIESGO_ALTO) # Usar df_analisis_completo para una visión general
-                
-                # Opcionalmente, usar df_filtrado:
-                # report_html = generate_report_html(df_filtrado, UMBRAL_RIESGO_ALTO)
+                report_html = generate_report_html(df_analisis_completo, UMBRAL_RIESGO_ALTO) 
                 
                 filename = f"Reporte_Inventario_Datos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
                 
@@ -646,6 +692,7 @@ try:
             col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
             col_metrica1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
             col_metrica2.metric("Activos en Incumplimiento", f"{(df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_filtrado)}")
+            # ⚠️ Uso del score generado por Isolation Forest:
             col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
             
             st.markdown("---")
@@ -685,8 +732,6 @@ try:
                     """
 
                 # Definir las columnas a mostrar
-                # Si estamos en el modo "Análisis General" (pero solo activos públicos), mostramos el dueño.
-                # En caso contrario, el dueño es redundante.
                 cols_common = ['titulo', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']
                 
                 if filtro_dueño == "Mostrar Análisis General":
@@ -725,7 +770,7 @@ try:
                 
                 
                 def color_riesgo_score(val):
-                    # 🔄 USO DEL NUEVO UMBRAL (3.5)
+                    # ⚠️ USO DEL UMBRAL (3.5)
                     color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
                     return color
                 
@@ -776,7 +821,7 @@ try:
                 resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
                 
                 def color_riesgo_promedio(val):
-                    # 🔄 USO DEL NUEVO UMBRAL (3.5)
+                    # ⚠️ USO DEL UMBRAL (3.5)
                     color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
                     return color
                 
@@ -797,7 +842,7 @@ try:
                     column_config={
                         'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable"),
                         'Activos_Totales': st.column_config.NumberColumn("Activos Totales"),
-                        # 🔄 USO DEL NUEVO UMBRAL (3.5) en la ayuda
+                        # ⚠️ USO DEL UMBRAL (3.5) en la ayuda
                         'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
                         'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%"),
                         'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d"),
@@ -813,7 +858,6 @@ try:
             # --- BLOQUE CLAVE DE PESTAÑAS (GRÁFICOS) ---
             # ----------------------------------------------------------------------
             
-            # 🔄 MODIFICACIÓN 1: Añadir tab4 a la declaración de pestañas
             if filtro_acceso_publico:
                 # 📌 CASO: Activos Públicos (Priorización)
                 tab1, tab2, tab3, tab4 = st.tabs(["1. Ranking de Priorización (Riesgo/Incompletitud)", "2. K-Means Clustering", "3. Activos Menos Actualizados (Antigüedad)", "4. Treemap de Cobertura y Calidad"])
@@ -1207,7 +1251,7 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
             # 2. Lógica de Interacción (Chat Input - en el cuerpo principal)
             if prompt := st.chat_input("Escribe aquí tu pregunta de análisis complejo:", key="main_chat_input_key", disabled=(knowledge_base_content is None)):
                 
-                # --- Agregar el mensaje del usuario y simular la respuesta inmediata ---
+                # --- Agregar el mensaje del usuario y simular la respuesta inmediata ---\
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 
                 # Para que el mensaje del usuario aparezca inmediatamente en el historial
