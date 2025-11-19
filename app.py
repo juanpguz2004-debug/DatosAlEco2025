@@ -12,8 +12,8 @@ import os
 # --- Importaciones para el Agente de IA ---
 from google import genai 
 from langchain_google_genai import ChatGoogleGenerativeAI
-# ¡CORRECCIÓN DE ERROR! Esta es la ruta correcta tras las actualizaciones de LangChain
-from langchain_community.agent_toolkits import create_pandas_dataframe_agent
+# ¡¡¡SOLUCIÓN FINAL!!! Importación corregida a la ruta más reciente y estable.
+from langchain.agents.agent_toolkits import create_pandas_dataframe_agent
 # --- Fin de Importaciones para el Agente de IA ---
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
