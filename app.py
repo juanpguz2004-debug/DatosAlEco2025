@@ -14,10 +14,10 @@ from google import genai
 # --- Importación de Plotly Express ---
 import plotly.express as px
 # --- Importaciones para el Clustering Dinámico/Clasificación (ML) ---
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-# *** CLASIFICACIÓN SUPERVISADA ***
-from sklearn.tree import DecisionTreeClassifier 
+# *** CAMBIO CLAVE: CLUSTERING NO SUPERVISADO (K-MEANS) ***
+from sklearn.cluster import KMeans 
 # --- Fin de Importaciones para el Clustering Dinámico/Clasificación (ML) ---
 
 
@@ -56,7 +56,7 @@ def load_processed_data(file_path):
 	except FileNotFoundError:
 		return pd.DataFrame()
 
-def clean_and_convert_types_external(df):
+def clean_and_convert_types(df):
 	"""Fuerza a las columnas a ser tipo string para asegurar la detección de inconsistencias."""
 	
 	# Columnas que suelen ser de tipo 'object' (string)
@@ -68,17 +68,22 @@ def clean_and_convert_types_external(df):
 	for col in data_cols:
 		if df[col].dtype != 'object':
 			try:
+				# Convertir a objeto para que el detector de inconsistencias funcione
 				df[col] = df[col].astype(object) 
 			except:
 				pass 
 
 	return df
 
-def check_universals_external(df):
+def calculate_universal_metrics(df):
 	"""
-	Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad 
-	para el diagnóstico rápido.
+	Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad, 
+	y Prioridad de Riesgo para cualquier DataFrame (Principal o Externo).
 	"""
+	
+	# 1. Asegurar tipos para la detección de inconsistencias
+	df = clean_and_convert_types(df)
+	
 	n_cols = df.shape[1]
 	
 	# --- 1. COMPLETITUD: Datos por Fila (Densidad) ---
@@ -101,19 +106,24 @@ def check_universals_external(df):
 		df['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
 	)
 	
+	# --- 4. CÁLCULO FINAL DE PRIORIDAD DE RIESGO ---
+	df['prioridad_riesgo_score'] = (
+		df['riesgo_datos_incompletos'] + 
+		df['riesgo_consistencia_tipo'] +
+		df['riesgo_duplicado']
+	)
+	
 	return df
 
 def process_external_data(df):
 	"""
-	Lógica de riesgo universal para el archivo externo subido (AJUSTADA).
+	Lógica de riesgo universal para el archivo externo subido, incluyendo el cálculo 
+	de las métricas de riesgo universal.
 	"""
 	
-	# PASO CLAVE CORREGIDO: Asegurar que los tipos permitan la detección
-	df = clean_and_convert_types_external(df)
+	# PASO CLAVE: Calcuar las métricas de riesgo universal (la base para el diagnóstico)
+	df = calculate_universal_metrics(df)
 
-	# --- 1. EVALUACIÓN DE UNIVERSALES (Completitud, Consistencia, Unicidad) ---
-	df = check_universals_external(df)
-	
 	# --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO (SOLO PARA MÉTRICA) ---
 	campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
 	num_campos_totales_base = len(campos_clave_universal)
@@ -130,21 +140,14 @@ def process_external_data(df):
 	df['completitud_metadatos_universal'] = completitud_metadatos_universal_score
 
 	
-	# --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD ---
+	# --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD (Para el diagnóstico rápido) ---
 	
-	# Score de riesgo universal (SOLO 3 DIMENSIONES)
-	df['prioridad_riesgo_score'] = (
-		df['riesgo_datos_incompletos'] + 
-		df['riesgo_consistencia_tipo'] +
-		df['riesgo_duplicado']
-	)
-	
-	# ⚠️ CORRECCIÓN DE ROBUSTEZ: Añadir stub de métricas faltantes para la consistencia
+	# ⚠️ CORRECCIÓN DE ROBUSTEZ: Añadir stub de métricas faltantes si no existen en el archivo externo
 	if 'completitud_score' not in df.columns:
 		# Si es un archivo externo, 'completitud_score' se aproxima a 'datos_por_fila_score'
 		df['completitud_score'] = df['datos_por_fila_score'] 
 	if 'antiguedad_datos_dias' not in df.columns:
-		# Si no hay antigüedad, asumimos 0 para que el ML y las métricas no fallen
+		# Si no hay antigüedad, asumimos 0 para que el ML y las métricas no fallen si se intentan usar
 		df['antiguedad_datos_dias'] = 0 
 	
 	# CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
@@ -183,47 +186,36 @@ def generate_specific_recommendation(risk_dimension):
 		return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
 # =================================================================
-# FUNCIÓN CORE: CLASIFICACIÓN SUPERVISADA Y PCA (CORREGIDA)
+# FUNCIÓN CORE: CLUSTERING NO SUPERVISADO (K-MEANS Y PCA)
 # =================================================================
 
-def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000):
+def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=3):
 	"""
-	Segmenta activos en 3 grupos (Completos, Aceptables, Incompletos) usando
-	Clasificación Supervisada (Decision Tree) entrenado en los scores de riesgo,
+	Segmenta activos en N_CLUSTERS grupos (K-Means) usando los scores de riesgo,
 	y aplica PCA para visualización interactiva con Plotly.
+	
+	NOTA: Mantenemos el nombre de la función original para evitar romper la referencia
+	en el código principal de Streamlit.
 	"""
 	
 	# Features que definen el estado de calidad/riesgo
 	ML_FEATURES = ['prioridad_riesgo_score', 'datos_por_fila_score', 'completitud_score', 'antiguedad_datos_dias']
 	
-	# ⚠️ VERIFICACIÓN DE COLUMNAS REQUERIDAS (SOLUCIÓN AL ERROR DE INDEX)
+	# ⚠️ VERIFICACIÓN DE COLUMNAS REQUERIDAS
 	missing_cols = [col for col in ML_FEATURES if col not in df_input.columns]
 	if missing_cols:
-		return pd.DataFrame(), None, f"Faltan métricas de riesgo para el ML: **{', '.join(missing_cols)}**. Asegúrate de que el archivo precargado ('{ARCHIVO_PROCESADO}') contenga los scores de calidad."
+		return pd.DataFrame(), None, f"Faltan métricas de riesgo para el ML: **{', '.join(missing_cols)}**. Asegúrate de que el archivo precargado contenga los scores de calidad."
 
 
-	if df_input.empty or len(df_input) < 10:
-		return pd.DataFrame(), None, "No hay suficientes datos (mínimo 10 filas) para la segmentación."
+	if df_input.empty or len(df_input) < N_CLUSTERS:
+		return pd.DataFrame(), None, f"No hay suficientes datos (mínimo {N_CLUSTERS} filas) para la segmentación."
 
 	# --- 1. MUESTREO (Para rendimiento y visualización clara) ---
 	sample_size = min(MAX_SAMPLE_SIZE, len(df_input))
 	df_sample = df_input.reset_index(drop=True).sample(n=sample_size, random_state=42)
 	
 	# ------------------------------------------------------------
-	# 2) CREACIÓN DE LA VARIABLE OBJETIVO (Y) - GROUND TRUTH
-	# ------------------------------------------------------------
-	
-	conditions = [
-		(df_sample['prioridad_riesgo_score'] <= 1.0),
-		(df_sample['prioridad_riesgo_score'] > 1.0) & (df_sample['prioridad_riesgo_score'] <= 2.0),
-		(df_sample['prioridad_riesgo_score'] > 2.0)
-	]
-	
-	choices = ['🟢 Completos', '🟡 Aceptables', '🔴 Incompletos']
-	df_sample['TARGET_SEGMENT'] = np.select(conditions, choices, default='Indefinido')
-
-	# ------------------------------------------------------------
-	# 3) PREPARACIÓN DE FEATURES (X)
+	# 2) PREPARACIÓN DE FEATURES (X)
 	# ------------------------------------------------------------
 	
 	df_ml_features = df_sample[ML_FEATURES].fillna(0).copy()
@@ -231,17 +223,33 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000):
 	scaler = StandardScaler()
 	X_scaled = scaler.fit_transform(df_ml_features)
 	
-	y_train = df_sample['TARGET_SEGMENT']
-	
 	# ------------------------------------------------------------
-	# 4) CLASIFICACIÓN SUPERVISADA (Decision Tree)
+	# 3) CLUSTERING NO SUPERVISADO (K-MEANS)
 	# ------------------------------------------------------------
 	
-	model = DecisionTreeClassifier(random_state=42)
-	model.fit(X_scaled, y_train)
+	# Se usa el algoritmo K-Means con N_CLUSTERS
+	model = KMeans(n_clusters=N_CLUSTERS, random_state=42, n_init=10)
+	df_sample['CLUSTER'] = model.fit_predict(X_scaled)
 	
-	# Predicción (La predicción confirma el uso del modelo supervisado)
-	df_sample['PREDICTED_SEGMENT'] = model.predict(X_scaled)
+	# ------------------------------------------------------------
+	# 4) ETIQUETADO DEL CLUSTER BASADO EN RIESGO PROMEDIO
+	# ------------------------------------------------------------
+	
+	# Calcular el riesgo promedio para cada cluster
+	risk_per_cluster = df_sample.groupby('CLUSTER')['prioridad_riesgo_score'].mean()
+	
+	# Ordenar los clusters por riesgo: Menor riesgo (Completos) a Mayor riesgo (Incompletos)
+	sorted_clusters = risk_per_cluster.sort_values(ascending=True).index
+	
+	# Mapear los nombres de segmento al orden de riesgo
+	segment_names = ['🟢 Completos', '🟡 Aceptables', '🔴 Incompletos']
+	
+	# Crear el diccionario de mapeo {cluster_id: segment_name}
+	cluster_mapping = dict(zip(sorted_clusters, segment_names))
+	
+	# Asignar la etiqueta legible
+	df_sample['PREDICTED_SEGMENT'] = df_sample['CLUSTER'].map(cluster_mapping)
+
 
 	# ------------------------------------------------------------
 	# 5) PCA (Visualización)
@@ -258,7 +266,7 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000):
 	return df_sample, variance_ratio, None
 
 # =================================================================
-# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
+# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) (SIN CAMBIOS)
 # =================================================================
 
 def setup_data_assistant(df):
@@ -359,7 +367,10 @@ try:
 	if df_analisis_completo.empty:
 		st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
 	else:
-		st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
+		# 🚀 PASO CLAVE AÑADIDO: CALCULAR MÉTRICAS UNIVERSALES EN EL DF PRINCIPAL
+		df_analisis_completo = calculate_universal_metrics(df_analisis_completo.copy())
+		
+		st.success(f'✅ Archivo pre-procesado y métricas base cargadas. Total de activos: **{len(df_analisis_completo)}**')
 
 		# --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (FILTROS) ---
 		owners = df_analisis_completo['dueño'].dropna().unique().tolist()
@@ -386,6 +397,7 @@ try:
 				col1.metric("Activos Totales", total_activos)
 				
 				# Comprobaciones para las métricas
+				# 'completitud_score' y 'prioridad_riesgo_score' ahora deberían existir
 				completitud_promedio_disp = f"{df_entidad_seleccionada['completitud_score'].mean():.2f}%" if 'completitud_score' in df_entidad_seleccionada.columns else "N/A"
 				riesgo_promedio_disp = f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}" if 'prioridad_riesgo_score' in df_entidad_seleccionada.columns else "N/A"
 				antiguedad_promedio_disp = f"{df_entidad_seleccionada['antiguedad_datos_dias'].mean():.0f} días" if 'antiguedad_datos_dias' in df_entidad_seleccionada.columns else "N/A"
@@ -485,7 +497,7 @@ try:
 				resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
 				
 				
-				# --- FUNCIÓN DE ESTILO (SIN CAMBIOS) ---
+				# --- FUNCIÓN DE ESTILO ---
 				def highlight_metrics(row):
 					"""Aplica el estilo de color a toda la fila según las métricas críticas."""
 					styles = [''] * len(row)
@@ -544,7 +556,7 @@ try:
 			st.markdown("---")
 			
 			# --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES ---
-			tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Segmentación (Clasificación Supervisada)", "3. Cobertura Temática"])
+			tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Segmentación (Clustering K-Means)", "3. Cobertura Temática"])
 
 			with tab1:
 				# --- Visualización 1: Ranking de Completitud (Plotly) ---
@@ -593,14 +605,13 @@ try:
 					st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud (Plotly). Detalle: {e}")
 
 			with tab2:
-				# --- Visualización 2: Segmentación de Riesgo (¡CLASIFICACIÓN SUPERVISADA!) ---
-				st.subheader("2. 🤖 Segmentación de Riesgo (Clasificación Supervisada y PCA)")
-				st.markdown("Se utiliza un modelo de **Clasificación Supervisada (Árbol de Decisión)**, entrenado en las métricas de calidad y riesgo, para predecir si un activo cae en el segmento **Completos**, **Aceptables** o **Incompletos**.")
-				st.caption("Gráfico interactivo: Usa el hover para ver el segmento predicho, el riesgo exacto y la entidad.")
+				# --- Visualización 2: Segmentación de Riesgo (¡CLUSTERING K-MEANS!) ---
+				st.subheader("2. 🤖 Segmentación de Riesgo (Clustering K-Means y PCA)")
+				st.markdown("Se utiliza el algoritmo **K-Means (No Supervisado)** para agrupar los activos en **3 clusters** según sus métricas de calidad y riesgo. Los clusters se etiquetan automáticamente basándose en el riesgo promedio de cada grupo.")
+				st.caption("Gráfico interactivo: Usa el hover para ver el segmento, el riesgo exacto y la entidad. ")
 				
-				with st.spinner("Ejecutando Modelo de Clasificación Supervisada y PCA..."):
-					# Llamada a la función de ML Supervisado
-					# Se usa df_filtrado (el conjunto de datos principal)
+				with st.spinner("Ejecutando Modelo de Clustering K-Means y PCA..."):
+					# Llamada a la función de ML
 					df_segmented_sample, variance_ratio, error_message = run_supervised_segmentation_pca(df_filtrado)
 				
 				if error_message:
@@ -620,7 +631,7 @@ try:
 							y='PC2',
 							color='PREDICTED_SEGMENT', # Colorear por el segmento PREDICHO por el ML
 							color_discrete_map=color_map,
-							title=f'Segmentos Predichos por ML (Proyección PCA, {len(df_segmented_sample)} muestras)',
+							title=f'Segmentos de Calidad por K-Means (Proyección PCA, {len(df_segmented_sample)} muestras)',
 							hover_data={
 								'dueño': True,
 								'titulo': True,
@@ -635,7 +646,7 @@ try:
 						fig2.update_layout(
 							xaxis_title=f"Componente Principal 1 (PC1)",
 							yaxis_title=f"Componente Principal 2 (PC2)",
-							legend_title="Segmento Predicho (ML)"
+							legend_title="Segmento (K-Means)"
 						)
 
 						st.plotly_chart(fig2, use_container_width=True)
@@ -694,7 +705,7 @@ try:
 
 			
 			# ----------------------------------------------------------------------
-			# --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
+			# --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO ---
 			# ----------------------------------------------------------------------
 			st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
 			st.header("💾 Diagnóstico de Archivo CSV Externo (Calidad Universal)")
@@ -722,7 +733,7 @@ try:
 						if uploaded_df.empty:
 							st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío.")
 						else:
-							# NOTA CLAVE: La función process_external_data solo afecta al DF subido
+							# Llama a process_external_data que a su vez llama a calculate_universal_metrics
 							df_diagnostico = process_external_data(uploaded_df.copy())
 							
 							if not df_diagnostico.empty:
@@ -807,7 +818,7 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 				
 			
 			# ----------------------------------------------------------------------
-			# --- SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS
+			# --- SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS ---
 			# ----------------------------------------------------------------------
 			setup_data_assistant(df_analisis_completo)
 
