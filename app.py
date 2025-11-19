@@ -12,7 +12,8 @@ import os
 # --- Importaciones para el Agente de IA ---
 from google import genai 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.agents import create_pandas_dataframe_agent
+# ¡CORRECCIÓN DE ERROR! Esta es la ruta correcta tras las actualizaciones de LangChain
+from langchain_community.agent_toolkits import create_pandas_dataframe_agent
 # --- Fin de Importaciones para el Agente de IA ---
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
@@ -34,7 +35,6 @@ RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5
 
 # ⚠️ CLAVE SECRETA DE GEMINI
 # REEMPLAZA ESTE VALOR con tu clave secreta real de Gemini (comienza con AIza...).
-# Si usas Streamlit Cloud, se recomienda usar st.secrets["GEMINI_API_KEY"] en lugar de hardcodearla.
 GEMINI_API_SECRET_VALUE = "REEMPLAZA_ESTO_CON_TU_CLAVE_SECRETA_AIza..."
 
 # =================================================================
