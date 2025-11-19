@@ -120,27 +120,30 @@ def process_external_data(df):
 
     return df
 
-# --- FUNCIÓN DE RECOMENDACIÓN DETALLADA (NUEVA) ---
+# --- FUNCIÓN DE RECOMENDACIÓN DETALLADA (CORREGIDA PARA MEJOR FORMATO) ---
 def generate_specific_recommendation(risk_dimension):
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
     
     # 1. Datos Incompletos (Completitud)
     if 'Datos Incompletos' in risk_dimension:
         return """
-        * **Identificación:** Localiza las columnas o filas con un alto porcentaje de valores **Nulos (NaN)**. El umbral de alerta se activa si el promedio de datos por fila es **menor al 70%**.
-        * **Acción:** Revisa los procesos de ingesta de datos. Si el campo es **obligatorio**, asegúrate de que todos los registros lo contengan. Si el campo es **opcional**, considera si es crucial para el análisis antes de llenarlo con un valor por defecto.
+**Identificación:** Localiza las columnas o filas con un alto porcentaje de valores **Nulos (NaN)**. El umbral de alerta se activa si el promedio de datos por fila es **menor al 70%**.
+
+**Acción:** Revisa los procesos de ingesta de datos. Si el campo es **obligatorio**, asegúrate de que todos los registros lo contengan. Si el campo es **opcional**, considera si es crucial para el análisis antes de llenarlo con un valor por defecto.
         """
     # 2. Duplicados Exactos (Unicidad)
     elif 'Duplicados Exactos' in risk_dimension:
         return """
-        * **Identificación:** Encuentra las filas que son **copias exactas** (duplicados de todo el registro).
-        * **Acción:** Revisa tu proceso de extracción/carga. Un duplicado exacto generalmente indica un error de procesamiento o ingesta. **Elimina las copias** y asegúrate de que exista una **clave única** (UID) para cada registro que evite la re-ingesta accidental.
+**Identificación:** Encuentra las filas que son **copias exactas** (duplicados de todo el registro).
+
+**Acción:** Revisa tu proceso de extracción/carga. Un duplicado exacto generalmente indica un error de procesamiento o ingesta. **Elimina las copias** y asegúrate de que exista una **clave única** (UID) para cada registro que evite la re-ingesta accidental.
         """
     # 3. Consistencia de Tipo (Coherencia)
     elif 'Consistencia de Tipo' in risk_dimension:
         return """
-        * **Identificación:** Una columna contiene **datos mezclados** (ej. números, fechas, y texto en una columna que debería ser solo números). Esto afecta seriamente el análisis.
-        * **Acción:** Normaliza el tipo de dato para la columna afectada. Si es una columna numérica, **elimina los valores de texto** o conviértelos a `NaN` para una limpieza posterior. Define el **tipo de dato esperado** (Schema) para cada columna y aplica una validación estricta al inicio del proceso.
+**Identificación:** Una columna contiene **datos mezclados** (ej. números, fechas, y texto en una columna que debería ser solo números). Esto afecta seriamente el análisis.
+
+**Acción:** Normaliza el tipo de dato para la columna afectada. Si es una columna numérica, **elimina los valores de texto** o conviértelos a `NaN` para una limpieza posterior. Define el **tipo de dato esperado** (Schema) para cada columna y aplica una validación estricta al inicio del proceso.
         """
     else:
         return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
@@ -474,10 +477,15 @@ try:
                                 
                                 # Generar la explicación específica
                                 explicacion_especifica = generate_specific_recommendation(riesgo_dimension_max)
-
+                                
+                                # Formato de salida con bloques de código para claridad
                                 recomendacion_final_md = f"""
-* **Problema Principal:** El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f}).
-* **Pasos para Corregir:**
+El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f}). Enfoca tu esfuerzo en corregir este problema primero.
+
+<br>
+
+**Detalle y Acciones:**
+
 {explicacion_especifica}
 """
 
@@ -522,7 +530,7 @@ try:
                             )
 
                             st.markdown(f"#### ✨ Recomendación de Acciones:")
-                            st.markdown(recomendacion_final_md)
+                            st.markdown(recomendacion_final_md, unsafe_allow_html=True)
 
                         else:
                             st.error(f"❌ El archivo subido **{uploaded_filename}** no pudo ser procesado.")
