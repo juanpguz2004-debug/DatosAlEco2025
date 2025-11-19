@@ -202,8 +202,8 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 	
 	missing_cols = [col for col in ML_FEATURES if col not in df_input.columns]
 	if missing_cols:
-		return pd.DataFrame(), None, f"Faltan métricas de riesgo para el ML: **{', '.join(missing_cols)}**.
-Asegúrate de que el archivo precargado contenga los scores de calidad."
+		# 🚨 CORRECCIÓN DE SYNTAX ERROR: La f-string ahora está en una sola línea
+		return pd.DataFrame(), None, f"Faltan métricas de riesgo para el ML: **{', '.join(missing_cols)}**. Asegúrate de que el archivo precargado contenga los scores de calidad."
 
 
 	if df_input.empty or len(df_input) < N_CLUSTERS:
@@ -278,7 +278,9 @@ clave `AIza...`.")
 
 	# --- 2. INICIALIZAR EL CLIENTE GEMINI ---
 	try:
-		client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
+		# Sustituir por la inicialización real del cliente Gemini si se usa Google GenAI
+		# Aquí se mantiene la estructura para la integración del Streamlit app
+		client = object() # Simulacion de cliente para evitar errores de importación si la clave es "Aiza"
 		
 	except Exception as e:
 		st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API.
@@ -329,20 +331,26 @@ Te sugiero preguntar: [SUGERENCIA DE PREGUNTA ALTERNATIVA].'\n"
 			)
 
 			try:
-				# LLAMADA A LA API DE GEMINI
-				response = client.models.generate_content(
-					model='gemini-2.5-flash',
-					contents=[
-						{"role": "user", "parts": [{"text": user_query}]},
-					],
-					config=genai.types.GenerateContentConfig(
-						system_instruction=system_prompt,
-						temperature=0.0
+				# LLAMADA A LA API DE GEMINI (Necesitarás tu clave real para que esto funcione)
+				# Esto solo se ejecuta si GEMINI_API_SECRET_VALUE es diferente a "Aiza"
+				if GEMINI_API_SECRET_VALUE != "Aiza":
+					client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
+					response = client.models.generate_content(
+						model='gemini-2.5-flash',
+						contents=[
+							{"role": "user", "parts": [{"text": user_query}]},
+						],
+						config=genai.types.GenerateContentConfig(
+							system_instruction=system_prompt,
+							temperature=0.0
+						)
 					)
-				)
-				
-				st.success("✅ Respuesta generada por el Asistente de IA:")
-				st.markdown(response.text)
+					
+					st.success("✅ Respuesta generada por el Asistente de IA:")
+					st.markdown(response.text)
+				else:
+					st.warning("⚠️ La consulta al LLM no se ejecutó. Por favor, configura tu clave API de Gemini correctamente.")
+
 
 			except Exception as e:
 				st.error(f"❌ Error durante la llamada a la API de Gemini. Detalle: {e}")
