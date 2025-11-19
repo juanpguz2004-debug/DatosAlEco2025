@@ -47,14 +47,10 @@ def process_external_data(df):
     df['datos_por_fila_score'] = (df.notna().sum(axis=1) / df.shape[1]) * 100
     
     # 2. Métrica Universal: Completitud de Metadatos (Verifica si existen columnas básicas de descripción)
-    # Usamos tres columnas comunes a cualquier metadata de catálogo como referencia base.
     campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
-    
-    # Calcular cuántos de estos campos existen en el DF subido
     campos_existentes = [col for col in campos_clave_universal if col in df.columns]
     num_campos_totales_base = len(campos_clave_universal) # Base 3
     
-    # Calcular el score de completitud basado SOLO en los campos que existen en este archivo
     df['campos_diligenciados_universal'] = df[campos_existentes].notna().sum(axis=1)
     df['completitud_metadatos_universal'] = (df['campos_diligenciados_universal'] / num_campos_totales_base) * 100
 
@@ -62,11 +58,9 @@ def process_external_data(df):
     # 3. CÁLCULO DE SCORE DE RIESGO UNIVERSAL (Máximo teórico 3.5)
     
     # Penalización 1: Score bajo de Datos por Fila (riesgo de datos incompletos)
-    # Penaliza si la fila está menos del 70% llena (Riesgo 2.0)
     df['riesgo_datos_incompletos'] = np.where(df['datos_por_fila_score'] < 70, 2.0, 0.0)
     
     # Penalización 2: Metadatos insuficientes (Riesgo 1.5)
-    # Penaliza si la completitud de metadatos universal está por debajo del 50%.
     df['riesgo_metadatos_nulo'] = np.where(df['completitud_metadatos_universal'] < 50, 1.5, 0.0)
     
     # Score de riesgo universal
@@ -335,18 +329,20 @@ try:
                             
                             datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
                             
-                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA ===
+                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (CORREGIDA) ===
                             avg_riesgo_datos_incompletos = df_diagnostico['riesgo_datos_incompletos'].mean()
                             avg_riesgo_metadatos_nulo = df_diagnostico['riesgo_metadatos_nulo'].mean()
                             
                             recomendacion_lista = []
                             
-                            # Umbral para recomendación de datos incompletos: si el promedio de riesgo es > 0.5 (25% de la penalización máx de 2.0)
+                            # 1. Recomendación: Datos por Fila (Penalización máx 2.0)
+                            # Se activa si el riesgo promedio de esta categoría es > 0.5
                             if avg_riesgo_datos_incompletos > 0.5: 
                                 recomendacion_lista.append("Muchas filas tienen **celdas vacías** (datos incompletos). Debe llenar los valores nulos.")
 
-                            # Umbral para recomendación de metadatos: si el promedio de riesgo es > 0.375 (25% de la penalización máx de 1.5)
-                            if avg_riesgo_metadatos_nulo > 0.375:
+                            # 2. Recomendación: Metadatos (Penalización máx 1.5)
+                            # Se activa si el riesgo promedio de esta categoría es > 0.1 Y la Completitud Universal es menor a 90%
+                            if avg_riesgo_metadatos_nulo > 0.1 and completitud_universal_promedio < 90:
                                 recomendacion_lista.append("Faltan **metadatos básicos** (`titulo`, `descripcion`, `dueño`) para catalogar el archivo.")
                             
                             if not recomendacion_lista:
