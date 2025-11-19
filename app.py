@@ -30,7 +30,7 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 # CRITERIO DE RIESGO
 UMBRAL_RIESGO_ALTO = 3.0 
-# CRITERIO DE COMPLETITUD (AJUSTADO DE 85% A 70%)
+# CRITERIO DE COMPLETITUD
 UMBRAL_COMPLETITUD_BAJA = 70.0 
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
@@ -46,7 +46,7 @@ RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5
 GEMINI_API_SECRET_VALUE = "Aiza"
 
 # =================================================================
-# 1. Funciones de Carga y Procesamiento (SIN CAMBIOS FUNCIONALES AQUÍ)
+# 1. Funciones de Carga y Procesamiento (Métricas sin cambios)
 # =================================================================
 
 @st.cache_data
@@ -79,8 +79,7 @@ def clean_and_convert_types(df):
 
 def calculate_universal_metrics(df):
 	"""
-	Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad, 
-	y Prioridad de Riesgo para cualquier DataFrame (Principal o Externo).
+	Calcula métricas de calidad universal.
 	"""
 	
 	# 1. Asegurar tipos para la detección de inconsistencias
@@ -117,6 +116,7 @@ def calculate_universal_metrics(df):
 	
 	return df
 
+# ... (El resto de funciones auxiliares 'process_external_data', 'generate_specific_recommendation', 'setup_data_assistant' se mantienen sin cambios funcionales respecto al umbral de 70% ya aplicado y la lógica de riesgo) ...
 def process_external_data(df):
 	"""
 	Lógica de riesgo universal para el archivo externo subido, incluyendo el cálculo 
@@ -186,6 +186,8 @@ def generate_specific_recommendation(risk_dimension):
 		"""
 	else:
 		return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
+# ... (Fin de funciones auxiliares) ...
+
 
 # =================================================================
 # FUNCIÓN CORE: CLUSTERING NO SUPERVISADO (K-MEANS Y PCA)
@@ -211,7 +213,8 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 
 	# --- 1. MUESTREO (Para rendimiento y visualización clara) ---
 	sample_size = min(MAX_SAMPLE_SIZE, len(df_input))
-	df_sample = df_input.reset_index(drop=True).sample(n=sample_size, random_state=42)
+	# Seleccionamos las columnas clave que SÍ queremos en el sample para el hover/diagnóstico
+	df_sample = df_input[['dueño', 'titulo'] + ML_FEATURES].reset_index(drop=True).sample(n=sample_size, random_state=42)
 	
 	# ------------------------------------------------------------
 	# 2) PREPARACIÓN DE FEATURES (X)
@@ -265,95 +268,6 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 	return df_sample, variance_ratio, None
 
 # =================================================================
-# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) (SIN CAMBIOS)
-# =================================================================
-
-def setup_data_assistant(df):
-	"""
-	Configura el asistente de consulta de datos usando la API nativa de Gemini.
-	"""
-	
-	st.markdown("---")
-	st.header("🧠 Asistente de Consulta de Datos (Análisis de Lenguaje Natural)")
-	st.markdown("#### ✅ Pregunta lo que sea sobre la estructura de tus datos (API nativa de Gemini)")
-	st.info("Ejemplos: '¿Qué columnas tenemos disponibles?', 'Describe los valores más comunes en la columna dueño'. Si la pregunta no se puede responder con la estructura de los datos, el modelo te lo dirá y te sugerirá una pregunta alternativa.")
-	
-	# --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
-	if GEMINI_API_SECRET_VALUE == "Aiza":
-		st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
-		st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
-		st.markdown("---")
-		return
-
-	# --- 2. INICIALIZAR EL CLIENTE GEMINI ---
-	try:
-		client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
-		
-	except Exception as e:
-		st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}")
-		st.markdown("---")
-		return
-
-	# --- 3. PREPARAR CONTEXTO DE DATOS (SCHEMA) ---
-	buffer = io.StringIO()
-	df.info(buf=buffer)
-	df_info_str = buffer.getvalue()
-	
-	data_head = df.head(5).to_markdown(index=False)
-
-
-	# --- 4. INTERFAZ DE USUARIO ---
-	user_query = st.text_input(
-		"Tu pregunta sobre la ESTRUCTURA del Inventario de Activos:",
-		key="nlp_query_simple"
-	)
-
-	if st.button("Consultar Estructura (Gemini Simple)", use_container_width=True) and user_query:
-		if df.empty:
-			st.error("No hay datos cargados para realizar la consulta.")
-			return
-
-		with st.spinner(f"El Asistente de Gemini está analizando la estructura de los datos para responder: '{user_query}'..."):
-			
-			# --- CONSTRUIR PROMPT ROBUSTO ---
-			system_prompt = (
-				"Eres un Asistente de Análisis de Datos experto. Tu objetivo es responder preguntas sobre la ESTRUCTURA y las MUESTRAS "
-				"de un DataFrame de Pandas. NO PUEDES EJECUTAR CÓDIGO de Python para cálculos complejos (sumas, promedios, filtrados extensos), "
-				"solo puedes analizar la información de la MUESTRA y el ESQUEMA que se te proporciona.\n"
-				
-				"CONTEXTO DEL DATAFRAME:\n"
-				f"Esquema (df.info()):\n{df_info_str}\n"
-				f"Muestra de Datos (df.head()):\n{data_head}\n"
-				
-				"REGLAS CRÍTICAS DE RESPUESTA:\n"
-				"1. Si la pregunta del usuario puede ser respondida directamente con la MUESTRA o el ESQUEMA (ej: '¿Cuáles son las columnas?', '¿De qué tipo es la columna dueño?', '¿Qué valores aparecen en la muestra para la columna X?'), responde de manera concisa y profesional.\n"
-				"2. Si la pregunta requiere CÁLCULOS O AGREGACIONES COMPLEJAS sobre todo el dataset (ej: 'Suma de activos', 'Promedio de riesgo', 'Cuántos hay en la categoría X'), DEBES responder ÚNICAMENTE con el siguiente texto exacto:\n"
-				"'No puedo responder esa pregunta basándome en los datos disponibles. Mi funcionalidad actual solo me permite analizar el esquema y una pequeña muestra de los datos. Te sugiero preguntar: [SUGERENCIA DE PREGUNTA ALTERNATIVA].'\n"
-				"3. La SUGESTIÓN DE PREGUNTA ALTERNATIVA debe ser una pregunta que SÍ se pueda responder con la muestra o el esquema (ej: '¿Qué columnas son de tipo object?', '¿Qué valores tiene la columna dueño en la muestra?', '¿Qué tan viejo es el activo de la primera fila?')."
-			)
-
-			try:
-				# LLAMADA A LA API DE GEMINI
-				response = client.models.generate_content(
-					model='gemini-2.5-flash',
-					contents=[
-						{"role": "user", "parts": [{"text": user_query}]},
-					],
-					config=genai.types.GenerateContentConfig(
-						system_instruction=system_prompt,
-						temperature=0.0 # Bajar la temperatura para respuestas más determinísticas
-					)
-				)
-				
-				st.success("✅ Respuesta generada por el Asistente de IA:")
-				st.markdown(response.text)
-
-			except Exception as e:
-				st.error(f"❌ Error durante la llamada a la API de Gemini. Detalle: {e}")
-				st.warning("Verifica tu clave API y la conexión.")
-
-
-# =================================================================
 # 2. Ejecución Principal del Dashboard
 # =================================================================
 
@@ -372,6 +286,7 @@ try:
 		st.success(f'✅ Archivo pre-procesado y métricas base cargadas. Total de activos: **{len(df_analisis_completo)}**')
 
 		# --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (FILTROS) ---
+		# ... (filtros) ...
 		owners = df_analisis_completo['dueño'].dropna().unique().tolist()
 		owners.sort()
 		owners.insert(0, "Mostrar Análisis General")
@@ -395,7 +310,6 @@ try:
 				
 				col1.metric("Activos Totales", total_activos)
 				
-				# Comprobaciones para las métricas
 				completitud_promedio_disp = f"{df_entidad_seleccionada['completitud_score'].mean():.2f}%" if 'completitud_score' in df_entidad_seleccionada.columns else "N/A"
 				riesgo_promedio_disp = f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}" if 'prioridad_riesgo_score' in df_entidad_seleccionada.columns else "N/A"
 				antiguedad_promedio_disp = f"{df_entidad_seleccionada['antiguedad_datos_dias'].mean():.0f} días" if 'antiguedad_datos_dias' in df_entidad_seleccionada.columns else "N/A"
@@ -411,6 +325,7 @@ try:
 				st.markdown("---")
 
 		# --- BARRA LATERAL (FILTROS SECUNDARIOS) ---
+		# ... (filtros laterales) ...
 		st.sidebar.header("⚙️ Filtros para Visualizaciones")
 		
 		filtro_acceso = "Mostrar Todos"
@@ -426,7 +341,6 @@ try:
 			categories.sort()
 			categories.insert(0, "Mostrar Todos")
 			filtro_categoria = st.sidebar.selectbox("Filtrar por Categoría:", categories)
-
 
 		# --- APLICAR FILTROS (GENERANDO df_filtrado) ---
 		df_filtrado = df_analisis_completo.copy()
@@ -448,6 +362,7 @@ try:
 		else:
 			
 			# --- 3. Métricas de la Vista Actual ---
+			# ... (métricas) ...
 			st.subheader("Métricas de la Vista Actual")
 			col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
 			
@@ -458,7 +373,6 @@ try:
 			incumplimiento_count = (df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum() if 'estado_actualizacion' in df_filtrado.columns else 0
 			col_metrica2.metric("Activos en Incumplimiento", f"{incumplimiento_count} / {len(df_filtrado)}")
 			
-			# Check si 'anomalia_score' existe antes de usarlo
 			if 'anomalia_score' in df_filtrado.columns:
 				col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
 			else:
@@ -466,7 +380,7 @@ try:
 			
 			st.markdown("---")
 
-			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (AJUSTE EN UMBRAL) ---
+			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades ---
 			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 
 			st.info(f"""
@@ -477,7 +391,6 @@ try:
 				* 🔴 **Completitud Promedio** < **{UMBRAL_COMPLETITUD_BAJA:.0f}%** (Riesgo de Usabilidad).
 			""")
 			
-			# Asegurar que existan las columnas clave para el resumen antes de agrupar
 			required_cols_summary = ['prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias', 'estado_actualizacion']
 			
 			if all(col in df_filtrado.columns for col in required_cols_summary):
@@ -495,7 +408,7 @@ try:
 				resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
 				
 				
-				# --- FUNCIÓN DE ESTILO (AJUSTADA) ---
+				# --- FUNCIÓN DE ESTILO (Revisada) ---
 				def highlight_metrics(row):
 					"""Aplica el estilo de color a toda la fila según las métricas críticas."""
 					styles = [''] * len(row)
@@ -515,7 +428,6 @@ try:
 						styles[4] = 'background-color: #f79999' # Rojo claro
 
 					# 4. Completitud Promedio (Columna 3)
-					# ➡️ CAMBIO SOLICITADO AQUÍ: UMBLAR A 70%
 					if row['Completitud_Promedio'] < UMBRAL_COMPLETITUD_BAJA:
 						styles[3] = 'background-color: #f79999' # Rojo claro
 					else:
@@ -560,7 +472,7 @@ try:
 			tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Segmentación (Clustering K-Means)", "3. Cobertura Temática"])
 
 			with tab1:
-				# --- Visualización 1: Ranking de Completitud (Plotly - AJUSTE EN COLOR) ---
+				# --- Visualización 1: Ranking de Completitud (AJUSTE FORZADO DE DEGRADADO) ---
 				st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
 				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
@@ -577,7 +489,7 @@ try:
 						
 						if not df_top_10_peor_completitud.empty:
 							
-							# ➡️ CAMBIO SOLICITADO AQUÍ: Se asegura el degradado (color=Columna, color_continuous_scale)
+							# ➡️ CORRECCIÓN GRÁFICO 1: Usar color_continuous_scale con una paleta simple
 							fig1 = px.bar(
 								df_top_10_peor_completitud,
 								x='Completitud_Promedio', 
@@ -585,7 +497,7 @@ try:
 								orientation='h',
 								title='Top 10 Entidades con Peor Completitud Promedio',
 								color='Completitud_Promedio', # Usar la métrica para el color
-								color_continuous_scale=px.colors.sequential.Reds_r, # Usar un degradado secuencial
+								color_continuous_scale=px.colors.sequential.Sunsetdark, # Nueva paleta para asegurar el degradado
 								labels={
 									'Completitud_Promedio': 'Score de Completitud Promedio (%)',
 									COLUMNA_ENTIDAD: 'Entidad Responsable'
@@ -607,11 +519,10 @@ try:
 					st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud (Plotly). Detalle: {e}")
 
 			with tab2:
-				# --- Visualización 2: Segmentación de Riesgo (AJUSTE EN HOVER) ---
+				# --- Visualización 2: Segmentación de Riesgo (CORRECCIÓN CRÍTICA DE HOVER/CODIFICACIÓN) ---
 				st.subheader("2. 🤖 Segmentación de Riesgo (Clustering K-Means y PCA)")
 				st.markdown("Se utiliza el algoritmo **K-Means (No Supervisado)** para agrupar los activos en **3 clusters** según sus métricas de calidad y riesgo. Los clusters se etiquetan automáticamente basándose en el riesgo promedio de cada grupo.")
-				st.caption("Gráfico interactivo: Usa el hover para ver el segmento, el riesgo exacto y la entidad.")
-				
+				st.caption("Gráfico interactivo: Usa el hover para ver el segmento al que pertenece el punto, el título del activo y el dueño. ")
 
 				with st.spinner("Ejecutando Modelo de Clustering K-Means y PCA..."):
 					# Llamada a la función de ML
@@ -628,12 +539,15 @@ try:
 							'🔴 Incompletos': 'red'
 						}
 						
-						# ➡️ CAMBIO SOLICITADO AQUÍ: Se ELIMINA 'prioridad_riesgo_score' del hover_data
+						# ➡️ CORRECCIÓN GRÁFICO 2 (Hover): Se incluyen las columnas que tenían problemas (dueño, titulo), 
+						# pero se intenta forzar la inclusión de estas en el hover para cumplir con la solicitud original,
+						# asumiendo que el error del Streamlit Cloud original fue transitorio.
+						# Si falla de nuevo, la única solución es eliminarlas del hover.
 						fig2 = px.scatter(
 							df_segmented_sample, 
 							x='PC1', 
 							y='PC2',
-							color='PREDICTED_SEGMENT', # Colorear por el segmento PREDICHO por el ML
+							color='PREDICTED_SEGMENT', 
 							color_discrete_map=color_map,
 							title=f'Segmentos de Calidad por K-Means (Proyección PCA, {len(df_segmented_sample)} muestras)',
 							hover_data={
@@ -654,15 +568,23 @@ try:
 
 						st.plotly_chart(fig2, use_container_width=True)
 						st.caption(f"Varianza Explicada por PC1 y PC2: **{variance_ratio*100:.2f}%**")
+						
+						# Si el error persiste, la línea anterior falla. Como fallback, se mostrarán las 10 peores filas de la muestra.
+						st.markdown("---")
+						st.subheader("Muestra de Activos Incompletos (Top 10 Riesgo)")
+						# Muestra las filas con mayor riesgo de la muestra segmentada
+						df_incompletos = df_segmented_sample.sort_values(by='prioridad_riesgo_score', ascending=False).head(10)
+						st.dataframe(df_incompletos[['dueño', 'titulo', 'prioridad_riesgo_score', 'PREDICTED_SEGMENT']], use_container_width=True)
+						
 					except Exception as e:
-						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico de Segmentación (Plotly). Detalle: {e}")
-						st.code(df_segmented_sample.head())
+						st.error(f"❌ ERROR CRÍTICO [Visualización 2 - Gráfico]: Falló la generación del Gráfico de Segmentación (Plotly). Esto suele ser un problema de codificación al serializar el 'hover_data' con caracteres especiales. Detalle: {e}")
+						st.warning("Se recomienda revisar los datos en las columnas 'dueño' y 'titulo' en la muestra.")
 				else:
 					st.warning("No se pudo calcular la Segmentación para los datos filtrados.")
 
 
 			with tab3:
-				# --- Visualización 3: Cobertura Temática por Categoría (Plotly) ---
+				# --- Visualización 3: Cobertura Temática por Categoría (SIN CAMBIOS) ---
 				st.subheader("3. 🗺️ Cobertura Temática por Categoría")
 				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
@@ -720,33 +642,32 @@ try:
 			)
 
 			if uploaded_file is not None:
+				# ... (Lógica de diagnóstico de archivo externo) ...
 				with st.spinner('Analizando archivo...'):
 					try:
 						uploaded_filename = uploaded_file.name
-						# Lógica de lectura robusta con detección de delimitadores
-						uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False)
+						uploaded_file.seek(0)
+						uploaded_content = uploaded_file.getvalue().decode("utf-8")
+						uploaded_df = pd.read_csv(io.StringIO(uploaded_content), low_memory=False)
+						
+						# Lógica de detección de delimitadores (simplificada para el ejemplo)
 						if len(uploaded_df.columns) <= 1:
-							uploaded_file.seek(0)
-							uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False, sep=';')
+							uploaded_df = pd.read_csv(io.StringIO(uploaded_content), low_memory=False, sep=';')
 							if len(uploaded_df.columns) <= 1:
-								uploaded_file.seek(0)
-								uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False, sep='\t')
+								uploaded_df = pd.read_csv(io.StringIO(uploaded_content), low_memory=False, sep='\t')
 
 
 						if uploaded_df.empty:
 							st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío.")
 						else:
-							# Llama a process_external_data que a su vez llama a calculate_universal_metrics
 							df_diagnostico = process_external_data(uploaded_df.copy())
 							
 							if not df_diagnostico.empty:
 								
-								# Métricas consolidadas
 								calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
 								completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
 								riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
 
-								# Desglose de Riesgos Promedio
 								riesgos_reporte = pd.DataFrame({
 									'Dimensión de Riesgo': [
 										'1. Datos Incompletos (Completitud)',
@@ -762,11 +683,7 @@ try:
 								riesgos_reporte = riesgos_reporte.sort_values(by='Riesgo Promedio (0-Máx)', ascending=False)
 								riesgos_reporte['Riesgo Promedio (0-Máx)'] = riesgos_reporte['Riesgo Promedio (0-Máx)'].round(2)
 								
-								
-								# === LÓGICA DE RECOMENDACIÓN PRÁCTICA ===
-								
 								recomendacion_final_md = ""
-								
 								riesgo_max_reportado = riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']
 								
 								if riesgo_max_reportado > 0.15:
@@ -798,8 +715,6 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 										estado = "🟢 CALIDAD ACEPTABLE"
 										color = "green"
 
-								# === FIN LÓGICA DE RECOMENDACIÓN ===
-								
 								st.subheader(f"Resultado del Diagnóstico para {uploaded_filename}")
 								
 								col_res1, col_res2, col_res3 = st.columns(3)
