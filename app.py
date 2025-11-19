@@ -16,7 +16,7 @@ import plotly.express as px
 # --- Importaciones para el Clustering Dinámico/Clasificación (ML) ---
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-# *** CAMBIO CLAVE: CLUSTERING NO SUPERVISADO (K-MEANS) ***
+# *** CLUSTERING NO SUPERVISADO (K-MEANS) ***
 from sklearn.cluster import KMeans 
 # --- Fin de Importaciones para el Clustering Dinámico/Clasificación (ML) ---
 
@@ -30,6 +30,8 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 # CRITERIO DE RIESGO
 UMBRAL_RIESGO_ALTO = 3.0 
+# CRITERIO DE COMPLETITUD (AJUSTADO DE 85% A 70%)
+UMBRAL_COMPLETITUD_BAJA = 70.0 
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0 	
@@ -44,7 +46,7 @@ RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5
 GEMINI_API_SECRET_VALUE = "Aiza"
 
 # =================================================================
-# 1. Funciones de Carga y Procesamiento
+# 1. Funciones de Carga y Procesamiento (SIN CAMBIOS FUNCIONALES AQUÍ)
 # =================================================================
 
 @st.cache_data
@@ -89,7 +91,7 @@ def calculate_universal_metrics(df):
 	# --- 1. COMPLETITUD: Datos por Fila (Densidad) ---
 	df['datos_por_fila_score'] = (df.notna().sum(axis=1) / n_cols) * 100
 	df['riesgo_datos_incompletos'] = np.where(
-		df['datos_por_fila_score'] < 70, PENALIZACION_DATOS_INCOMPLETOS, 0.0
+		df['datos_por_fila_score'] < UMBRAL_COMPLETITUD_BAJA, PENALIZACION_DATOS_INCOMPLETOS, 0.0
 	)
 
 	# --- 2. CONSISTENCIA: Mezcla de Tipos ---
@@ -163,8 +165,8 @@ def generate_specific_recommendation(risk_dimension):
 	
 	# 1. Datos Incompletos (Completitud)
 	if 'Datos Incompletos' in risk_dimension:
-		return """
-**Identificación:** Localiza las columnas o filas con un alto porcentaje de valores **Nulos (NaN)**. El umbral de alerta se activa si el promedio de datos por fila es **menor al 70%**.
+		return f"""
+**Identificación:** Localiza las columnas o filas con un alto porcentaje de valores **Nulos (NaN)**. El umbral de alerta se activa si el promedio de datos por fila es **menor al {UMBRAL_COMPLETITUD_BAJA:.0f}%**.
 
 **Acción:** Revisa los procesos de ingesta de datos. Si el campo es **obligatorio**, asegúrate de que todos los registros lo contengan. Si el campo es **opcional**, considera si es crucial para el análisis antes de llenarlo con un valor por defecto.
 		"""
@@ -193,9 +195,6 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 	"""
 	Segmenta activos en N_CLUSTERS grupos (K-Means) usando los scores de riesgo,
 	y aplica PCA para visualización interactiva con Plotly.
-	
-	NOTA: Mantenemos el nombre de la función original para evitar romper la referencia
-	en el código principal de Streamlit.
 	"""
 	
 	# Features que definen el estado de calidad/riesgo
@@ -367,7 +366,7 @@ try:
 	if df_analisis_completo.empty:
 		st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
 	else:
-		# 🚀 PASO CLAVE AÑADIDO: CALCULAR MÉTRICAS UNIVERSALES EN EL DF PRINCIPAL
+		# 🚀 PASO CLAVE: CALCULAR MÉTRICAS UNIVERSALES EN EL DF PRINCIPAL
 		df_analisis_completo = calculate_universal_metrics(df_analisis_completo.copy())
 		
 		st.success(f'✅ Archivo pre-procesado y métricas base cargadas. Total de activos: **{len(df_analisis_completo)}**')
@@ -397,7 +396,6 @@ try:
 				col1.metric("Activos Totales", total_activos)
 				
 				# Comprobaciones para las métricas
-				# 'completitud_score' y 'prioridad_riesgo_score' ahora deberían existir
 				completitud_promedio_disp = f"{df_entidad_seleccionada['completitud_score'].mean():.2f}%" if 'completitud_score' in df_entidad_seleccionada.columns else "N/A"
 				riesgo_promedio_disp = f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}" if 'prioridad_riesgo_score' in df_entidad_seleccionada.columns else "N/A"
 				antiguedad_promedio_disp = f"{df_entidad_seleccionada['antiguedad_datos_dias'].mean():.0f} días" if 'antiguedad_datos_dias' in df_entidad_seleccionada.columns else "N/A"
@@ -468,7 +466,7 @@ try:
 			
 			st.markdown("---")
 
-			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades ---
+			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (AJUSTE EN UMBRAL) ---
 			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 
 			st.info(f"""
@@ -476,7 +474,7 @@ try:
 				* 🔴 **Riesgo Promedio** > **{UMBRAL_RIESGO_ALTO:.1f}** (Prioridad Máxima).
 				* 🔴 **%_Incumplimiento** > **20%** (Problema Operacional).
 				* 🔴 **Antigüedad Promedio** > **180 días** (Riesgo de Obsolescencia).
-				* 🔴 **Completitud Promedio** < **85%** (Riesgo de Usabilidad).
+				* 🔴 **Completitud Promedio** < **{UMBRAL_COMPLETITUD_BAJA:.0f}%** (Riesgo de Usabilidad).
 			""")
 			
 			# Asegurar que existan las columnas clave para el resumen antes de agrupar
@@ -497,7 +495,7 @@ try:
 				resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
 				
 				
-				# --- FUNCIÓN DE ESTILO ---
+				# --- FUNCIÓN DE ESTILO (AJUSTADA) ---
 				def highlight_metrics(row):
 					"""Aplica el estilo de color a toda la fila según las métricas críticas."""
 					styles = [''] * len(row)
@@ -517,8 +515,11 @@ try:
 						styles[4] = 'background-color: #f79999' # Rojo claro
 
 					# 4. Completitud Promedio (Columna 3)
-					if row['Completitud_Promedio'] < 85:
+					# ➡️ CAMBIO SOLICITADO AQUÍ: UMBLAR A 70%
+					if row['Completitud_Promedio'] < UMBRAL_COMPLETITUD_BAJA:
 						styles[3] = 'background-color: #f79999' # Rojo claro
+					else:
+						styles[3] = 'background-color: #a9dfbf' # Verde claro
 						
 					return styles
 
@@ -542,7 +543,7 @@ try:
 						'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable"),
 						'Activos_Totales': st.column_config.NumberColumn("Activos Totales"),
 						'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
-						'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%", help="Rojo < 85%."),
+						'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%", help=f"Rojo < {UMBRAL_COMPLETITUD_BAJA:.0f}%."),
 						'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d", help="Rojo > 180 días."),
 						'Incumplimiento_Absoluto': st.column_config.NumberColumn("Activos en Incumplimiento (Count)"),
 						'%_Incumplimiento': st.column_config.TextColumn("% Incumplimiento", help="Rojo > 20%")
@@ -559,7 +560,7 @@ try:
 			tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Segmentación (Clustering K-Means)", "3. Cobertura Temática"])
 
 			with tab1:
-				# --- Visualización 1: Ranking de Completitud (Plotly) ---
+				# --- Visualización 1: Ranking de Completitud (Plotly - AJUSTE EN COLOR) ---
 				st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
 				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
@@ -576,14 +577,15 @@ try:
 						
 						if not df_top_10_peor_completitud.empty:
 							
+							# ➡️ CAMBIO SOLICITADO AQUÍ: Se asegura el degradado (color=Columna, color_continuous_scale)
 							fig1 = px.bar(
 								df_top_10_peor_completitud,
 								x='Completitud_Promedio', 
 								y=COLUMNA_ENTIDAD,
 								orientation='h',
 								title='Top 10 Entidades con Peor Completitud Promedio',
-								color='Completitud_Promedio',
-								color_continuous_scale=px.colors.sequential.Reds_r,
+								color='Completitud_Promedio', # Usar la métrica para el color
+								color_continuous_scale=px.colors.sequential.Reds_r, # Usar un degradado secuencial
 								labels={
 									'Completitud_Promedio': 'Score de Completitud Promedio (%)',
 									COLUMNA_ENTIDAD: 'Entidad Responsable'
@@ -605,11 +607,12 @@ try:
 					st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud (Plotly). Detalle: {e}")
 
 			with tab2:
-				# --- Visualización 2: Segmentación de Riesgo (¡CLUSTERING K-MEANS!) ---
+				# --- Visualización 2: Segmentación de Riesgo (AJUSTE EN HOVER) ---
 				st.subheader("2. 🤖 Segmentación de Riesgo (Clustering K-Means y PCA)")
 				st.markdown("Se utiliza el algoritmo **K-Means (No Supervisado)** para agrupar los activos en **3 clusters** según sus métricas de calidad y riesgo. Los clusters se etiquetan automáticamente basándose en el riesgo promedio de cada grupo.")
-				st.caption("Gráfico interactivo: Usa el hover para ver el segmento, el riesgo exacto y la entidad. ")
+				st.caption("Gráfico interactivo: Usa el hover para ver el segmento, el riesgo exacto y la entidad.")
 				
+
 				with st.spinner("Ejecutando Modelo de Clustering K-Means y PCA..."):
 					# Llamada a la función de ML
 					df_segmented_sample, variance_ratio, error_message = run_supervised_segmentation_pca(df_filtrado)
@@ -625,6 +628,7 @@ try:
 							'🔴 Incompletos': 'red'
 						}
 						
+						# ➡️ CAMBIO SOLICITADO AQUÍ: Se ELIMINA 'prioridad_riesgo_score' del hover_data
 						fig2 = px.scatter(
 							df_segmented_sample, 
 							x='PC1', 
@@ -635,7 +639,6 @@ try:
 							hover_data={
 								'dueño': True,
 								'titulo': True,
-								'prioridad_riesgo_score': ':.2f', # Mostrar riesgo con 2 decimales
 								'PREDICTED_SEGMENT': True,
 								'PC1': False, 
 								'PC2': False
