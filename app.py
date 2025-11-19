@@ -11,15 +11,14 @@ import warnings
 import os 
 # --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
-# --- Importación de Plotly Express (¡NUEVO!) ---
+# --- Importación de Plotly Express ---
 import plotly.express as px
-# --- Fin de Importaciones para el Agente de IA ---
-
-# --- Importaciones para el Clustering Dinámico (ML) ---
+# --- Importaciones para el Clustering Dinámico/Clasificación (ML) ---
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.cluster import MiniBatchKMeans
 from sklearn.decomposition import PCA
-# --- Fin de Importaciones para el Clustering Dinámico (ML) ---
+# *** NUEVO: Importación para Clasificación Supervisada ***
+from sklearn.tree import DecisionTreeClassifier 
+# --- Fin de Importaciones para el Clustering Dinámico/Clasificación (ML) ---
 
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
@@ -180,72 +179,74 @@ def generate_specific_recommendation(risk_dimension):
 		return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
 # =================================================================
-# FUNCIÓN CORE: CLUSTERING DINÁMICO Y PCA (SIN CAMBIOS)
+# FUNCIÓN CORE: CLASIFICACIÓN SUPERVISADA Y PCA
 # =================================================================
 
-# Parámetros por defecto para usar en la info: K=5, MAX_SAMPLE=15000
-def run_dynamic_clustering_pca(df_input, K_FIXED=5, MAX_SAMPLE_SIZE=15000):
+def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000):
 	"""
-	Ejecuta el pipeline de ML (Clustering + PCA) de forma dinámica sobre 
-	el DataFrame filtrado.
+	Segmenta activos en 3 grupos (Completos, Aceptables, Incompletos) usando
+	Clasificación Supervisada (Decision Tree) entrenado en los scores de riesgo,
+	y aplica PCA para visualización interactiva con Plotly.
 	"""
+	
+	# Comprobar columnas críticas
+	if 'antiguedad_datos_dias' not in df_input.columns:
+		return pd.DataFrame(), None, "La columna 'antiguedad_datos_dias' es necesaria para el ML y no está presente."
 	
 	if df_input.empty or len(df_input) < 10:
 		return pd.DataFrame(), None, "No hay suficientes datos (mínimo 10 filas)."
 
-	# --- 1. MUESTREO (Para rendimiento) ---
+	# --- 1. MUESTREO (Para rendimiento y visualización clara) ---
 	sample_size = min(MAX_SAMPLE_SIZE, len(df_input))
 	# Usar un índice limpio para el sample
 	df_sample = df_input.reset_index(drop=True).sample(n=sample_size, random_state=42)
 	
-	# Las columnas de riesgo/calidad ya están calculadas y son útiles para el clustering
-	PCA_COLS = ['prioridad_riesgo_score', 'datos_por_fila_score']
-	
 	# ------------------------------------------------------------
-	# 2) PREPROCESAMIENTO EFICIENTE
+	# 2) CREACIÓN DE LA VARIABLE OBJETIVO (Y) - GROUND TRUTH
 	# ------------------------------------------------------------
-	df_clean = df_sample.copy()
-
-	# Columnas que no deben ser usadas en el clustering (IDs, títulos, etc.)
-	cols_to_exclude = ['uid', 'titulo', 'descripcion', 'dueño', 'es_duplicado']
+	# Segmentos basados en el score de riesgo calculado: 'prioridad_riesgo_score'
 	
-	# Identificar columnas categóricas relevantes
-	cat_cols_filtered = [col for col in df_clean.select_dtypes(include=['object']).columns.tolist() 
-						 if col not in cols_to_exclude]
+	conditions = [
+		(df_sample['prioridad_riesgo_score'] <= 1.0),
+		(df_sample['prioridad_riesgo_score'] > 1.0) & (df_sample['prioridad_riesgo_score'] <= 2.0),
+		(df_sample['prioridad_riesgo_score'] > 2.0)
+	]
 	
-	# Aplicar Label Encoding eficiente a categóricas
-	for col in cat_cols_filtered:
-		df_clean[col] = df_clean[col].astype(str).fillna("missing")
-		le = LabelEncoder()
-		df_clean[col] = le.fit_transform(df_clean[col])
+	choices = ['🟢 Completos', '🟡 Aceptables', '🔴 Incompletos']
+	# Esta es la etiqueta de entrenamiento que el modelo debe aprender
+	df_sample['TARGET_SEGMENT'] = np.select(conditions, choices, default='Indefinido')
 
 	# ------------------------------------------------------------
-	# 3) PREPARAR DATOS PARA ML
+	# 3) PREPARACIÓN DE FEATURES (X)
 	# ------------------------------------------------------------
-	# Seleccionar todas las columnas numéricas relevantes (incluyendo las codificadas)
-	final_cols = df_clean.select_dtypes(include=np.number).columns.tolist()
 	
-	# Remover cualquier columna de score que pueda ser redundante (ej. si anomalia_score es solo -1/1)
-	final_cols_filtered = [col for col in final_cols if col not in ['anomalia_score', 'calidad_total_score']]
+	# Features que definen el estado de calidad/riesgo
+	ML_FEATURES = ['prioridad_riesgo_score', 'datos_por_fila_score', 'completitud_score', 'antiguedad_datos_dias']
 	
-	df_ml = df_clean[final_cols_filtered].fillna(0) # MiniBatchKMeans no acepta NaN
+	df_ml_features = df_sample[ML_FEATURES].fillna(0).copy()
 	
 	scaler = StandardScaler()
-	scaled_data = scaler.fit_transform(df_ml)
+	X_scaled = scaler.fit_transform(df_ml_features)
+	
+	# Preparar Y
+	y_train = df_sample['TARGET_SEGMENT']
 	
 	# ------------------------------------------------------------
-	# 4) ENTRENAMIENTO Y ASIGNACIÓN DE CLUSTERS
+	# 4) CLASIFICACIÓN SUPERVISADA (Decision Tree)
 	# ------------------------------------------------------------
-	kmeans_final = MiniBatchKMeans(n_clusters=K_FIXED, batch_size=2048, random_state=42, n_init='auto')
-	cluster_labels = kmeans_final.fit_predict(scaled_data)
-
-	df_sample["CLUSTER"] = cluster_labels
+	# Entrenamos el modelo con las características (X) para predecir los segmentos (Y)
+	model = DecisionTreeClassifier(random_state=42)
+	model.fit(X_scaled, y_train)
+	
+	# Predecir los segmentos (en un ambiente real, esto se haría en datos nuevos)
+	df_sample['PREDICTED_SEGMENT'] = model.predict(X_scaled)
 
 	# ------------------------------------------------------------
 	# 5) PCA (Visualización)
 	# ------------------------------------------------------------
+	# Usamos el mismo conjunto de características escaladas (X_scaled) para la proyección
 	pca = PCA(n_components=2)
-	points_2d = pca.fit_transform(scaled_data)
+	points_2d = pca.fit_transform(X_scaled)
 
 	df_sample['PC1'] = points_2d[:, 0]
 	df_sample['PC2'] = points_2d[:, 1]
@@ -261,7 +262,6 @@ def run_dynamic_clustering_pca(df_input, K_FIXED=5, MAX_SAMPLE_SIZE=15000):
 def setup_data_assistant(df):
 	"""
 	Configura el asistente de consulta de datos usando la API nativa de Gemini.
-	Este asistente solo analiza la estructura y una muestra de los datos.
 	"""
 	
 	st.markdown("---")
@@ -455,7 +455,7 @@ try:
 			
 			st.markdown("---")
 
-			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (SIN CAMBIOS en la lógica de estilo) ---
+			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (SIN CAMBIOS) ---
 			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 
 			# AÑADIDO: Explicación de las nuevas reglas de color
@@ -536,10 +536,10 @@ try:
 			st.markdown("---")
 			
 			# --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES ---
-			tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Visualización de Clusters (PCA Dinámico)", "3. Cobertura Temática"])
+			tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Segmentación (Clasificación Supervisada)", "3. Cobertura Temática"])
 
 			with tab1:
-				# --- Visualización 1: Ranking de Completitud (¡USANDO PLOTLY!) ---
+				# --- Visualización 1: Ranking de Completitud (Plotly) (SIN CAMBIOS) ---
 				st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
 				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
@@ -555,7 +555,7 @@ try:
 					
 					if not df_top_10_peor_completitud.empty:
 						
-						# *** NUEVO: Usar Plotly Express ***
+						# *** Usar Plotly Express ***
 						fig1 = px.bar(
 							df_top_10_peor_completitud,
 							x='Completitud_Promedio', 
@@ -584,56 +584,61 @@ try:
 					st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud (Plotly). Detalle: {e}")
 
 			with tab2:
-				# --- Visualización 2: Clustering y PCA Dinámico (SIN CAMBIOS) ---
-				st.subheader("2. 🧩 Visualización de Grupos de Activos (Clustering PCA Dinámico)")
-				st.markdown("El Clustering (**MiniBatchKMeans**) y la reducción de dimensionalidad (**PCA**) se ejecutan **en vivo** sobre el conjunto de datos filtrado para encontrar patrones de riesgo.")
+				# --- Visualización 2: Segmentación de Riesgo (¡CLASIFICACIÓN SUPERVISADA!) ---
+				st.subheader("2. 🤖 Segmentación de Riesgo (Clasificación Supervisada y PCA)")
+				st.markdown("Se utiliza un modelo de **Clasificación Supervisada (Árbol de Decisión)**, entrenado en las métricas de calidad y riesgo, para predecir si un activo cae en el segmento **Completos**, **Aceptables** o **Incompletos**.")
+				st.caption("Gráfico interactivo: Usa el hover para ver el segmento predicho, el riesgo exacto y la entidad.")
 				
-				# Obtener los valores por defecto del clustering para mostrarlos en la información
-				K_DEFAULT = 5
-				MAX_SAMPLE_DEFAULT = 15000
-				st.info(f"Cálculo: **MiniBatchKMeans (K={K_DEFAULT}), Muestra Máx.={MAX_SAMPLE_DEFAULT} filas**.")
-				
-				with st.spinner("Ejecutando MiniBatchKMeans y PCA sobre datos filtrados..."):
-					df_clustered_sample, variance_ratio, error_message = run_dynamic_clustering_pca(df_filtrado, K_FIXED=K_DEFAULT, MAX_SAMPLE_SIZE=MAX_SAMPLE_DEFAULT)
+				with st.spinner("Ejecutando Modelo de Clasificación Supervisada y PCA..."):
+					# Llamada a la función de ML Supervisado
+					df_segmented_sample, variance_ratio, error_message = run_supervised_segmentation_pca(df_filtrado)
 				
 				if error_message:
 					st.warning(f"⚠️ {error_message}")
-				elif not df_clustered_sample.empty:
+				elif not df_segmented_sample.empty:
 					try:
-						fig2, ax2 = plt.subplots(figsize=(10, 6))
+						# Definir el mapeo de colores
+						color_map = {
+							'🟢 Completos': 'green', 
+							'🟡 Aceptables': 'gold', 
+							'🔴 Incompletos': 'red'
+						}
 						
-						# Asegurar que el número de clusters sea suficiente para la escala de color
-						num_clusters = df_clustered_sample['CLUSTER'].nunique()
-						cmap_name = 'tab10' if num_clusters <= 10 else 'gist_rainbow'
-
-						scatter = ax2.scatter(
-							x=df_clustered_sample['PC1'], 
-							y=df_clustered_sample['PC2'], 
-							c=df_clustered_sample['CLUSTER'], 
-							cmap=cmap_name, 
-							s=20,
-							alpha=0.7
+						fig2 = px.scatter(
+							df_segmented_sample, 
+							x='PC1', 
+							y='PC2',
+							color='PREDICTED_SEGMENT', # Colorear por el segmento PREDICHO por el ML
+							color_discrete_map=color_map,
+							title=f'Segmentos Predichos por ML (Proyección PCA, {len(df_segmented_sample)} muestras)',
+							hover_data={
+								'dueño': True,
+								'titulo': True,
+								'prioridad_riesgo_score': ':.2f', # Mostrar riesgo con 2 decimales
+								'PREDICTED_SEGMENT': True,
+								'PC1': False, 
+								'PC2': False
+							}
 						)
 						
-						ax2.set_title(f'Clusters (PCA 2D, {len(df_clustered_sample)} filas)', fontsize=16)
-						ax2.set_xlabel("Componente Principal 1 (PC1)", fontsize=12)
-						ax2.set_ylabel("Componente Principal 2 (PC2)", fontsize=12)
-						
-						# Configuración de la Colorbar para que muestre números enteros de cluster
-						bounds = np.arange(num_clusters + 1)
-						cbar = fig2.colorbar(scatter, ax=ax2, boundaries=bounds - 0.5, ticks=bounds[:-1])
-						cbar.set_label("Etiqueta de Cluster")
-						
-						st.pyplot(fig2) # Se mantiene Matplotlib para PCA/ML
+						fig2.update_traces(marker=dict(size=8, opacity=0.8))
+						fig2.update_layout(
+							xaxis_title=f"Componente Principal 1 (PC1)",
+							yaxis_title=f"Componente Principal 2 (PC2)",
+							legend_title="Segmento Predicho (ML)"
+						)
+
+						st.plotly_chart(fig2, use_container_width=True)
 						st.caption(f"Varianza Explicada por PC1 y PC2: **{variance_ratio*100:.2f}%**")
 					except Exception as e:
-						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico PCA. Detalle: {e}")
+						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico de Segmentación (Plotly). Detalle: {e}")
+						st.code(df_segmented_sample.head())
 				else:
-					st.warning("No se pudo calcular el Clustering para los datos filtrados.")
+					st.warning("No se pudo calcular la Segmentación para los datos filtrados.")
 
 
 			with tab3:
-				# --- Visualización 3: Cobertura Temática por Categoría (¡USANDO PLOTLY!) ---
+				# --- Visualización 3: Cobertura Temática por Categoría (Plotly) (SIN CAMBIOS) ---
 				st.subheader("3. 🗺️ Cobertura Temática por Categoría")
 				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
@@ -650,7 +655,7 @@ try:
 
 					if not conteo_categoria_df.empty:
 						
-						# *** NUEVO: Usar Plotly Express ***
+						# *** Usar Plotly Express ***
 						fig3 = px.bar(
 							conteo_categoria_df,
 							x='Numero de Activos', 
