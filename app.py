@@ -30,19 +30,16 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 # CRITERIO DE RIESGO
 UMBRAL_RIESGO_ALTO = 3.0 
-# 🟢 CAMBIO CRÍTICO 1: Nuevo Umbral de Completitud
+# Nuevo Umbral de Completitud
 UMBRAL_COMPLETITUD_BAJA = 70.0 
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0 	
 PENALIZACION_INCONSISTENCIA_TIPO = 0.5 	 
 PENALIZACION_DUPLICADO = 1.0 	 	 	 
-# RIESGO MÁXIMO TEÓRICO CORREGIDO: 2.0 + 0.5 + 1.0 = 3.5
 RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5 
 
 # ⚠️ CLAVE SECRETA DE GEMINI
-# REEMPLAZA ESTE VALOR con tu clave secreta real de Gemini (comienza con AIza...).
-# NOTA: En un entorno de producción de Streamlit Cloud, usa st.secrets["GEMINI_API_KEY"]
 GEMINI_API_SECRET_VALUE = "Aiza"
 
 # =================================================================
@@ -89,7 +86,6 @@ def calculate_universal_metrics(df):
 	
 	# --- 1. COMPLETITUD: Datos por Fila (Densidad) ---
 	df['datos_por_fila_score'] = (df.notna().sum(axis=1) / n_cols) * 100
-	# 🟢 CAMBIO CRÍTICO 1 APLICADO EN LA FUNCIÓN
 	df['riesgo_datos_incompletos'] = np.where(
 		df['datos_por_fila_score'] < UMBRAL_COMPLETITUD_BAJA, PENALIZACION_DATOS_INCOMPLETOS, 0.0
 	)
@@ -98,7 +94,6 @@ def calculate_universal_metrics(df):
 	df['riesgo_consistencia_tipo'] = 0.0
 	for col in df.select_dtypes(include='object').columns:
 		inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
-		# Aplicar penalización solo si hay inconsistencias en esa columna
 		if inconsistencies.any():
 			df.loc[inconsistencies, 'riesgo_consistencia_tipo'] = PENALIZACION_INCONSISTENCIA_TIPO
 		
@@ -143,7 +138,6 @@ def process_external_data(df):
 	
 	# --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD (Para el diagnóstico rápido) ---
 	
-	# ⚠️ CORRECCIÓN DE ROBUSTEZ: Añadir stub de métricas faltantes si no existen en el archivo externo
 	if 'completitud_score' not in df.columns:
 		df['completitud_score'] = df['datos_por_fila_score'] 
 	if 'antiguedad_datos_dias' not in df.columns:
@@ -206,7 +200,6 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 
 	# --- 1. MUESTREO (Para rendimiento y visualización clara) ---
 	sample_size = min(MAX_SAMPLE_SIZE, len(df_input))
-	# Se asegura que 'dueño' y 'titulo' estén en la muestra para el hover
 	df_sample = df_input[['dueño', 'titulo'] + ML_FEATURES].reset_index(drop=True).sample(n=sample_size, random_state=42)
 	
 	# ------------------------------------------------------------
@@ -257,7 +250,6 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 def setup_data_assistant(df):
 	"""
 	Configura el asistente de consulta de datos usando la API nativa de Gemini.
-	(Se mantiene sin cambios, sólo necesita la definición para que el dashboard funcione)
 	"""
 	
 	st.markdown("---")
@@ -327,7 +319,7 @@ def setup_data_assistant(df):
 					],
 					config=genai.types.GenerateContentConfig(
 						system_instruction=system_prompt,
-						temperature=0.0 # Bajar la temperatura para respuestas más determinísticas
+						temperature=0.0
 					)
 				)
 				
@@ -352,7 +344,6 @@ try:
 	if df_analisis_completo.empty:
 		st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
 	else:
-		# 🚀 PASO CLAVE: CALCULAR MÉTRICAS UNIVERSALES EN EL DF PRINCIPAL
 		df_analisis_completo = calculate_universal_metrics(df_analisis_completo.copy())
 		
 		st.success(f'✅ Archivo pre-procesado y métricas base cargadas. Total de activos: **{len(df_analisis_completo)}**')
@@ -453,9 +444,9 @@ try:
 			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades ---
 			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 			
-			# 🟢 CAMBIO CRÍTICO 1 APLICADO EN LA DESCRIPCIÓN
+			# Se actualiza la descripción para reflejar que sólo se usa color de texto
 			st.info(f"""
-				La tabla usa color condicional para identificar problemas de calidad rápidamente:
+				La tabla usa **color de texto** condicional para identificar problemas de calidad rápidamente:
 				* 🔴 **Riesgo Promedio** > **{UMBRAL_RIESGO_ALTO:.1f}** (Prioridad Máxima).
 				* 🔴 **%_Incumplimiento** > **20%** (Problema Operacional).
 				* 🔴 **Antigüedad Promedio** > **180 días** (Riesgo de Obsolescencia).
@@ -479,38 +470,39 @@ try:
 				resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
 				
 				
-				# 🟢 CAMBIO CRÍTICO 2: FUNCIÓN DE ESTILO (SOLO COLOR DE TEXTO)
+				# 🟢 CAMBIO CRÍTICO: Nueva función de estilo para usar SÓLO color de texto
 				def highlight_metrics_text_color(s):
-					"""Aplica color de texto (rojo/verde) según las métricas críticas."""
-					is_riesgo_alto = s['Riesgo_Promedio'] > UMBRAL_RIESGO_ALTO
-					is_completitud_baja = s['Completitud_Promedio'] < UMBRAL_COMPLETITUD_BAJA
-					
+					"""Aplica color de texto (rojo/verde) a TODAS las métricas críticas."""
 					styles = [''] * len(s)
-
-					# Riesgo Promedio (Columna 2)
-					if is_riesgo_alto:
+					
+					# 1. Riesgo Promedio (Columna 2)
+					if s['Riesgo_Promedio'] > UMBRAL_RIESGO_ALTO:
 						styles[2] = 'color: red; font-weight: bold;'
 					else:
 						styles[2] = 'color: green; font-weight: bold;'
 
-					# Completitud Promedio (Columna 3)
-					if is_completitud_baja:
+					# 2. Completitud Promedio (Columna 3)
+					if s['Completitud_Promedio'] < UMBRAL_COMPLETITUD_BAJA:
 						styles[3] = 'color: red; font-weight: bold;'
 					else:
 						styles[3] = 'color: green; font-weight: bold;'
 						
-					# % Incumplimiento (Columna 6) y Antigüedad (Columna 4) siguen usando color de fondo para la consistencia del diagnóstico
-					if s['%_Incumplimiento'] > 20:
-						styles[6] = 'background-color: #f79999' # Rojo claro de fondo
+					# 3. Antigüedad Promedio (Columna 4) - Aplicar color de texto
 					if s['Antiguedad_Promedio_Dias'] > 180:
-						styles[4] = 'background-color: #f79999' # Rojo claro de fondo
+						styles[4] = 'color: red; font-weight: bold;'
+					# No hay "verde" para Antigüedad, solo es blanco (default) si es baja.
+
+					# 4. % Incumplimiento (Columna 6) - Aplicar color de texto
+					if s['%_Incumplimiento'] > 20:
+						styles[6] = 'color: red; font-weight: bold;'
+					# No hay "verde" para Incumplimiento, solo es blanco (default) si es bajo.
 						
 					return styles
 
 
 				# Aplicar la función de estilo a todas las filas
 				styled_df = resumen_entidades_busqueda.style.apply(
-					highlight_metrics_text_color, # 🟢 Nueva función de estilo
+					highlight_metrics_text_color,
 					axis=1
 				).format({
 					'Riesgo_Promedio': '{:.2f}',
@@ -526,12 +518,11 @@ try:
 					column_config={
 						'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable"),
 						'Activos_Totales': st.column_config.NumberColumn("Activos Totales"),
-						# 🟢 Cambio de mensaje de ayuda
-						'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}. (Texto Rojo)"),
-						'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%", help=f"Rojo < {UMBRAL_COMPLETITUD_BAJA:.0f}%. (Texto Rojo)"),
-						'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d", help="Fondo Rojo > 180 días."),
+						'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
+						'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%", help=f"Rojo < {UMBRAL_COMPLETITUD_BAJA:.0f}%."),
+						'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d", help="Rojo > 180 días."),
 						'Incumplimiento_Absoluto': st.column_config.NumberColumn("Activos en Incumplimiento (Count)"),
-						'%_Incumplimiento': st.column_config.TextColumn("% Incumplimiento", help="Fondo Rojo > 20%")
+						'%_Incumplimiento': st.column_config.TextColumn("% Incumplimiento", help="Rojo > 20%")
 					},
 					hide_index=True
 				)
@@ -562,7 +553,6 @@ try:
 						
 						if not df_top_10_peor_completitud.empty:
 							
-							# 🟢 Mantenimiento del degradado (Reds_r)
 							fig1 = px.bar(
 								df_top_10_peor_completitud,
 								x='Completitud_Promedio', 
@@ -611,7 +601,6 @@ try:
 							'🔴 Incompletos': 'red'
 						}
 						
-						# Mantenemos el hover_data original para resolver el SyntaxError
 						fig2 = px.scatter(
 							df_segmented_sample, 
 							x='PC1', 
@@ -639,7 +628,7 @@ try:
 						st.plotly_chart(fig2, use_container_width=True)
 						st.caption(f"Varianza Explicada por PC1 y PC2: **{variance_ratio*100:.2f}%**")
 					except Exception as e:
-						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico de Segmentación (Plotly). Esto suele ser un problema de codificación. Detalle: {e}")
+						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico de Segmentación (Plotly). Detalle: {e}")
 						st.warning("Se recomienda revisar los datos en las columnas 'dueño' y 'titulo' en la muestra.")
 				else:
 					st.warning("No se pudo calcular la Segmentación para los datos filtrados.")
