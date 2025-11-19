@@ -10,6 +10,10 @@ from datetime import datetime
 import re 
 import warnings
 import os 
+# --- ADICIÓN: Importación para la descarga de archivos ---
+import base64
+# --- FIN ADICIÓN ---
+
 # --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
 # --- FIN DE IMPORTACIÓN DE GEMINI ---
@@ -28,7 +32,8 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 KNOWLEDGE_FILE = "knowledge_base.txt" 
 # CRITERIO DE RIESGO
-UMBRAL_RIESGO_ALTO = 5.0 # Aumentado de 3.0 a 5.0 para reflejar el nuevo riesgo avanzado
+# 🔄 MODIFICACIÓN 1: UMBRAL_RIESGO_ALTO cambiado a 3.5 según la solicitud del usuario
+UMBRAL_RIESGO_ALTO = 3.5 
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0  
@@ -148,7 +153,7 @@ def apply_advanced_risk_checks(df):
     df_copy = df.copy()
     
     # 1. Detección de Inconsistencia de Metadatos (Proxy: Riesgo alto A PESAR de ser reciente)
-    # Asume: Si un activo tiene un score de riesgo UNIVERSAL alto (> 5.0, el nuevo umbral) pero se actualizó 
+    # Asume: Si un activo tiene un score de riesgo UNIVERSAL alto (> UMBRAL_RIESGO_ALTO) pero se actualizó 
     # hace menos de 1 año (< 365 días), hay una posible inconsistencia entre su estado reportado 
     # (reciente) y su calidad medida (pobre).
     
@@ -195,6 +200,197 @@ def apply_advanced_risk_checks(df):
     return df_copy
 # --- FIN NUEVA FUNCIÓN ---
 
+# 🚀 ADICIÓN 2: Función de Generación de Reporte HTML
+def generate_report_html(df_filtrado, umbral_riesgo):
+    """
+    Genera el contenido HTML del reporte final que compila insights, tablas y visualizaciones.
+    """
+    
+    # 1. Preparación de Datos
+    
+    # Datos Principales
+    total_activos = len(df_filtrado)
+    riesgo_promedio_general = df_filtrado['prioridad_riesgo_score'].mean()
+    completitud_promedio_general = df_filtrado['completitud_score'].mean()
+    
+    # Top Activos de Alto Riesgo (Para Riesgos y Activos Prioritarios)
+    df_top_riesgo = df_filtrado.sort_values(by='prioridad_riesgo_score', ascending=False).head(10).copy()
+    df_top_riesgo = df_top_riesgo[['titulo', 'prioridad_riesgo_score', 'completitud_score', 'dueño']].rename(columns={'prioridad_riesgo_score': 'Riesgo Score', 'completitud_score': 'Completitud Score', 'dueño': 'Entidad'}).reset_index(drop=True)
+    df_top_riesgo['Riesgo'] = df_top_riesgo['Riesgo Score'].apply(lambda x: '🔴 Alto' if x > umbral_riesgo else '🟢 Bajo/Medio')
+    
+    # Riesgo por Entidad (Para Recomendaciones)
+    df_riesgo_entidad = df_filtrado.groupby('dueño').agg(
+        Activos_Totales=('uid', 'count'),
+        Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
+        Completitud_Promedio=('completitud_score', 'mean')
+    ).reset_index().sort_values(by='Riesgo_Promedio', ascending=False).head(5)
+    
+    # Riesgo por Categoría (Para Recomendaciones por Sector)
+    df_riesgo_categoria = df_filtrado.groupby('categoria').agg(
+        Activos_Totales=('uid', 'count'),
+        Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
+        Completitud_Promedio=('completitud_score', 'mean')
+    ).reset_index().sort_values(by='Riesgo_Promedio', ascending=False).head(5)
+
+    # 2. Lógica del K-Means (Para Activos Prioritarios)
+    cluster_html = "No se pudo generar el clustering (menos de 3 activos)."
+    df_activos_prioritarios = pd.DataFrame()
+    
+    if len(df_filtrado) >= 3:
+        features = ['prioridad_riesgo_score', 'completitud_score']
+        df_cluster = df_filtrado[features].dropna().copy()
+        
+        scaler = StandardScaler()
+        data_scaled = scaler.fit_transform(df_cluster)
+        kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+        df_cluster['cluster'] = kmeans.fit_predict(data_scaled)
+        
+        centers_scaled = kmeans.cluster_centers_
+        centers = scaler.inverse_transform(centers_scaled)
+        centers_df = pd.DataFrame(centers, columns=features)
+        centers_df['sort_score'] = centers_df['completitud_score'] - centers_df['prioridad_riesgo_score']
+        centers_df = centers_df.sort_values(by='sort_score', ascending=False).reset_index()
+        
+        cluster_map = {}
+        # Los clusters se mapean por su "sort_score": Alto (0) -> Medio (1) -> Bajo (2)
+        cluster_map[centers_df.loc[0, 'index']] = '🟢 Completo/Riesgo Bajo'
+        cluster_map[centers_df.loc[1, 'index']] = '🟡 Aceptable/Mejora Necesaria'
+        cluster_map[centers_df.loc[2, 'index']] = '🔴 Incompleto/Riesgo Alto'
+
+        df_cluster['Calidad_Cluster'] = df_cluster['cluster'].map(cluster_map)
+        
+        df_viz2 = df_cluster.merge(df_filtrado[['titulo', 'dueño', 'categoria']], left_index=True, right_index=True)
+        
+        # Filtro de activos prioritarios
+        df_activos_prioritarios = df_viz2[df_viz2['Calidad_Cluster'] == '🔴 Incompleto/Riesgo Alto'].sort_values(by='prioridad_riesgo_score', ascending=False).head(10)[['titulo', 'dueño', 'prioridad_riesgo_score', 'completitud_score']].rename(columns={'prioridad_riesgo_score': 'Riesgo Score', 'completitud_score': 'Completitud Score', 'dueño': 'Entidad'})
+        
+        # Generar figura K-Means (para incrustar)
+        color_map = {
+            '🟢 Completo/Riesgo Bajo': 'green',
+            '🟡 Aceptable/Mejora Necesaria': 'orange',
+            '🔴 Incompleto/Riesgo Alto': 'red'
+        }
+        fig2 = px.scatter(
+            df_viz2, 
+            x='prioridad_riesgo_score', 
+            y='completitud_score', 
+            color='Calidad_Cluster',
+            color_discrete_map=color_map,
+            hover_data=['titulo', 'dueño', 'categoria'],
+            title='Segmentación de Activos por Calidad (K-Means)',
+            labels={
+                'prioridad_riesgo_score': 'Riesgo Promedio del Activo (Peor →)', 
+                'completitud_score': 'Completitud Score del Activo (Mejor ↑)'
+            }
+        )
+        cluster_html = fig2.to_html(full_html=False, include_plotlyjs='cdn')
+        
+    # 3. Generar Treemap (para incrustar)
+    treemap_html = "No se pudo generar el Treemap (datos insuficientes)."
+    if 'categoria' in df_filtrado.columns and len(df_filtrado) > 0 and not df_filtrado['categoria'].isnull().all():
+        df_treemap = df_filtrado.groupby('categoria').agg(
+            Num_Activos=('uid', 'count'),
+            Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
+        ).reset_index()
+        fig_treemap = px.treemap(
+            df_treemap,
+            path=['categoria'],
+            values='Num_Activos',
+            color='Riesgo_Promedio', 
+            color_continuous_scale=px.colors.sequential.Reds, 
+            title='Matriz Treemap: Cobertura Temática vs. Riesgo Promedio'
+        )
+        treemap_html = fig_treemap.to_html(full_html=False, include_plotlyjs='cdn')
+
+    # 4. Construcción del HTML
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Reporte de Análisis de Inventario</title>
+        <meta charset="utf-8">
+        <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+        <style>
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; }}
+            h1 {{ color: #004d99; border-bottom: 3px solid #004d99; padding-bottom: 10px; }}
+            h2 {{ color: #333; border-bottom: 2px solid #ccc; padding-bottom: 5px; margin-top: 30px; }}
+            h3 {{ color: #555; margin-top: 20px; }}
+            .metric {{ background-color: #f0f8ff; border: 1px solid #cceeff; padding: 15px; border-radius: 5px; margin-bottom: 15px; display: inline-block; width: 30%; margin-right: 1%; }}
+            .high-risk {{ color: red; font-weight: bold; }}
+            .low-risk {{ color: green; font-weight: bold; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background-color: #f2f2f2; }}
+            .recommendation {{ background-color: #fffacd; border-left: 5px solid #ffcc00; padding: 15px; margin-top: 15px; }}
+        </style>
+    </head>
+    <body>
+
+    <h1>📋 Reporte Final de Análisis de Inventario de Datos</h1>
+    <p><strong>Fecha de Generación:</strong> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+    <p><strong>Umbral de Riesgo Alto (Crítico):</strong> > {umbral_riesgo:.1f}</p>
+
+    <h2>📊 Hallazgos clave</h2>
+    <div class="metric">
+        <h3>Activos Analizados</h3>
+        <p>{total_activos}</p>
+    </div>
+    <div class="metric">
+        <h3>Riesgo Promedio General</h3>
+        <p class="{'high-risk' if riesgo_promedio_general > umbral_riesgo else 'low-risk'}">{riesgo_promedio_general:.2f}</p>
+    </div>
+    <div class="metric">
+        <h3>Completitud Promedio</h3>
+        <p>{completitud_promedio_general:.2f}%</p>
+    </div>
+
+    <p>El activo con **Mayor Riesgo** es: {df_top_riesgo.iloc[0]['titulo']} (Riesgo: {df_top_riesgo.iloc[0]['Riesgo Score']:.2f}, Entidad: {df_top_riesgo.iloc[0]['Entidad']}).</p>
+    <p>La entidad con **Mayor Riesgo Promedio** es: {df_riesgo_entidad.iloc[0]['dueño']} (Riesgo Promedio: {df_riesgo_entidad.iloc[0]['Riesgo_Promedio']:.2f}).</p>
+    
+    <h2>🔥 Riesgos</h2>
+    <h3>Top 10 Activos con Mayor Riesgo</h3>
+    <p>Activos individuales con la mayor puntuación de riesgo, indicando fallas en calidad universal y avanzada.</p>
+    {df_top_riesgo[['titulo', 'Entidad', 'Riesgo Score', 'Riesgo']].to_html(index=False)}
+    
+    <h3>Top 5 Entidades con Mayor Riesgo Promedio</h3>
+    {df_riesgo_entidad.to_html(index=False, float_format=lambda x: f'{x:.2f}')}
+
+    <h2>🚨 Activos prioritarios</h2>
+    <p>Lista de activos clasificados en el cluster **"🔴 Incompleto/Riesgo Alto"** mediante K-Means Clustering. Estos requieren atención inmediata.</p>
+    {df_activos_prioritarios.to_html(index=False, float_format=lambda x: f'{x:.2f}') if not df_activos_prioritarios.empty else "<p>No se identificaron activos en el cluster de Riesgo Alto con los filtros actuales.</p>"}
+
+    <h3>Visualización de Priorización (K-Means)</h3>
+    <p>Distribución de Activos por Riesgo vs. Completitud.</p>
+    {cluster_html}
+
+    <h2>💡 Recomendaciones por sector</h2>
+    <p>Análisis de las categorías (sectores) con mayor Riesgo Promedio, indicando áreas temáticas críticas.</p>
+    
+    {df_riesgo_categoria.to_html(index=False, float_format=lambda x: f'{x:.2f}')}
+
+    <div class="recommendation">
+        <h3>Recomendación General:</h3>
+        <p>Priorizar la revisión de metadatos (completitud) y consistencia de tipos de datos en la Categoría <strong>'{df_riesgo_categoria.iloc[0]['categoria']}'</strong>, ya que presenta el mayor Riesgo Promedio ({df_riesgo_categoria.iloc[0]['Riesgo_Promedio']:.2f}).</p>
+        <p>Asegurarse de que los activos más antiguos y menos usados en esta categoría no estén generando ruido o inconsistencias silenciosas.</p>
+    </div>
+
+    <h3>Visualización de Cobertura y Riesgo (Treemap)</h3>
+    <p>El tamaño del bloque indica el número de activos y el color (rojo) indica el Riesgo Promedio.</p>
+    {treemap_html}
+    
+    </body>
+    </html>
+    """
+    return html_content
+
+def get_table_download_link(html_content, filename, text):
+    """Genera el link de descarga para el contenido HTML/PDF"""
+    b64 = base64.b64encode(html_content.encode()).decode()
+    href = f'<a href="data:text/html;base64,{b64}" download="{filename}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px;">{text}</a>'
+    return href
+# 🚀 FIN ADICIÓN 2 ---
+
 def generate_specific_recommendation(risk_dimension):
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
     
@@ -234,7 +430,7 @@ def load_knowledge_base(file_path):
         return None
 
 # =================================================================
-# 2. FUNCIÓN ROBUSTA DEL AGENTE DE IA (USANDO RAG)
+# 2. FUNCIÓN ROBUSTA DEL AGENTE DE IA (USANDO RAG) (Se mantiene igual)
 # =================================================================
 
 def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
@@ -358,6 +554,27 @@ try:
                 categories.sort()
                 categories.insert(0, "Mostrar Todos")
                 filtro_categoria = st.selectbox("Filtrar por Categoría:", categories)
+                
+            # 🚀 ADICIÓN 3: Botón de Descarga del Reporte en el Sidebar
+            st.markdown("---")
+            st.subheader("📥 Generar Reporte Final")
+            
+            if st.button("Generar y Descargar Reporte (HTML)"):
+                # Se genera el reporte con el DataFrame completo (df_analisis_completo) 
+                # o el filtrado (df_filtrado) dependiendo de la necesidad.
+                # Usaremos df_filtrado para que el reporte respete los filtros del usuario.
+                report_html = generate_report_html(df_analisis_completo, UMBRAL_RIESGO_ALTO) # Usar df_analisis_completo para una visión general
+                
+                # Opcionalmente, usar df_filtrado:
+                # report_html = generate_report_html(df_filtrado, UMBRAL_RIESGO_ALTO)
+                
+                filename = f"Reporte_Inventario_Datos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                
+                st.markdown(
+                    get_table_download_link(report_html, filename, "Click para Descargar Reporte"), 
+                    unsafe_allow_html=True
+                )
+
 
         # ----------------------------------------------------------------------
         # --- CONTENIDO PRINCIPAL ---
@@ -508,6 +725,7 @@ try:
                 
                 
                 def color_riesgo_score(val):
+                    # 🔄 USO DEL NUEVO UMBRAL (3.5)
                     color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
                     return color
                 
@@ -558,6 +776,7 @@ try:
                 resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
                 
                 def color_riesgo_promedio(val):
+                    # 🔄 USO DEL NUEVO UMBRAL (3.5)
                     color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
                     return color
                 
@@ -578,6 +797,7 @@ try:
                     column_config={
                         'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable"),
                         'Activos_Totales': st.column_config.NumberColumn("Activos Totales"),
+                        # 🔄 USO DEL NUEVO UMBRAL (3.5) en la ayuda
                         'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
                         'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%"),
                         'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d"),
