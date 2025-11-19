@@ -17,7 +17,7 @@ from google import genai
 # --- NUEVAS IMPORTACIONES PARA CLUSTERING NO SUPERVISADO (K-MEANS) ---
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-# --- FIN DE NUEVAS IMPORTACIONES ---\
+# --- FIN DE NUEVAS IMPORTACIONES ---
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
@@ -304,65 +304,6 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
                 error_msg = f"❌ Error en la API de Gemini: {e}"
                 st.error(error_msg)
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
-
-# =================================================================
-# 4. NUEVA FUNCIÓN: MATRIZ DE DISTRIBUCIÓN
-# =================================================================
-
-def render_distribution_matrix(df):
-    """
-    Calcula y renderiza la matriz de distribución de activos (dueño vs. categoría) 
-    utilizando un mapa de calor de Plotly Express.
-    """
-    st.subheader("4. 🧱 Matriz de Distribución: Dueño vs. Categoría")
-    st.info("""
-        Esta matriz muestra cómo se distribuyen los activos de cada **Entidad Responsable (Dueño)** entre las diferentes **Categorías Temáticas**.
-        * **Celdas oscuras/colores intensos:** Indican un alto número de activos en esa combinación, señalando un sector **sobrerrepresentado** o **especializado** en esa categoría.
-        * **Celdas claras/cero:** Indican una baja o nula representación, señalando una **subrepresentación** o falta de datos en esa área.
-    """)
-    
-    # 1. Calcular la matriz de contingencia (conteo de activos)
-    if 'dueño' not in df.columns or 'categoria' not in df.columns:
-        st.warning("Columnas 'dueño' o 'categoria' no encontradas para generar la matriz.")
-        return
-
-    # Limitar a las 10 categorías más comunes para evitar un gráfico ilegible
-    top_categories = df['categoria'].value_counts().nlargest(10).index
-    df_filtered = df[df['categoria'].isin(top_categories)]
-
-    contingency_table = pd.crosstab(
-        df_filtered['dueño'], 
-        df_filtered['categoria']
-    )
-    
-    # 2. Convertir la matriz de contingencia a formato largo para Plotly
-    df_matrix = contingency_table.stack().reset_index()
-    df_matrix.columns = ['Dueño', 'Categoria', 'Numero_de_Activos']
-    
-    # 3. Crear el Mapa de Calor
-    if not df_matrix.empty:
-        fig_matrix = px.density_heatmap(
-            df_matrix, 
-            x="Categoria", 
-            y="Dueño", 
-            z="Numero_de_Activos", 
-            histfunc="sum",
-            title="Distribución de Activos: Entidades Responsables (Dueño) vs. Categorías (Top 10)",
-            labels={
-                "Numero_de_Activos": "Número de Activos",
-                "Dueño": "Entidad Responsable (Dueño)",
-                "Categoria": "Categoría Temática"
-            },
-            color_continuous_scale="Viridis", # Escala de color
-            height=700 
-        )
-        
-        fig_matrix.update_xaxes(side="top") # Categoría en la parte superior para mejor lectura
-        fig_matrix.update_layout(xaxis_title="", yaxis_title="") # Títulos ya están en el título del gráfico
-        
-        st.plotly_chart(fig_matrix, use_container_width=True)
-    else:
-        st.warning("No hay suficientes datos válidos de 'dueño' y 'categoria' para generar la matriz de distribución.")
 
 # =================================================================
 # 3. Ejecución Principal del Dashboard
@@ -652,13 +593,13 @@ try:
             # --- BLOQUE CLAVE DE PESTAÑAS (GRÁFICOS) ---
             # ----------------------------------------------------------------------
             
-            # Se añade 'tab4' para la nueva matriz de distribución
+            # 🔄 MODIFICACIÓN 1: Añadir tab4 a la declaración de pestañas
             if filtro_acceso_publico:
                 # 📌 CASO: Activos Públicos (Priorización)
-                tab1, tab2, tab3, tab4 = st.tabs(["1. Ranking de Priorización (Riesgo/Incompletitud)", "2. K-Means Clustering", "3. Activos Menos Actualizados (Antigüedad)", "4. Matriz de Distribución"])
+                tab1, tab2, tab3, tab4 = st.tabs(["1. Ranking de Priorización (Riesgo/Incompletitud)", "2. K-Means Clustering", "3. Activos Menos Actualizados (Antigüedad)", "4. Treemap de Cobertura y Calidad"])
             else:
                 # 📌 CASO: Vista General (Completitud/Riesgo)
-                tab1, tab2, tab3, tab4 = st.tabs(["1. Ranking de Completitud", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática", "4. Matriz de Distribución"])
+                tab1, tab2, tab3, tab4 = st.tabs(["1. Ranking de Completitud", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática", "4. Treemap de Cobertura y Calidad"])
 
             with tab1:
                 # --- Visualización 1: Ranking de Priorización (Combinado o por Entidad) ---
@@ -794,7 +735,7 @@ try:
                 # --- Visualización 3: Cobertura Temática (General) o Activos Menos Actualizados (Público) ---
                 
                 if filtro_acceso_publico:
-                    # 📌 GRÁFICO: Activos Menos Actualizados (Antigüedad)
+                    # 📌 NUEVO GRÁFICO: Activos Menos Actualizados (Antigüedad)
                     st.subheader("3. ⏰ Ranking Top 10 Activos Públicos Menos Actualizados")
                     st.info("Estos activos requieren una revisión inmediata de su proceso de recolección de datos, ya que su antigüedad es la más alta en el inventario público.")
                     
@@ -807,7 +748,7 @@ try:
                     COLOR_SCALE = px.colors.sequential.YlOrRd # Escala que va a rojo (peor)
 
                 else:
-                    # 📌 GRÁFICO: Cobertura Temática (General) - (EL GRÁFICO REGRESADO EN LA PETICIÓN ANTERIOR)
+                    # 📌 GRÁFICO EXISTENTE: Cobertura Temática (General)
                     st.subheader("3. 🗺️ Cobertura Temática por Categoría (Mayor a Menor)")
                     
                     COLUMNA_CATEGORIA = 'categoria'
@@ -847,9 +788,45 @@ try:
                 except Exception as e:
                     st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot. Detalle: {e}")
 
+            # 🚀 ADICIÓN DEL BLOQUE DE CÓDIGO PARA EL TREEMAP (tab4)
             with tab4:
-                # 📌 GRÁFICO: Matriz de Distribución (NUEVO)
-                render_distribution_matrix(df_filtrado)
+                # --- Visualización 4: Treemap de Cobertura y Calidad ---
+                st.subheader("4. 🌳 Matriz Treemap: Cobertura Temática vs. Riesgo Promedio")
+                st.info("El tamaño de cada bloque representa el **Número de Activos** en esa Categoría, y el color indica el **Riesgo Promedio** (más rojo = Riesgo Alto).")
+                
+                try:
+                    # 1. Agrupación por categoría para el Treemap
+                    COLUMNA_CATEGORIA = 'categoria'
+                    
+                    # Se necesita al menos una fila y la columna de categoría
+                    if COLUMNA_CATEGORIA in df_filtrado.columns and len(df_filtrado) > 0 and not df_filtrado[COLUMNA_CATEGORIA].isnull().all():
+                        df_treemap = df_filtrado.groupby(COLUMNA_CATEGORIA).agg(
+                            Num_Activos=('uid', 'count'),
+                            Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
+                            Completitud_Promedio=('completitud_score', 'mean')
+                        ).reset_index()
+
+                        # 2. Crear el Treemap
+                        fig_treemap = px.treemap(
+                            df_treemap,
+                            path=[COLUMNA_CATEGORIA],
+                            values='Num_Activos',
+                            color='Riesgo_Promedio',  # Color por Riesgo Promedio (indicador de Calidad)
+                            color_continuous_scale=px.colors.sequential.Reds, # Escala de color: Rojo = Riesgo Alto
+                            hover_data=['Riesgo_Promedio', 'Completitud_Promedio', 'Num_Activos'],
+                            title='Matriz Treemap: Cobertura Temática vs. Riesgo Promedio'
+                        )
+                        
+                        fig_treemap.update_layout(margin=dict(t=50, l=25, r=25, b=25))
+                        st.plotly_chart(fig_treemap, use_container_width=True)
+                    
+                    else:
+                        st.warning("No hay suficientes datos o la columna 'categoria' no está disponible para generar el Treemap.")
+
+                except Exception as e:
+                    st.error(f"❌ ERROR [Visualización 4]: Falló la generación del Treemap. Detalle: {e}")
+            # 🚀 FIN DE ADICIÓN DEL BLOQUE DE CÓDIGO PARA EL TREEMAP (tab4)
+
 
             
             # ----------------------------------------------------------------------
