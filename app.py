@@ -56,8 +56,7 @@ def load_processed_data(file_path):
 		return pd.DataFrame()
 
 def clean_and_convert_types(df):
-	"""Fuerza a las columnas a ser tipo string para asegurar la 
-detección de inconsistencias."""
+	"""Fuerza a las columnas a ser tipo string para asegurar la detección de inconsistencias."""
 	
 	# Columnas que suelen ser de tipo 'object' (string)
 	object_cols = ['titulo', 'descripcion', 'dueño'] 
@@ -101,11 +100,9 @@ def calculate_universal_metrics(df):
 			df.loc[inconsistencies, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO 
 		
 	# --- 3. UNICIDAD: Duplicados Exactos ---
+	# 🔴 FIX: Unir línea
 	df['es_duplicado'] = df.duplicated(keep=False) 
-	df['riesgo_duplicado'] = np.where(
-		df['es_duplicado'], PENALIZACION_DUPLICADO, 
-0.0
-	)
+	df['riesgo_duplicado'] = np.where(df['es_duplicado'], PENALIZACION_DUPLICADO, 0.0)
 	
 	# --- 4. CÁLCULO FINAL DE PRIORIDAD DE RIESGO ---
 	df['prioridad_riesgo_score'] = (
@@ -149,9 +146,8 @@ def process_external_data(df):
 	
 	# CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
 	avg_file_risk = df['prioridad_riesgo_score'].mean()
-	# Usa el RIESGO_MAXIMO_TEORICO_UNIVERSAL corregido (10.0)
-	quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL 
-* 100) 
+	# 🔴 FIX: Unir línea
+	quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100) 
 	
 	df['calidad_total_score'] = np.clip(quality_score, 0, 100)
 
@@ -355,16 +351,15 @@ def setup_data_assistant(df):
 # 2. Ejecución Principal del Dashboard
 # =================================================================
 
-st.title("📊 Dashboard 
-de Priorización de Activos de Datos (Análisis Completo)")
+# 🔴 FIX: Unir línea
+st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Completo)")
 
 try:
 	with st.spinner(f'Cargando archivo procesado: **{ARCHIVO_PROCESADO}**...'):
 		df_analisis_completo = load_processed_data(ARCHIVO_PROCESADO) 
 
 	if df_analisis_completo.empty:
-		st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**.
-Asegúrate de que existe y se ejecutó `preprocess.py`.")
+		st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
 	else:
 		df_analisis_completo = calculate_universal_metrics(df_analisis_completo.copy())
 		
@@ -395,8 +390,8 @@ Asegúrate de que existe y se ejecutó `preprocess.py`.")
 				col1.metric("Activos Totales", total_activos)
 				
 				completitud_promedio_disp = f"{df_entidad_seleccionada['completitud_score'].mean():.2f}%" if 'completitud_score' in df_entidad_seleccionada.columns else "N/A"
-				riesgo_promedio_disp = f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}" if 'prioridad_riesgo_score' in df_entidad_seleccionada.columns 
-else "N/A"
+				# 🔴 FIX: Unir línea
+				riesgo_promedio_disp = f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}" if 'prioridad_riesgo_score' in df_entidad_seleccionada.columns else "N/A"
 				antiguedad_promedio_disp = f"{df_entidad_seleccionada['antiguedad_datos_dias'].mean():.0f} días" if 'antiguedad_datos_dias' in df_entidad_seleccionada.columns else "N/A"
 				
 				col2.metric("Completitud Promedio", completitud_promedio_disp)
@@ -437,12 +432,12 @@ else "N/A"
 			df_filtrado = df_filtrado[df_filtrado['common_core_public_access_level'] == filtro_acceso]
 
 		if filtro_categoria != "Mostrar Todos":
-			df_filtrado = 
-df_filtrado[df_filtrado['categoria'] == filtro_categoria]
+			# 🔴 FIX: Unir línea
+			df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
 
 		st.header("📊 Visualizaciones y Rankings")
-		st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {filtro_acceso};
-Categoría: {filtro_categoria})")
+		# 🔴 FIX: Unir f-string
+		st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {filtro_acceso}; Categoría: {filtro_categoria})")
 
 		if df_filtrado.empty:
 			st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
@@ -471,12 +466,11 @@ Categoría: {filtro_categoria})")
 			
 			# Se actualiza la descripción para reflejar que sólo se usa color de texto
 			st.info(f"""
-				La tabla 
-usa **color de texto** condicional para identificar problemas de calidad rápidamente:
+				La tabla usa **color de texto** condicional para identificar problemas de calidad rápidamente:
 				* 🔴 **Riesgo Promedio** > **{UMBRAL_RIESGO_ALTO:.1f}** (Prioridad Máxima).
-* 🔴 **%_Incumplimiento** > **20%** (Problema Operacional).
+				* 🔴 **%_Incumplimiento** > **20%** (Problema Operacional).
 				* 🔴 **Antigüedad Promedio** > **180 días** (Riesgo de Obsolescencia).
-* 🔴 **Completitud Promedio** < **{UMBRAL_COMPLETITUD_BAJA:.0f}%** (Riesgo de Usabilidad).
+				* 🔴 **Completitud Promedio** < **{UMBRAL_COMPLETITUD_BAJA:.0f}%** (Riesgo de Usabilidad).
 			""")
 			
 			required_cols_summary = ['prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias', 'estado_actualizacion']
@@ -503,28 +497,28 @@ usa **color de texto** condicional para identificar problemas de calidad rápida
 					
 					# 1. Riesgo Promedio (Columna 2)
 					if s['Riesgo_Promedio'] > UMBRAL_RIESGO_ALTO:
-						styles[2] = 'color: red;
-font-weight: bold;'
+						# 🔴 FIX: Unir string
+						styles[2] = 'color: red; font-weight: bold;'
 					else:
 						styles[2] = 'color: green; font-weight: bold;'
 
 					# 2. Completitud Promedio (Columna 3)
 					if s['Completitud_Promedio'] < UMBRAL_COMPLETITUD_BAJA:
-						styles[3] = 'color: red;
-font-weight: bold;'
+						# 🔴 FIX: Unir string
+						styles[3] = 'color: red; font-weight: bold;'
 					else:
 						styles[3] = 'color: green; font-weight: bold;'
 						
 					# 3. Antigüedad Promedio (Columna 4) - Aplicar color de texto (solo rojo si falla)
 					if s['Antiguedad_Promedio_Dias'] > 180:
-						styles[4] = 'color: red;
-font-weight: bold;'
+						# 🔴 FIX: Unir string
+						styles[4] = 'color: red; font-weight: bold;'
 					else:
 						styles[4] = 'color: inherit;' # Color por defecto si pasa.
-# 4. % Incumplimiento (Columna 6) - Aplicar color de texto (solo rojo si falla)
+					# 4. % Incumplimiento (Columna 6) - Aplicar color de texto (solo rojo si falla)
 					if s['%_Incumplimiento'] > 20:
-						styles[6] = 'color: red;
-font-weight: bold;'
+						# 🔴 FIX: Unir string
+						styles[6] = 'color: red; font-weight: bold;'
 					else:
 						styles[6] = 'color: inherit;' # Color por defecto si pasa.
 					return styles
@@ -558,8 +552,7 @@ font-weight: bold;'
 				)
 			
 			else:
-				st.warning("⚠️ No se puede generar la Tabla de Diagnóstico de Entidades.
-Faltan métricas clave en los datos cargados.")
+				st.warning("⚠️ No se puede generar la Tabla de Diagnóstico de Entidades. Faltan métricas clave en los datos cargados.")
 
 			st.markdown("---")
 			
@@ -592,8 +585,8 @@ Faltan métricas clave en los datos cargados.")
 								orientation='h',
 								title='Top 10 Entidades con Peor Completitud Promedio',
 								color='Completitud_Promedio', 
-								color_continuous_scale=px.colors.sequential.Reds_r, 
-# Usa un gradiente de rojo
+								# 🔴 FIX: Unir línea
+								color_continuous_scale=px.colors.sequential.Reds_r, # Usa un gradiente de rojo
 								labels={
 									'Completitud_Promedio': 'Score de Completitud Promedio (%)',
 									COLUMNA_ENTIDAD: 'Entidad Responsable'
@@ -610,8 +603,7 @@ Faltan métricas clave en los datos cargados.")
 						else:
 							st.warning("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking.")
 					else:
-						st.warning("No se puede generar el Ranking de Completitud.
-Falta la columna 'completitud_score'.")
+						st.warning("No se puede generar el Ranking de Completitud. Falta la columna 'completitud_score'.")
 				except Exception as e:
 					st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud (Plotly). Detalle: {e}")
 
@@ -626,8 +618,7 @@ Falta la columna 'completitud_score'.")
 				
 				if error_message:
 					st.warning(f"⚠️ {error_message}")
-				elif not 
-df_segmented_sample.empty:
+				elif not df_segmented_sample.empty:
 					try:
 						# Definir el mapeo de colores
 						color_map = {
@@ -663,8 +654,7 @@ df_segmented_sample.empty:
 						st.plotly_chart(fig2, use_container_width=True)
 						st.caption(f"Varianza Explicada por PC1 y PC2: **{variance_ratio*100:.2f}%**")
 					except Exception as e:
-						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico de Segmentación (Plotly).
-Detalle: {e}")
+						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico de Segmentación (Plotly). Detalle: {e}")
 						st.warning("Se recomienda revisar los datos en las columnas 'dueño' y 'titulo' en la muestra.")
 				else:
 					st.warning("No se pudo calcular la Segmentación para los datos filtrados.")
@@ -709,11 +699,10 @@ Detalle: {e}")
 						st.plotly_chart(fig3, use_container_width=True)
 
 					else:
-						st.warning("La 
-columna 'categoria' no contiene suficientes valores para generar la visualización.")
+						# 🔴 FIX: Unir string
+						st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización.")
 				except Exception as e:
-					st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías (Plotly).
-Detalle: {e}")
+					st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías (Plotly). Detalle: {e}")
 
 
 			
@@ -753,15 +742,14 @@ Detalle: {e}")
 								
 								calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
 								completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
-								riesgo_promedio_total = 
-df_diagnostico['prioridad_riesgo_score'].mean()
+								riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
 
 								riesgos_reporte = pd.DataFrame({
 									'Dimensión de Riesgo': [
 										'1. Datos Incompletos (Completitud)',
 										'2. Duplicados Exactos (Unicidad)',
-										'3.
-Consistencia de Tipo (Coherencia)',
+										# 🔴 FIX: Unir string
+										'3. Consistencia de Tipo (Coherencia)',
 									],
 									'Riesgo Promedio (0-Máx)': [
 										df_diagnostico['riesgo_datos_incompletos'].mean(),
@@ -789,8 +777,7 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 """
 
 								if not recomendacion_final_md:
-									recomendacion_final_md = "La Calidad es excelente.
-No se requieren mejoras prioritarias en las dimensiones analizadas."
+									recomendacion_final_md = "La Calidad es excelente. No se requieren mejoras prioritarias en las dimensiones analizadas."
 									estado = "🟢 CALIDAD ALTA"
 									color = "green"
 								else:
@@ -821,8 +808,7 @@ No se requieren mejoras prioritarias en las dimensiones analizadas."
 								st.error("❌ Falló el procesamiento del archivo subido.")
 					
 					except Exception as e:
-						st.error(f"❌ Error al procesar el archivo CSV.
-Asegúrate de que el formato sea correcto. Detalle: {e}")
+						st.error(f"❌ Error al procesar el archivo CSV. Asegúrate de que el formato sea correcto. Detalle: {e}")
 				
 			
 			# ----------------------------------------------------------------------
