@@ -12,16 +12,16 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
 # --- Variables Globales ---
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
-# CRITERIO CORREGIDO: Subimos el umbral a 3.0 para balancear la nueva escala de riesgo (~7.5 máx)
+# CRITERIO DE RIESGO
 UMBRAL_RIESGO_ALTO = 3.0 
 
-# --- CONFIGURACIÓN DE RIESGOS UNIVERSALES (DEBE COINCIDIR CON PREPROCESS.PY) ---
+# --- CONFIGURACIÓN DE RIESGOS UNIVERSALES (AJUSTADO: SIN METADATOS) ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0  
-PENALIZACION_METADATOS_NULOS = 1.5      
+# PENALIZACION_METADATOS_NULOS = 1.5 # ELIMINADO del diagnóstico rápido
 PENALIZACION_INCONSISTENCIA_TIPO = 0.5   
 PENALIZACION_DUPLICADO = 1.0             
-# Suma del riesgo universal máximo posible: 2.0 + 1.5 + 0.5 + 1.0 = 5.0
-RIESGO_MAXIMO_TEORICO_UNIVERSAL = 5.0 
+# RIESGO MÁXIMO AJUSTADO: 2.0 (Incompletos) + 0.5 (Consistencia) + 1.0 (Duplicados) = 3.5
+RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5 
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -65,43 +65,36 @@ def check_universals_external(df):
 
 def process_external_data(df):
     """
-    Lógica de riesgo universal para el archivo externo subido.
+    Lógica de riesgo universal para el archivo externo subido (AJUSTADA).
     """
     
     # --- 1. EVALUACIÓN DE UNIVERSALES (Completitud, Consistencia, Unicidad) ---
     df = check_universals_external(df)
     
-    # --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO ---
-    
+    # --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO (REDUCIDA A SIMPLE SCORE) ---
+    # La penalización fue removida del score final, pero mantenemos este cálculo 
+    # para dar información al usuario sobre sus metadatos.
     campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
-    riesgo_metadatos = 0.0
-    
     campos_existentes_y_llenos = 0
     num_campos_totales_base = len(campos_clave_universal)
 
     for campo in campos_clave_universal:
-        # Penalización si la columna no existe O si existe pero el primer valor es nulo
-        if campo not in df.columns or pd.isna(df[campo].iloc[0]):
-            riesgo_metadatos = PENALIZACION_METADATOS_NULOS
-        else:
+        if campo in df.columns and pd.notna(df[campo].iloc[0]):
             campos_existentes_y_llenos += 1
             
-    df['riesgo_metadatos_nulo'] = riesgo_metadatos
     completitud_metadatos_universal = (campos_existentes_y_llenos / num_campos_totales_base) * 100
     df['completitud_metadatos_universal'] = completitud_metadatos_universal
     
     # --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD ---
     
-    # Score de riesgo universal
+    # Score de riesgo universal (SOLO 3 DIMENSIONES: DATOS INCOMPLETOS, CONSISTENCIA, DUPLICADOS)
     df['prioridad_riesgo_score'] = (
         df['riesgo_datos_incompletos'] + 
-        df['riesgo_metadatos_nulo'] +
         df['riesgo_consistencia_tipo'] +
         df['riesgo_duplicado']
     )
     
     # CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
-    # Usamos la media del riesgo para la calidad total del archivo
     avg_file_risk = df['prioridad_riesgo_score'].mean()
     quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100)
     
@@ -125,7 +118,6 @@ try:
     else:
         st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
 
-        # [ ... Bloque de selección de entidad, filtros y visualizaciones se mantiene sin cambios ... ]
         # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
         owners.sort()
@@ -212,7 +204,7 @@ try:
             # --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) ---
             st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 
-            # TEXTO CORREGIDO PARA EL NUEVO UMBRAL
+            # TEXTO CORREGIDO PARA EL NUEVO UMBRAL (3.0)
             st.info(f"""
                 La columna **Riesgo Promedio** tiene un formato de color:
                 * 🟢 **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO:.1f}**. Intervención no urgente.
@@ -232,7 +224,6 @@ try:
             resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
             
             def color_riesgo_promedio(val):
-                # Aplicamos el nuevo umbral 
                 color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
                 return color
             
@@ -263,90 +254,128 @@ try:
             )
 
             st.markdown("---")
-
-            # --- Visualización 1: Ranking de Completitud (Peor Rendimiento) ---
-            st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
             
-            try:
-                COLUMNA_ENTIDAD = 'dueño'
-                resumen_completitud = df_filtrado.groupby(COLUMNA_ENTIDAD).agg(
-                    Total_Activos=('uid', 'count'),
-                    Completitud_Promedio=('completitud_score', 'mean')
-                ).reset_index()
-                
-                entidades_volumen = resumen_completitud[resumen_completitud['Total_Activos'] >= 5]
-                df_top_10_peor_completitud = entidades_volumen.sort_values(by='Completitud_Promedio', ascending=True).head(10)
-                
-                if not df_top_10_peor_completitud.empty:
-                    fig1, ax1 = plt.subplots(figsize=(10, 6))
-                    sns.barplot(x='Completitud_Promedio', y=COLUMNA_ENTIDAD, data=df_top_10_peor_completitud, palette='Reds_r', ax=ax1)
-                    ax1.set_title('Top 10 Entidades con Peor Completitud Promedio', fontsize=14)
-                    ax1.set_xlabel('Score de Completitud Promedio (%)', fontsize=12)
-                    st.pyplot(fig1)
-                else:
-                    st.warning("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking.")
-            except Exception as e:
-                st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
+            # --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES ---
+            tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Burbujas de Riesgo", "3. Cobertura Temática"])
 
-            st.markdown("---")
-
-            # --- Visualización 2: Gráfico de PARETO de Riesgo (Activos más Críticos) ---
-            st.subheader("2. 🎯 Gráfico de Pareto de Riesgo (Activos más Críticos)")
-            
-            try:
-                df_riesgo = df_filtrado[df_filtrado['prioridad_riesgo_score'] > 0].sort_values(by='prioridad_riesgo_score', ascending=False).copy()
+            with tab1:
+                # --- Visualización 1: Ranking de Completitud (Peor Rendimiento) ---
+                st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
                 
-                if not df_riesgo.empty:
-                    df_riesgo['Riesgo Acumulado'] = df_riesgo['prioridad_riesgo_score'].cumsum()
-                    df_riesgo['Riesgo Total'] = df_riesgo['prioridad_riesgo_score'].sum()
-                    df_riesgo['% Riesgo Acumulado'] = (df_riesgo['Riesgo Acumulado'] / df_riesgo['Riesgo Total']) * 100
+                try:
+                    COLUMNA_ENTIDAD = 'dueño'
+                    resumen_completitud = df_filtrado.groupby(COLUMNA_ENTIDAD).agg(
+                        Total_Activos=('uid', 'count'),
+                        Completitud_Promedio=('completitud_score', 'mean')
+                    ).reset_index()
                     
-                    fig2, ax2 = plt.subplots(figsize=(12, 6))
-                    ax2.bar(df_riesgo.index, df_riesgo['prioridad_riesgo_score'], color="C0")
-                    ax3 = ax2.twinx()
-                    ax3.plot(df_riesgo.index, df_riesgo["% Riesgo Acumulado"], color="C1", marker="D", ms=4)
-                    ax3.yaxis.set_major_formatter(PercentFormatter())
-                    ax3.axhline(80, color='red', linestyle='--', alpha=0.7)
-                    ax2.set_title("Gráfico de Pareto: Concentración de Riesgo por Activo", fontsize=16)
-                    plt.tight_layout()
-                    st.pyplot(fig2)
-                else:
-                    st.warning("No hay activos con score de riesgo > 0 en la vista actual para generar el Pareto.")
+                    entidades_volumen = resumen_completitud[resumen_completitud['Total_Activos'] >= 5]
+                    df_top_10_peor_completitud = entidades_volumen.sort_values(by='Completitud_Promedio', ascending=True).head(10)
+                    
+                    if not df_top_10_peor_completitud.empty:
+                        fig1, ax1 = plt.subplots(figsize=(10, 6))
+                        sns.barplot(x='Completitud_Promedio', y=COLUMNA_ENTIDAD, data=df_top_10_peor_completitud, palette='Reds_r', ax=ax1)
+                        ax1.set_title('Top 10 Entidades con Peor Completitud Promedio', fontsize=14)
+                        ax1.set_xlabel('Score de Completitud Promedio (%)', fontsize=12)
+                        ax1.set_ylabel('Entidad Responsable', fontsize=12)
+                        st.pyplot(fig1)
+                    else:
+                        st.warning("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking.")
+                except Exception as e:
+                    st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
 
-            except Exception as e:
-                st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Gráfico de Pareto. Detalle: {e}")
-            
-            st.markdown("---")
+            with tab2:
+                # --- Visualización 2: Gráfico de Burbujas de Riesgo (NUEVO) ---
+                st.subheader("2. 🫧 Burbujas de Priorización de Riesgo por Entidad")
+                st.markdown("Este gráfico muestra la **relación entre el riesgo, la completitud de metadatos y el volumen de activos** por entidad.")
+                st.markdown("* **Eje X:** Riesgo Promedio (Se debe minimizar, mejor a la izquierda).")
+                st.markdown("* **Eje Y:** Completitud Promedio (Se debe maximizar, mejor arriba).")
+                st.markdown("* **Tamaño de Burbuja:** Volumen de Activos.")
 
-            # --- Visualización 3: Cobertura Temática por Categoría ---
-            st.subheader("3. 🗺️ Cobertura Temática por Categoría")
-            
-            try:
-                COLUMNA_CATEGORIA = 'categoria'
-                if COLUMNA_CATEGORIA in df_filtrado.columns:
-                    conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10)
-                else:
-                    conteo_categoria = pd.Series([], dtype='int')
+                try:
+                    df_bubble = df_filtrado.groupby('dueño').agg(
+                        Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
+                        Completitud_Promedio=('completitud_score', 'mean'),
+                        Volumen=('uid', 'count')
+                    ).reset_index()
+                    
+                    if not df_bubble.empty:
+                        fig2, ax2 = plt.subplots(figsize=(12, 8))
+                        
+                        # Usamos el Volumen escalado para el tamaño de la burbuja (s)
+                        max_volumen = df_bubble['Volumen'].max()
+                        s_volumen = (df_bubble['Volumen'] / max_volumen) * 2000 
+                        
+                        # Color: Usamos la Completitud como factor de color (verde oscuro = bueno)
+                        scatter = ax2.scatter(
+                            x=df_bubble['Riesgo_Promedio'], 
+                            y=df_bubble['Completitud_Promedio'], 
+                            s=s_volumen, 
+                            c=df_bubble['Completitud_Promedio'], 
+                            cmap='RdYlGn', # Rojo a Amarillo a Verde
+                            alpha=0.6, 
+                            edgecolors="w", 
+                            linewidth=1
+                        )
+                        
+                        # Añadir anotaciones para algunas entidades grandes
+                        for i in df_bubble.nlargest(5, 'Volumen').index:
+                             ax2.annotate(df_bubble.loc[i, 'dueño'], 
+                                         (df_bubble.loc[i, 'Riesgo_Promedio'], df_bubble.loc[i, 'Completitud_Promedio']), 
+                                         fontsize=8, alpha=0.8)
 
-                if not conteo_categoria.empty:
-                    fig3, ax3 = plt.subplots(figsize=(10, 7))
-                    sns.barplot(x=conteo_categoria.values, y=conteo_categoria.index, palette='viridis', ax=ax3)
-                    ax3.set_title('Top 10 Categorías con Mayor Cobertura Temática', fontsize=16)
-                    ax3.set_xlabel('Número de Activos', fontsize=12)
-                    st.pyplot(fig3)
-                else:
-                    st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización.")
-            except Exception as e:
-                st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
-            
-            st.markdown("---")
+                        # Añadir límites de referencia
+                        ax2.axhline(80, color='gray', linestyle='--', alpha=0.5)
+                        ax2.axvline(UMBRAL_RIESGO_ALTO, color='red', linestyle=':', alpha=0.7)
+
+                        ax2.set_xlabel('Riesgo Promedio (Peor →)', fontsize=12)
+                        ax2.set_ylabel('Completitud Promedio (Mejor ↑)', fontsize=12)
+                        ax2.set_title('Matriz de Priorización de Entidades (Riesgo vs. Completitud)', fontsize=16)
+                        
+                        # Barra de color
+                        cbar = fig2.colorbar(scatter, ax=ax2)
+                        cbar.set_label('Completitud Promedio (%)')
+                        
+                        st.pyplot(fig2)
+                    else:
+                        st.warning("No hay suficientes datos de entidad para generar el Gráfico de Burbujas.")
+                        
+                except Exception as e:
+                    st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Gráfico de Burbujas. Detalle: {e}")
+
+
+            with tab3:
+                # --- Visualización 3: Cobertura Temática por Categoría ---
+                st.subheader("3. 🗺️ Cobertura Temática por Categoría")
+                
+                try:
+                    COLUMNA_CATEGORIA = 'categoria'
+                    if COLUMNA_CATEGORIA in df_filtrado.columns:
+                        conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10)
+                    else:
+                        conteo_categoria = pd.Series([], dtype='int')
+
+                    if not conteo_categoria.empty:
+                        fig3, ax3 = plt.subplots(figsize=(10, 7))
+                        sns.barplot(x=conteo_categoria.values, y=conteo_categoria.index, palette='viridis', ax=ax3)
+                        ax3.set_title('Top 10 Categorías con Mayor Cobertura Temática', fontsize=16)
+                        ax3.set_xlabel('Número de Activos', fontsize=12)
+                        ax3.set_ylabel('Categoría', fontsize=12)
+                        st.pyplot(fig3)
+                    else:
+                        st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización.")
+                except Exception as e:
+                    st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
+
+
         
         # ----------------------------------------------------------------------
         # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
         # ----------------------------------------------------------------------
         st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
         st.header("💾 Diagnóstico de Archivo CSV Externo (Calidad Universal)")
-        st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a las 4 dimensiones universales principales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL:.1f}**).")
+        # RIESGO MÁXIMO TEÓRICO AJUSTADO a 3.5
+        st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a 3 dimensiones universales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL:.1f}**).")
 
         uploaded_file = st.file_uploader(
             "Selecciona el Archivo CSV", 
@@ -357,7 +386,7 @@ try:
             with st.spinner('Analizando archivo...'):
                 try:
                     uploaded_filename = uploaded_file.name
-                    # Intentar lectura robusta (asumiendo que podría usar otro delimitador)
+                    # Lógica de lectura robusta con detección de delimitadores (Mantenida)
                     uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False)
                     if len(uploaded_df.columns) <= 1:
                         uploaded_file.seek(0)
@@ -380,19 +409,19 @@ try:
                             datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
                             riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
 
-                            # Desglose de Riesgos Promedio
+                            # Desglose de Riesgos Promedio (AJUSTADO: Metadatos removido del score, pero se muestra su info)
                             riesgos_reporte = pd.DataFrame({
                                 'Dimensión de Riesgo': [
                                     '1. Datos Incompletos (Completitud)',
-                                    '2. Metadatos Faltantes (Gobernanza)',
-                                    '3. Duplicados Exactos (Unicidad)',
-                                    '4. Consistencia de Tipo (Coherencia)',
+                                    '2. Duplicados Exactos (Unicidad)',
+                                    '3. Consistencia de Tipo (Coherencia)',
+                                    '4. Metadatos Faltantes (Informativo, Score = N/A)', 
                                 ],
                                 'Riesgo Promedio (0-Máx)': [
                                     df_diagnostico['riesgo_datos_incompletos'].mean(),
-                                    df_diagnostico['riesgo_metadatos_nulo'].mean(),
                                     df_diagnostico['riesgo_duplicado'].mean(),
                                     df_diagnostico['riesgo_consistencia_tipo'].mean(),
+                                    0.0, # Metadatos tiene score 0 en esta versión del diagnóstico
                                 ]
                             })
                             riesgos_reporte = riesgos_reporte.sort_values(by='Riesgo Promedio (0-Máx)', ascending=False)
@@ -403,12 +432,14 @@ try:
                             
                             recomendacion_lista = []
                             
-                            if riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)'] > 0.15: 
-                                recomendacion_lista.append(f"El riesgo más alto es por **{riesgos_reporte.iloc[0]['Dimensión de Riesgo']}** ({riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']:.2f}). Enfoca tu esfuerzo en corregir este problema primero.")
+                            # 1. Recomendación: Riesgo más alto (excluyendo la línea informativa de metadatos)
+                            riesgo_max_reportado = riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']
+                            if riesgo_max_reportado > 0.15 and riesgos_reporte.iloc[0]['Dimensión de Riesgo'] != '4. Metadatos Faltantes (Informativo, Score = N/A)':
+                                recomendacion_lista.append(f"El riesgo más alto es por **{riesgos_reporte.iloc[0]['Dimensión de Riesgo']}** ({riesgo_max_reportado:.2f}). Enfoca tu esfuerzo en corregir este problema primero.")
 
-                            # 2. Recomendación: Metadatos (Siempre que no sea 100%)
+                            # 2. Recomendación: Metadatos (Siempre que no sea 100% y era la más crítica)
                             if completitud_universal_promedio < 100.0:
-                                recomendacion_lista.append(f"Asegure el **Metadato Universal**: La Completitud de Metadatos es de **{completitud_universal_promedio:.2f}%**. Diligencie las columnas (`titulo`, `descripcion`, `dueño`) para evitar que el activo sea huérfano.")
+                                recomendacion_lista.append(f"Revise el **Metadato Universal**: La Completitud de Metadatos es de **{completitud_universal_promedio:.2f}%**. Diligencie las columnas (`titulo`, `descripcion`, `dueño`) para evitar que el activo sea huérfano.")
                             
                             if not recomendacion_lista:
                                 recomendacion_final = "La **Calidad** es excelente. No se requieren mejoras prioritarias."
