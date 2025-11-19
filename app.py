@@ -442,7 +442,7 @@ try:
 			st.markdown("---")
 
 			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades ---
-			st.header("🔍Tabla de Búsqueda y Diagnóstico de Entidades")
+			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 			
 			# Se actualiza la descripción para reflejar que sólo se usa color de texto
 			st.info(f"""
@@ -615,6 +615,7 @@ try:
 							hover_data={
 								'dueño': True,
 								'titulo': True,
+								'prioridad_riesgo_score': ':.2f',
 								'PREDICTED_SEGMENT': True,
 								'PC1': False, 
 								'PC2': False
@@ -795,4 +796,3 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e_principal:
 	st.error(f"❌ ERROR FATAL en la ejecución del Dashboard: {e_principal}")
-
