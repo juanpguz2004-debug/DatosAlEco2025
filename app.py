@@ -523,19 +523,20 @@ try:
                             yaxis_title='Completitud Score del Activo (%)'
                         )
                         
-                        # Añadir los centroides
-                        centers_df['Calidad_Cluster'] = centers_df['index'].map(cluster_map)
-                        fig2.add_trace(px.scatter(
-                            centers_df,
-                            x='prioridad_riesgo_score', 
-                            y='completitud_score', 
-                            color='Calidad_Cluster',
-                            size=[10] * 3, # Tamaño fijo para los centros
-                            color_discrete_map=color_map,
-                            symbol=[ 'diamond-open'] * 3, # Símbolo de diamante para los centros
-                            opacity=1,
-                            hover_name='Calidad_Cluster'
-                        ).data[0])
+                        # --- TRAZO ELIMINADO: Se quita la adición explícita de los centroides (diamond-open) ---
+                        # centers_df['Calidad_Cluster'] = centers_df['index'].map(cluster_map)
+                        # fig2.add_trace(px.scatter(
+                        #     centers_df,
+                        #     x='prioridad_riesgo_score', 
+                        #     y='completitud_score', 
+                        #     color='Calidad_Cluster',
+                        #     size=[10] * 3, # Tamaño fijo para los centros
+                        #     color_discrete_map=color_map,
+                        #     symbol=[ 'diamond-open'] * 3, # Símbolo de diamante para los centros
+                        #     opacity=1,
+                        #     hover_name='Calidad_Cluster'
+                        # ).data[0])
+                        # --- FIN DEL TRAZO ELIMINADO ---
                         
                         st.plotly_chart(fig2, use_container_width=True)
 
