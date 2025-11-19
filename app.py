@@ -37,7 +37,7 @@ UMBRAL_COMPLETITUD_BAJA = 70.0
 PENALIZACION_DATOS_INCOMPLETOS = 2.0 	
 PENALIZACION_INCONSISTENCIA_TIPO = 0.5 	 # Valor de penalización por CADA columna con error de tipo
 PENALIZACION_DUPLICADO = 1.0 	 	 	 
-RIESGO_MAXIMO_TEORICO_UNIVERSAL = 10.0 # <--- CORREGIDO: Aumentado para reflejar el riesgo acumulativo
+RIESGO_MAXIMO_TEORICO_UNIVERSAL = 10.0 # Valor máximo teórico para normalizar la calidad
 
 # ⚠️ CLAVE SECRETA DE GEMINI
 GEMINI_API_SECRET_VALUE = "Aiza"
@@ -76,8 +76,9 @@ def clean_and_convert_types(df):
 
 def calculate_universal_metrics(df):
 	"""
-	Calcula métricas de calidad universal, aplicando el nuevo umbral de completitud.
-"""
+	Calcula métricas de calidad universal, con la lógica de riesgo de consistencia de tipo restaurada 
+	(no acumulativa por columna).
+	"""
 	
 	# 1. Asegurar tipos para la detección de inconsistencias
 	df = clean_and_convert_types(df)
@@ -90,24 +91,30 @@ def calculate_universal_metrics(df):
 		df['datos_por_fila_score'] < UMBRAL_COMPLETITUD_BAJA, PENALIZACION_DATOS_INCOMPLETOS, 0.0
 	)
 
-	# --- 2. CONSISTENCIA: Mezcla de Tipos (¡CORREGIDO: Riesgo Acumulativo!) ---
+	# --- 2. CONSISTENCIA: Mezcla de Tipos (LÓGICA RESTAURADA: No Acumulativo por Columna) ---
 	df['riesgo_consistencia_tipo'] = 0.0
-	# Recorre CADA columna y ACUMULA el riesgo si detecta un problema de tipo
+	
+	# Máscara para detectar si CUALQUIER columna 'object' tiene inconsistencia de tipo en ESA fila
+	inconsistency_mask = pd.Series(False, index=df.index)
+	
 	for col in df.select_dtypes(include='object').columns:
-		inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
-		if inconsistencies.any():
-			# 🚨 CORRECCIÓN CLAVE: Usamos += para sumar la penalización por cada columna que falla.
-			df.loc[inconsistencies, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO 
+		# Detectar inconsistencias: si no es string y no es NaN
+		current_col_inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
+		# 🚨 RESTAURACIÓN CLAVE: Acumular la máscara (OR lógico). Si es True en una columna, permanece True.
+		# Esto asegura que la penalización se aplique UNA SOLA VEZ por fila.
+		inconsistency_mask = inconsistency_mask | current_col_inconsistencies
+		
+	# Aplicar la penalización de forma binaria: UNA SOLA VEZ si hay alguna inconsistencia en la fila
+	df.loc[inconsistency_mask, 'riesgo_consistencia_tipo'] = PENALIZACION_INCONSISTENCIA_TIPO
 		
 	# --- 3. UNICIDAD: Duplicados Exactos ---
-	# 🔴 FIX: Unir línea
 	df['es_duplicado'] = df.duplicated(keep=False) 
 	df['riesgo_duplicado'] = np.where(df['es_duplicado'], PENALIZACION_DUPLICADO, 0.0)
 	
 	# --- 4. CÁLCULO FINAL DE PRIORIDAD DE RIESGO ---
 	df['prioridad_riesgo_score'] = (
 		df['riesgo_datos_incompletos'] + 
-		df['riesgo_consistencia_tipo'] + # <--- Esto ahora acumula riesgo por columna
+		df['riesgo_consistencia_tipo'] + # <--- Ahora es binario (0.0 o 0.5)
 		df['riesgo_duplicado']
 	)
 	
@@ -116,7 +123,7 @@ def calculate_universal_metrics(df):
 def process_external_data(df):
 	"""
 	Lógica de riesgo universal para el archivo externo subido.
-"""
+	"""
 	
 	# PASO CLAVE: Calcuar las métricas de riesgo universal
 	df = calculate_universal_metrics(df)
@@ -146,7 +153,6 @@ def process_external_data(df):
 	
 	# CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
 	avg_file_risk = df['prioridad_riesgo_score'].mean()
-	# 🔴 FIX: Unir línea
 	quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100) 
 	
 	df['calidad_total_score'] = np.clip(quality_score, 0, 100)
@@ -192,13 +198,12 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 	"""
 	Segmenta activos en N_CLUSTERS grupos (K-Means) usando los scores de riesgo,
 	y aplica PCA para visualización interactiva con Plotly.
-"""
+	"""
 	
 	ML_FEATURES = ['prioridad_riesgo_score', 'datos_por_fila_score', 'completitud_score', 'antiguedad_datos_dias']
 	
 	missing_cols = [col for col in ML_FEATURES if col not in df_input.columns]
 	if missing_cols:
-		# Corregido de SyntaxError
 		return pd.DataFrame(), None, f"Faltan métricas de riesgo para el ML: **{', '.join(missing_cols)}**. Asegúrate de que el archivo precargado contenga los scores de calidad."
 
 
@@ -257,7 +262,7 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 def setup_data_assistant(df):
 	"""
 	Configura el asistente de consulta de datos usando la API nativa de Gemini.
-"""
+	"""
 	
 	st.markdown("---")
 	st.header("🧠 Asistente de Consulta de Datos (Análisis de Lenguaje Natural)")
@@ -267,7 +272,6 @@ def setup_data_assistant(df):
 	# --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
 	if GEMINI_API_SECRET_VALUE == "Aiza":
 		st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
-		# 🚨 CORRECCIÓN DE SYNTAX ERROR: Se unió la cadena en una sola línea.
 		st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
 		st.markdown("---")
 		return
@@ -278,7 +282,6 @@ def setup_data_assistant(df):
 		client = object() # Esto es solo para evitar errores de IDE/ejecución simulada
 		
 	except Exception as e:
-		# 🚨 CORRECCIÓN DE SYNTAX ERROR: La f-string ahora está en una sola línea.
 		st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}")
 		st.markdown("---")
 		return
@@ -351,7 +354,6 @@ def setup_data_assistant(df):
 # 2. Ejecución Principal del Dashboard
 # =================================================================
 
-# 🔴 FIX: Unir línea
 st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Completo)")
 
 try:
@@ -361,6 +363,7 @@ try:
 	if df_analisis_completo.empty:
 		st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
 	else:
+		# 🚨 Llamada crucial para recalcular los scores de riesgo con la lógica corregida
 		df_analisis_completo = calculate_universal_metrics(df_analisis_completo.copy())
 		
 		st.success(f'✅ Archivo pre-procesado y métricas base cargadas. Total de activos: **{len(df_analisis_completo)}**')
@@ -390,7 +393,6 @@ try:
 				col1.metric("Activos Totales", total_activos)
 				
 				completitud_promedio_disp = f"{df_entidad_seleccionada['completitud_score'].mean():.2f}%" if 'completitud_score' in df_entidad_seleccionada.columns else "N/A"
-				# 🔴 FIX: Unir línea
 				riesgo_promedio_disp = f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}" if 'prioridad_riesgo_score' in df_entidad_seleccionada.columns else "N/A"
 				antiguedad_promedio_disp = f"{df_entidad_seleccionada['antiguedad_datos_dias'].mean():.0f} días" if 'antiguedad_datos_dias' in df_entidad_seleccionada.columns else "N/A"
 				
@@ -432,11 +434,9 @@ try:
 			df_filtrado = df_filtrado[df_filtrado['common_core_public_access_level'] == filtro_acceso]
 
 		if filtro_categoria != "Mostrar Todos":
-			# 🔴 FIX: Unir línea
 			df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
 
 		st.header("📊 Visualizaciones y Rankings")
-		# 🔴 FIX: Unir f-string
 		st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {filtro_acceso}; Categoría: {filtro_categoria})")
 
 		if df_filtrado.empty:
@@ -497,27 +497,23 @@ try:
 					
 					# 1. Riesgo Promedio (Columna 2)
 					if s['Riesgo_Promedio'] > UMBRAL_RIESGO_ALTO:
-						# 🔴 FIX: Unir string
 						styles[2] = 'color: red; font-weight: bold;'
 					else:
 						styles[2] = 'color: green; font-weight: bold;'
 
 					# 2. Completitud Promedio (Columna 3)
 					if s['Completitud_Promedio'] < UMBRAL_COMPLETITUD_BAJA:
-						# 🔴 FIX: Unir string
 						styles[3] = 'color: red; font-weight: bold;'
 					else:
 						styles[3] = 'color: green; font-weight: bold;'
 						
 					# 3. Antigüedad Promedio (Columna 4) - Aplicar color de texto (solo rojo si falla)
 					if s['Antiguedad_Promedio_Dias'] > 180:
-						# 🔴 FIX: Unir string
 						styles[4] = 'color: red; font-weight: bold;'
 					else:
 						styles[4] = 'color: inherit;' # Color por defecto si pasa.
 					# 4. % Incumplimiento (Columna 6) - Aplicar color de texto (solo rojo si falla)
 					if s['%_Incumplimiento'] > 20:
-						# 🔴 FIX: Unir string
 						styles[6] = 'color: red; font-weight: bold;'
 					else:
 						styles[6] = 'color: inherit;' # Color por defecto si pasa.
@@ -585,7 +581,6 @@ try:
 								orientation='h',
 								title='Top 10 Entidades con Peor Completitud Promedio',
 								color='Completitud_Promedio', 
-								# 🔴 FIX: Unir línea
 								color_continuous_scale=px.colors.sequential.Reds_r, # Usa un gradiente de rojo
 								labels={
 									'Completitud_Promedio': 'Score de Completitud Promedio (%)',
@@ -699,7 +694,6 @@ try:
 						st.plotly_chart(fig3, use_container_width=True)
 
 					else:
-						# 🔴 FIX: Unir string
 						st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización.")
 				except Exception as e:
 					st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías (Plotly). Detalle: {e}")
@@ -748,7 +742,6 @@ try:
 									'Dimensión de Riesgo': [
 										'1. Datos Incompletos (Completitud)',
 										'2. Duplicados Exactos (Unicidad)',
-										# 🔴 FIX: Unir string
 										'3. Consistencia de Tipo (Coherencia)',
 									],
 									'Riesgo Promedio (0-Máx)': [
