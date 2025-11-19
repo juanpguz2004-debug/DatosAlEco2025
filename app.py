@@ -370,18 +370,71 @@ try:
 
             
             # Lógica Condicional para mostrar la tabla
-            if filtro_acceso_publico:
-                # Caso: Activos Públicos (Mostrar detalle por ACTIVO y QUITAR ENTIDAD)
-                st.subheader("Detalle por Activo Público (Priorización Individual)")
+            
+            # Determinar si se debe mostrar el detalle de activos individuales:
+            # 1. Si se filtra por activos públicos (filtro_acceso_publico)
+            # 2. O si se ha seleccionado una entidad específica (filtro_dueño)
+            # ESTE ES EL CAMBIO CLAVE SOLICITADO
+            show_asset_detail = filtro_acceso_publico or (filtro_dueño != "Mostrar Análisis General")
+
+            if show_asset_detail:
+                # Caso: Activos Públicos O Entidad Específica (Mostrar detalle por ACTIVO)
                 
-                # Modificación Clave: Eliminando 'dueño'
-                df_tabla_activos = df_filtrado[['titulo', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']].copy()
-                df_tabla_activos = df_tabla_activos.rename(columns={
+                # Lógica para personalizar el encabezado
+                if filtro_dueño != "Mostrar Análisis General":
+                    st.subheader(f"Detalle de Activos Individuales para la Entidad: **{filtro_dueño}**")
+                    info_text = f"""
+                        **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** de la entidad **{filtro_dueño}**, ordenados por su Score de Riesgo (más alto primero).
+                        * 🟢 **Verde:** Riesgo $\le {UMBRAL_RIESGO_ALTO:.1f}$
+                        * 🔴 **Rojo:** Riesgo $> {UMBRAL_RIESGO_ALTO:.1f}$ (Prioridad Máxima)
+                    """
+                else:
+                    st.subheader("Detalle por Activo Público (Priorización Individual)")
+                    info_text = f"""
+                        **Vista Detallada:** Se muestran los **activos individuales públicos** filtrados, ordenados por su Score de Riesgo (más alto primero).
+                        * 🟢 **Verde:** Riesgo $\le {UMBRAL_RIESGO_ALTO:.1f}$
+                        * 🔴 **Rojo:** Riesgo $> {UMBRAL_RIESGO_ALTO:.1f}$ (Prioridad Máxima)
+                    """
+
+                # Definir las columnas a mostrar
+                # Si estamos en el modo "Análisis General" (pero solo activos públicos), mostramos el dueño.
+                # En caso contrario, el dueño es redundante.
+                cols_common = ['titulo', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']
+                
+                if filtro_dueño == "Mostrar Análisis General":
+                    # Activos Públicos de Múltiples Dueños: Mostrar el dueño.
+                    cols_to_show = ['dueño'] + cols_common
+                    column_config_map = {
+                        'dueño': st.column_config.TextColumn("Entidad Responsable"),
+                        'titulo': st.column_config.TextColumn("Título del Activo"),
+                        'prioridad_riesgo_score': st.column_config.NumberColumn("Riesgo Score", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
+                        'completitud_score': st.column_config.NumberColumn("Completitud Score", format="%.2f%%"),
+                        'antiguedad_datos_dias': st.column_config.NumberColumn("Antigüedad (Días)", format="%d"),
+                    }
+                else: 
+                    # Entidad Específica Seleccionada: El dueño es único, no se muestra.
+                    cols_to_show = cols_common
+                    column_config_map = {
+                        'titulo': st.column_config.TextColumn("Título del Activo"),
+                        'prioridad_riesgo_score': st.column_config.NumberColumn("Riesgo Score", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
+                        'completitud_score': st.column_config.NumberColumn("Completitud Score", format="%.2f%%"),
+                        'antiguedad_datos_dias': st.column_config.NumberColumn("Antigüedad (Días)", format="%d"),
+                    }
+                
+                df_tabla_activos = df_filtrado[cols_to_show].copy()
+                
+                # Renombrar columnas para la tabla
+                rename_map = {
                     'titulo': 'Activo',
                     'prioridad_riesgo_score': 'Riesgo_Score',
                     'completitud_score': 'Completitud_Score',
                     'antiguedad_datos_dias': 'Antiguedad_Dias'
-                }).sort_values(by='Riesgo_Score', ascending=False)
+                }
+                if 'dueño' in df_tabla_activos.columns:
+                    rename_map['dueño'] = 'Entidad Responsable'
+                
+                df_tabla_activos = df_tabla_activos.rename(columns=rename_map).sort_values(by='Riesgo_Score', ascending=False)
+                
                 
                 def color_riesgo_score(val):
                     color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
@@ -396,26 +449,21 @@ try:
                     'Antiguedad_Dias': '{:.0f}'
                 })
                 
-                st.info(f"""
-                    **Vista Detallada:** Se muestran los **activos individuales** filtrados, ordenados por su Score de Riesgo (más alto primero).
-                    * 🟢 **Verde:** Riesgo $\le {UMBRAL_RIESGO_ALTO:.1f}$
-                    * 🔴 **Rojo:** Riesgo $> {UMBRAL_RIESGO_ALTO:.1f}$ (Prioridad Máxima)
-                """)
+                st.info(info_text)
 
+                # Ajustar column_config para quitar el dueño si no está en la tabla
+                if 'Entidad Responsable' not in df_tabla_activos.columns:
+                    column_config_map.pop('Entidad Responsable', None) # Quitar si no existe
+                    
                 st.dataframe(
                     styled_df, 
                     use_container_width=True,
-                    column_config={
-                        'Activo': st.column_config.TextColumn("Título del Activo"),
-                        'Riesgo_Score': st.column_config.NumberColumn("Riesgo Score", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
-                        'Completitud_Score': st.column_config.NumberColumn("Completitud Score", format="%.2f%%"),
-                        'Antiguedad_Dias': st.column_config.NumberColumn("Antigüedad (Días)", format="%d"),
-                    },
+                    column_config=column_config_map,
                     hide_index=True
                 )
                 
             else:
-                # Caso: Activos No Públicos o Todos (Mostrar resumen por ENTIDAD)
+                # Caso: Activos No Públicos o Todos Y Análisis General (Mostrar resumen AGRUPADO por ENTIDAD)
                 st.subheader("Resumen Agrupado por Entidad Responsable")
                 
                 st.info(f"""
