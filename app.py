@@ -92,7 +92,7 @@ try:
     else:
         st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
 
-        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
+        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (SE MANTIENE) ---
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
         owners.sort()
         owners.insert(0, "Mostrar Análisis General")
@@ -101,6 +101,8 @@ try:
             "Selecciona una Entidad para ver su Desglose de Estadísticas:",
             owners
         )
+        
+        # ... (Resto del código de la sección 2 que no toca el diagnóstico externo se mantiene) ...
         
         # --- DESGLOSE DE ESTADÍSTICAS (KPIs) ---
         if filtro_dueño != "Mostrar Análisis General":
@@ -329,7 +331,6 @@ try:
                         df_diagnostico = process_external_data(uploaded_df.copy())
                         
                         if not df_diagnostico.empty:
-                            total_activos_subidos = len(df_diagnostico)
                             
                             # Nuevas métricas consolidadas
                             calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
@@ -345,18 +346,18 @@ try:
                             
                             # 1. Recomendación: Datos por Fila (Umbral de Riesgo > 0.5)
                             if avg_riesgo_datos_incompletos > 0.5: 
-                                recomendacion_lista.append("Llene las **celdas vacías o nulas** en las filas. Esto mejora la **Completitud de Datos por Fila**.")
+                                recomendacion_lista.append("Llene las **celdas vacías o nulas** en las filas. Esto mejora la **Completitud de Datos por Fila** (actualmente: {datos_fila_promedio:.2f}%).")
 
-                            # 2. Recomendación: Metadatos (Umbral de Riesgo > 0.1 Y Completitud < 90%)
-                            if avg_riesgo_metadatos_nulo > 0.1 and completitud_universal_promedio < 90:
-                                recomendacion_lista.append("Asegure que las columnas de **metadatos básicos** (`titulo`, `descripcion`, `dueño`) estén diligenciadas.")
+                            # 2. Recomendación: Metadatos (Umbral de Riesgo > 0.1 Y Completitud < 99.9%)
+                            if completitud_universal_promedio < 99.9:
+                                recomendacion_lista.append(f"Asegure que las columnas de **metadatos básicos** (`titulo`, `descripcion`, `dueño`) estén diligenciadas. La Completitud de Metadatos es actualmente **{completitud_universal_promedio:.2f}%**.")
                             
                             if not recomendacion_lista:
                                 recomendacion_final = "La **Calidad** es excelente. No se requieren mejoras prioritarias."
                                 estado = "🟢 CALIDAD ALTA"
                                 color = "green"
                             else:
-                                # Creamos una lista de Markdown para que Streamlit la renderice correctamente
+                                # Preparamos el texto de la recomendación con formato Markdown
                                 recomendaciones_md = "\n".join([f"* {r}" for r in recomendacion_lista])
                                 recomendacion_final = f"Para aumentar la Calidad Total, se requiere **atención prioritaria** en los siguientes aspectos:\n\n{recomendaciones_md}"
                                 
@@ -374,42 +375,30 @@ try:
                             
                             st.subheader("Resultados del Diagnóstico Rápido")
                             
-                            # --- DESPLIEGUE DE MÉTRICAS ---
-                            col_calidad, col_riesgo, col_meta = st.columns(3)
+                            # --- DESPLIEGUE DE MÉTRICAS SIMPLIFICADO ---
+                            col_calidad, col_meta = st.columns(2)
                             
                             col_calidad.metric("⭐ Calidad Total del Archivo", f"{calidad_total_final:.1f}%")
-                            col_riesgo.metric("Riesgo Promedio Universal", f"{riesgo_promedio_general:.2f}")
                             col_meta.metric("Completitud Metadatos (Avg)", f"{completitud_universal_promedio:.2f}%") 
 
-                            # Despliegue de la Recomendación (CORREGIDO)
-                            # Usamos un solo bloque de Markdown para evitar problemas de etiquetas
+                            # Despliegue de la Recomendación (CORRECCIÓN FINAL DE VISIBILIDAD)
+                            # Usamos un bloque de código HTML simple para el marco y st.markdown para el contenido.
                             st.markdown(f"""
                                 <div style='border: 2px solid {color}; padding: 15px; border-radius: 5px; background-color: #f9f9f9;'>
                                     <h4 style='color: {color}; margin-top: 0;'>Diagnóstico General: {estado}</h4>
                                     <p style='color: black;'>Este puntaje mapea el nivel de riesgo de tu archivo (máx. 3.5) a una escala de calidad de **0% a 100%**.</p>
-                                    
-                                    <h5 style='color: black; margin-top: 10px; margin-bottom: 5px;'>✨ Recomendación de Acciones:</h5>
-                                    <div style='color: black; font-weight: bold;'>
-                                        {recomendacion_final}
-                                    </div>
                                 </div>
                             """, unsafe_allow_html=True)
-                            # NOTA: Usamos el <div style='...'> para contener el texto sin conflicto.
-
-                            st.markdown("---")
-                            st.subheader("Desglose de Calidad de las Filas (Top 10 Riesgo)")
                             
-                            # Función para forzar texto negro en modo oscuro
-                            def make_text_black_important(s):
-                                return ['color: black !important' for v in s]
+                            # Nuevo bloque para las recomendaciones para evitar problemas de anidación HTML/Markdown
+                            st.markdown(f"#### ✨ Recomendación de Acciones:")
+                            st.markdown(recomendacion_final)
 
-                            cols_diagnostico = ['prioridad_riesgo_score', 'datos_por_fila_score', 'riesgo_datos_incompletos', 'riesgo_metadatos_nulo']
-                            df_cols_disponibles = df_diagnostico[[col for col in cols_diagnostico if col in df_diagnostico.columns]]
-                            
-                            st.dataframe(
-                                df_cols_disponibles.sort_values(by='prioridad_riesgo_score', ascending=False).head(10).style.apply(make_text_black_important, axis=1), 
-                                use_container_width=True
-                            )
+                            # Eliminamos la tabla de desglose.
+                            # st.markdown("---")
+                            # st.subheader("Desglose de Calidad de las Filas (Top 10 Riesgo)")
+                            # ... (código de la tabla eliminado)
+                            # ========================================
 
                         else:
                             st.error(f"❌ El archivo subido **{uploaded_filename}** no pudo ser procesado.")
