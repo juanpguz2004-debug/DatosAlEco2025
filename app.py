@@ -1,31 +1,46 @@
+import streamlit as st
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.ticker import PercentFormatter
-import io
+import io 
 from datetime import datetime
-import re
+import re 
 import warnings
-import os # Necesario para la conexión con el LLM
-from openai import OpenAI # Importar la librería del LLM
-import pandas as pd
-import streamlit as st
+import os 
+# --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
+from google import genai 
+# --- Importación de Plotly Express ---
+import plotly.express as px
+# --- Importaciones para el Clustering Dinámico/Clasificación (ML) ---
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+# *** CLUSTERING NO SUPERVISADO (K-MEANS) ***
+from sklearn.cluster import KMeans 
+# --- Fin de Importaciones para el Clustering Dinámico/Clasificación (ML) ---
+
+
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
-# --- Variables Globales ---
-ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv"
+# =================================================================
+# 0. VARIABLES GLOBALES Y CONFIGURACIÓN
+# =================================================================
+
+ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 # CRITERIO DE RIESGO
-UMBRAL_RIESGO_ALTO = 3.0
+UMBRAL_RIESGO_ALTO = 3.0 
+# Nuevo Umbral de Completitud
+UMBRAL_COMPLETITUD_BAJA = 70.0 
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
-PENALIZACION_DATOS_INCOMPLETOS = 2.0
-PENALIZACION_INCONSISTENCIA_TIPO = 0.5
-PENALIZACION_DUPLICADO = 1.0
-PENALIZACION_METADATO_CLAVE_FALTA = 1.0
-PENALIZACION_VENCIMIENTO_ML = 1.5 # Penalización por anomalía detectada
+PENALIZACION_DATOS_INCOMPLETOS = 2.0 	
+PENALIZACION_INCONSISTENCIA_TIPO = 0.5 	 # Valor de penalización por CADA columna con error de tipo
+PENALIZACION_DUPLICADO = 1.0 	 	 	 
+RIESGO_MAXIMO_TEORICO_UNIVERSAL = 10.0 # <--- CORREGIDO: Aumentado para reflejar el riesgo acumulativo
 
-# RIESGO MÁXIMO TEÓRICO (Universal + Metadatos + ML): 2.0 + 0.5 + 1.0 + 1.0 + 1.5 = 6.0
-RIESGO_MAXIMO_TEORICO_UNIVERSAL_COMPLETO = 6.0
+# ⚠️ CLAVE SECRETA DE GEMINI
+GEMINI_API_SECRET_VALUE = "Aiza"
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -33,673 +48,737 @@ RIESGO_MAXIMO_TEORICO_UNIVERSAL_COMPLETO = 6.0
 
 @st.cache_data
 def load_processed_data(file_path):
-    """Carga el archivo CSV YA PROCESADO y lo cachea."""
-    try:
-        # Asegúrate de que el archivo preprocess.py haya generado este archivo
-        df = pd.read_csv(file_path, low_memory=False)
-        return df
-    except FileNotFoundError:
-        return pd.DataFrame()
+	"""Carga el archivo CSV YA PROCESADO y lo cachea."""
+	try:
+		df = pd.read_csv(file_path, low_memory=False)
+		return df
+	except FileNotFoundError:
+		return pd.DataFrame()
 
-def clean_and_convert_types_external(df):
-    """Fuerza a las columnas a ser tipo object para asegurar la detección de inconsistencias."""
-    
-    # Columnas que suelen ser de tipo 'object' (string)
-    object_cols = ['titulo', 'descripcion', 'dueño']
-    
-    # Columnas que contienen los datos que queremos chequear por tipo mixto
-    data_cols = [col for col in df.columns if col not in object_cols]
-    
-    for col in data_cols:
-        if df[col].dtype != 'object':
-            try:
-                df[col] = df[col].astype(object)
-            except:
-                pass
+def clean_and_convert_types(df):
+	"""Fuerza a las columnas a ser tipo string para asegurar la 
+detección de inconsistencias."""
+	
+	# Columnas que suelen ser de tipo 'object' (string)
+	object_cols = ['titulo', 'descripcion', 'dueño'] 
+	
+	# Columnas que contienen los datos que queremos chequear por tipo mixto
+	data_cols = [col for col in df.columns if col not in object_cols]
+	
+	for col in data_cols:
+		if df[col].dtype != 'object':
+			try:
+				# Convertir a objeto para que el detector de inconsistencias funcione
+				df[col] = df[col].astype(object) 
+			except:
+				pass 
 
-    return df
+	return df
 
-def check_universals_external(df):
-    """
-    Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad.
-    """
-    n_cols = df.shape[1]
-    
-    # --- 1. COMPLETITUD: Datos por Fila (Densidad) ---
-    df['datos_por_fila_score'] = (df.notna().sum(axis=1) / n_cols) * 100
-    df['riesgo_datos_incompletos'] = np.where(
-        df['datos_por_fila_score'] < 70, PENALIZACION_DATOS_INCOMPLETOS, 0.0
-    )
+def calculate_universal_metrics(df):
+	"""
+	Calcula métricas de calidad universal, aplicando el nuevo umbral de completitud.
+"""
+	
+	# 1. Asegurar tipos para la detección de inconsistencias
+	df = clean_and_convert_types(df)
+	
+	n_cols = df.shape[1]
+	
+	# --- 1. COMPLETITUD: Datos por Fila (Densidad) ---
+	df['datos_por_fila_score'] = (df.notna().sum(axis=1) / n_cols) * 100
+	df['riesgo_datos_incompletos'] = np.where(
+		df['datos_por_fila_score'] < UMBRAL_COMPLETITUD_BAJA, PENALIZACION_DATOS_INCOMPLETOS, 0.0
+	)
 
-    # --- 2. CONSISTENCIA: Mezcla de Tipos (LÓGICA CORREGIDA) ---
-    df['riesgo_consistencia_tipo'] = 0.0
-    
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            inconsistencies_mask = df[col].apply(lambda x: pd.notna(x) and not isinstance(x, str))
-            df.loc[inconsistencies_mask, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO
-    
-    df['riesgo_consistencia_tipo'] = np.clip(df['riesgo_consistencia_tipo'], 0.0, PENALIZACION_INCONSISTENCIA_TIPO)
-        
-    # --- 3. UNICIDAD: Duplicados Exactos ---
-    df['es_duplicado'] = df.duplicated(keep=False)
-    df['riesgo_duplicado'] = np.where(
-        df['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
-    )
-    
-    return df
-
-# =================================================================
-# 2. Funciones de Riesgos Específicos (Restaurado del Código Viejo)
-# =================================================================
-
-def check_specific_metadata(df):
-    """
-    Evalúa la calidad de metadatos clave que definen el activo:
-    1. Existencia de campos clave.
-    2. Formato de la fecha de creación/modificación.
-    """
-    
-    campos_clave_metadatos = ['fecha_creacion', 'formato_archivo', 'categoria']
-    
-    # Inicializa la penalización de metadatos
-    df['riesgo_metadato_faltante'] = 0.0
-    
-    # --- 1. Penalización por Metadato Clave Faltante/Incompleto ---
-    
-    for campo in campos_clave_metadatos:
-        if campo in df.columns:
-            # Penaliza si el campo existe pero está vacío (NaN)
-            df.loc[df[campo].isna(), 'riesgo_metadato_faltante'] += PENALIZACION_METADATO_CLAVE_FALTA / len(campos_clave_metadatos)
-        else:
-            # Penaliza a todos los registros si el campo clave NO existe
-            df['riesgo_metadato_faltante'] += PENALIZACION_METADATO_CLAVE_FALTA / len(campos_clave_metadatos)
-            
-    # Asegura que la penalización máxima no exceda el límite
-    df['riesgo_metadato_faltante'] = np.clip(df['riesgo_metadato_faltante'], 0.0, PENALIZACION_METADATO_CLAVE_FALTA)
-
-    # --- 2. Validación de Formato de Fecha (Solo para métrica, no para riesgo) ---
-    # Esto impacta el 'completitud_score' general, no el 'riesgo_metadato_faltante'
-    
-    def is_valid_date(date_str):
-        if pd.isna(date_str):
-            return False
-        try:
-            # Intenta parsear la fecha. Se puede ajustar el formato
-            datetime.strptime(str(date_str).split(' ')[0], '%Y-%m-%d')
-            return True
-        except:
-            return False
-
-    if 'fecha_creacion' in df.columns:
-        df['fecha_valida'] = df['fecha_creacion'].apply(is_valid_date)
-    else:
-        df['fecha_valida'] = False # Si la columna no existe
-
-    return df
-
-def run_ml_anomaly_detection(df):
-    """
-    Simula una Detección de Anomalías (Machine Learning) basada en la antigüedad.
-    En un entorno real, esto sería un modelo como Isolation Forest o One-Class SVM.
-    """
-    
-    # Si la columna ya existe, se asume que el pre-proceso ya la corrió.
-    if 'anomalia_score' in df.columns:
-        return df
-
-    # Simulación de detección:
-    # 1. Calcular la antigüedad promedio.
-    # 2. Asignar un valor anómalo (ej. -1) si el activo tiene una antigüedad muy baja (ej. 1 día)
-    #    y el score de riesgo es bajo (lo que indicaría un 'activo fantasma' o un error de carga).
-    
-    if 'antiguedad_datos_dias' in df.columns:
-        # Penaliza activos muy nuevos (antigüedad <= 1 día) que tienen un riesgo universal muy bajo (casi perfecto)
-        # Esto podría indicar una carga de datos falsa o de prueba.
-        anomalia_mask = (df['antiguedad_datos_dias'] <= 1) & (df['prioridad_riesgo_score'] < 0.5)
-        df['anomalia_score'] = np.where(anomalia_mask, -1, 1) # -1 indica anomalía
-    else:
-        # Si la columna no está disponible, no penalizamos
-        df['anomalia_score'] = 1 
-        
-    # Asignar penalización por anomalía
-    df['riesgo_anomalia_ml'] = np.where(
-        df['anomalia_score'] == -1, PENALIZACION_VENCIMIENTO_ML, 0.0
-    )
-    
-    return df
-
-# =================================================================
-# 3. Función de Procesamiento Global (Integra todos los riesgos)
-# =================================================================
+	# --- 2. CONSISTENCIA: Mezcla de Tipos (¡CORREGIDO: Riesgo Acumulativo!) ---
+	df['riesgo_consistencia_tipo'] = 0.0
+	# Recorre CADA columna y ACUMULA el riesgo si detecta un problema de tipo
+	for col in df.select_dtypes(include='object').columns:
+		inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
+		if inconsistencies.any():
+			# 🚨 CORRECCIÓN CLAVE: Usamos += para sumar la penalización por cada columna que falla.
+			df.loc[inconsistencies, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO 
+		
+	# --- 3. UNICIDAD: Duplicados Exactos ---
+	df['es_duplicado'] = df.duplicated(keep=False) 
+	df['riesgo_duplicado'] = np.where(
+		df['es_duplicado'], PENALIZACION_DUPLICADO, 
+0.0
+	)
+	
+	# --- 4. CÁLCULO FINAL DE PRIORIDAD DE RIESGO ---
+	df['prioridad_riesgo_score'] = (
+		df['riesgo_datos_incompletos'] + 
+		df['riesgo_consistencia_tipo'] + # <--- Esto ahora acumula riesgo por columna
+		df['riesgo_duplicado']
+	)
+	
+	return df
 
 def process_external_data(df):
-    """
-    Lógica de riesgo universal completa para el archivo externo subido.
-    """
-    
-    # PASO 1: Limpieza y Evaluación de UNIVERSALES (Completitud, Consistencia, Unicidad)
-    df = clean_and_convert_types_external(df)
-    df = check_universals_external(df)
-    
-    # PASO 2: Evaluación de Metadatos Específicos
-    df = check_specific_metadata(df)
+	"""
+	Lógica de riesgo universal para el archivo externo subido.
+"""
+	
+	# PASO CLAVE: Calcuar las métricas de riesgo universal
+	df = calculate_universal_metrics(df)
 
-    # PASO 3: Cálculo del Score de Riesgo Preliminar (para ML)
-    df['prioridad_riesgo_score_pre_ml'] = (
-        df['riesgo_datos_incompletos'] + 
-        df['riesgo_consistencia_tipo'] +
-        df['riesgo_duplicado'] +
-        df['riesgo_metadato_faltante']
-    )
-    
-    # PASO 4: Detección de Anomalías (ML)
-    df = run_ml_anomaly_detection(df)
-    
-    # --- 5. CÁLCULO FINAL DE RIESGO Y CALIDAD (INTEGRACIÓN COMPLETA) ---
-    
-    # Score de riesgo total (las 4 dimensiones + ML)
-    df['prioridad_riesgo_score'] = (
-        df['prioridad_riesgo_score_pre_ml'] + 
-        df['riesgo_anomalia_ml']
-    )
-    
-    # CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%) - BASADO EN EL RIESGO MÁXIMO GLOBAL
-    avg_file_risk = df['prioridad_riesgo_score'].mean()
-    quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL_COMPLETO * 100)
-    
-    df['calidad_total_score'] = np.clip(quality_score, 0, 100)
+	# --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO (SOLO PARA MÉTRICA) ---
+	campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
+	num_campos_totales_base = len(campos_clave_universal)
+	
+	df['campos_clave_llenados'] = 0
+	
+	for campo in campos_clave_universal:
+		if campo in df.columns:
+			df['campos_clave_llenados'] += df[campo].notna().astype(int)
+			
+	df['completitud_metadatos_universal'] = (df['campos_clave_llenados'] / num_campos_totales_base) * 100
+	
+	completitud_metadatos_universal_score = df['completitud_metadatos_universal'].mean()
+	df['completitud_metadatos_universal'] = completitud_metadatos_universal_score
 
-    return df
+	
+	# --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD (Para el diagnóstico rápido) ---
+	
+	if 'completitud_score' not in df.columns:
+		df['completitud_score'] = df['datos_por_fila_score'] 
+	if 'antiguedad_datos_dias' not in df.columns:
+		df['antiguedad_datos_dias'] = 0 
+	
+	# CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
+	avg_file_risk = df['prioridad_riesgo_score'].mean()
+	# Usa el RIESGO_MAXIMO_TEORICO_UNIVERSAL corregido (10.0)
+	quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL 
+* 100) 
+	
+	df['calidad_total_score'] = np.clip(quality_score, 0, 100)
 
-# =================================================================
-# 4. Funciones de Soporte y Recomendación
-# =================================================================
+	return df
 
 def generate_specific_recommendation(risk_dimension):
-    """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
-    
-    # 1. Datos Incompletos (Completitud)
-    if 'Datos Incompletos' in risk_dimension:
-        return """
-**Identificación:** Localiza las columnas o filas con un alto porcentaje de valores **Nulos (NaN)**. El umbral de alerta se activa si el promedio de datos por fila es **menor al 70%**.
-
-**Acción:** Revisa los procesos de ingesta de datos. Si el campo es **obligatorio**, asegúrate de que todos los registros lo contengan. Si el campo es **opcional**, considera si es crucial para el análisis antes de llenarlo con un valor por defecto.
-        """
-    # 2. Duplicados Exactos (Unicidad)
-    elif 'Duplicados Exactos' in risk_dimension:
-        return """
+	"""Genera pasos de acción específicos para la dimensión de riesgo más alta, reflejando el nuevo umbral."""
+	
+	# 1. Datos Incompletos (Completitud)
+	if 'Datos Incompletos' in risk_dimension:
+		return f"""
+**Identificación:** Localiza las columnas o filas con un alto porcentaje de valores **Nulos (NaN)**.
+El umbral de alerta se activa si el promedio de datos por fila es **menor al {UMBRAL_COMPLETITUD_BAJA:.0f}%**.
+**Acción:** Revisa los procesos de ingesta de datos. Si el campo es **obligatorio**, asegúrate de que todos los registros lo contengan.
+Si el campo es **opcional**, considera si es crucial para el análisis antes de llenarlo con un valor por defecto.
+"""
+	# 2. Duplicados Exactos (Unicidad)
+	elif 'Duplicados Exactos' in risk_dimension:
+		return """
 **Identificación:** Encuentra las filas que son **copias exactas** (duplicados de todo el registro).
+**Acción:** Revisa tu proceso de extracción/carga. Un duplicado exacto generalmente indica un error de procesamiento o ingesta.
+**Elimina las copias** y asegúrate de que exista una **clave única** (UID) para cada registro que evite la re-ingesta accidental.
+"""
+	# 3. Consistencia de Tipo (Coherencia)
+	elif 'Consistencia de Tipo' in risk_dimension:
+		return """
+**Identificación:** Una columna contiene **datos mezclados** (ej. números, fechas, y texto en una columna que debería ser solo números).
+Esto afecta seriamente el análisis.
 
-**Acción:** Revisa tu proceso de extracción/carga. Un duplicado exacto generalmente indica un error de procesamiento o ingesta. **Elimina las copias** y asegúrate de que exista una **clave única** (UID) para cada registro que evite la re-ingesta accidental.
-        """
-    # 3. Consistencia de Tipo (Coherencia)
-    elif 'Consistencia de Tipo' in risk_dimension:
-        return """
-**Identificación:** Una columna contiene **datos mezclados** (ej. números, fechas, y texto en una columna que debería ser solo números). Esto afecta seriamente el análisis.
-
-**Acción:** Normaliza el tipo de dato para la columna afectada. Si es una columna numérica, **elimina los valores de texto** o conviértelos a `NaN` para una limpieza posterior. Define el **tipo de dato esperado** (Schema) para cada columna y aplica una validación estricta al inicio del proceso.
-        """
-    # 4. Metadatos Clave Faltantes
-    elif 'Metadatos Clave Faltantes' in risk_dimension:
-        return """
-**Identificación:** Faltan campos esenciales del esquema de metadatos (ej., `fecha_creacion`, `formato_archivo`). Estos campos son cruciales para el ciclo de vida del dato.
-
-**Acción:** **Prioriza la documentación**. Asegura que las tres columnas clave (`fecha_creacion`, `formato_archivo`, `categoria`) existan y contengan valores válidos para el activo.
-        """
-    # 5. Anomalía Detectada (ML)
-    elif 'Anomalía Detectada (ML)' in risk_dimension:
-        return """
-**Identificación:** El sistema de Machine Learning ha detectado que el activo tiene una combinación inusual de atributos (ej. un activo **muy nuevo** pero con un **riesgo de calidad extremadamente bajo**).
-
-**Acción:** **Revisa la fuente y el proceso de ingesta de este activo**. Podría ser un error de carga, un dato de prueba que se quedó en producción, o un problema con la etiqueta de tiempo.
-        """
-    else:
-        return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
+**Acción:** Normaliza el tipo de dato para la columna afectada.
+Si es una columna numérica, **elimina los valores de texto** o conviértelos a `NaN` para una limpieza posterior.
+Define el **tipo de dato esperado** (Schema) para cada columna y aplica una validación estricta al inicio del proceso.
+"""
+	else:
+		return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
 # =================================================================
-# 5. ASISTENTE DE CONSULTA DE DATOS (NLP)
+# FUNCIÓN CORE: CLUSTERING NO SUPERVISADO (K-MEANS Y PCA)
+# =================================================================
+
+def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=3):
+	"""
+	Segmenta activos en N_CLUSTERS grupos (K-Means) usando los scores de riesgo,
+	y aplica PCA para visualización interactiva con Plotly.
+"""
+	
+	ML_FEATURES = ['prioridad_riesgo_score', 'datos_por_fila_score', 'completitud_score', 'antiguedad_datos_dias']
+	
+	missing_cols = [col for col in ML_FEATURES if col not in df_input.columns]
+	if missing_cols:
+		return pd.DataFrame(), None, f"Faltan métricas de riesgo para el ML: **{', '.join(missing_cols)}**.
+Asegúrate de que el archivo precargado contenga los scores de calidad."
+
+
+	if df_input.empty or len(df_input) < N_CLUSTERS:
+		return pd.DataFrame(), None, f"No hay suficientes datos (mínimo {N_CLUSTERS} filas) para la segmentación."
+
+	# --- 1. MUESTREO (Para rendimiento y visualización clara) ---
+	sample_size = min(MAX_SAMPLE_SIZE, len(df_input))
+	df_sample = df_input[['dueño', 'titulo'] + ML_FEATURES].reset_index(drop=True).sample(n=sample_size, random_state=42)
+	
+	# ------------------------------------------------------------
+	# 2) PREPARACIÓN DE FEATURES (X)
+	# ------------------------------------------------------------
+	
+	df_ml_features = df_sample[ML_FEATURES].fillna(0).copy()
+	
+	scaler = StandardScaler()
+	X_scaled = scaler.fit_transform(df_ml_features)
+	
+	# ------------------------------------------------------------
+	# 3) CLUSTERING NO SUPERVISADO (K-MEANS)
+	# ------------------------------------------------------------
+	
+	model = KMeans(n_clusters=N_CLUSTERS, random_state=42, n_init=10)
+	df_sample['CLUSTER'] = model.fit_predict(X_scaled)
+	
+	# ------------------------------------------------------------
+	# 4) ETIQUETADO DEL CLUSTER BASADO EN RIESGO PROMEDIO
+	# ------------------------------------------------------------
+	
+	risk_per_cluster = df_sample.groupby('CLUSTER')['prioridad_riesgo_score'].mean()
+	sorted_clusters = risk_per_cluster.sort_values(ascending=True).index
+	segment_names = ['🟢 Completos', '🟡 Aceptables', '🔴 Incompletos']
+	cluster_mapping = dict(zip(sorted_clusters, segment_names))
+	df_sample['PREDICTED_SEGMENT'] = df_sample['CLUSTER'].map(cluster_mapping)
+
+
+	# ------------------------------------------------------------
+	# 5) PCA (Visualización)
+	# ------------------------------------------------------------
+	
+	pca = PCA(n_components=2)
+	points_2d = pca.fit_transform(X_scaled)
+
+	df_sample['PC1'] = points_2d[:, 0]
+	df_sample['PC2'] = points_2d[:, 1]
+	
+	variance_ratio = pca.explained_variance_ratio_.sum()
+	
+	return df_sample, variance_ratio, None
+
+# =================================================================
+# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) (SIN CAMBIOS)
 # =================================================================
 
 def setup_data_assistant(df):
-    """
-    Configura el asistente de consulta de datos usando LLM.
-    """
-    
-    st.markdown("---")
-    st.header("🧠 Asistente de Consulta de Datos (NLP)")
-    st.markdown("#### 💬 Haz una pregunta sobre los Activos (Lenguaje Natural)")
-    st.info("Ejemplos: '¿Cuál es la entidad con el riesgo promedio más alto?' o 'Dame el promedio de Completitud por categoría'.")
-    
-    # --- 1. CONFIGURACIÓN DE CLAVE API ---
-    api_key = st.text_input(
-        "Ingresa tu clave API de OpenAI o Gemini (si usas otro modelo):", 
-        type="password", 
-        key="api_key_nlp"
-    )
-    
-    if not api_key:
-        st.warning("Por favor, introduce una clave API para activar el asistente.")
-        st.markdown("---")
-        return
+	"""
+	Configura el asistente de consulta de datos usando la API nativa de Gemini.
+"""
+	
+	st.markdown("---")
+	st.header("🧠 Asistente de Consulta de Datos (Análisis de Lenguaje Natural)")
+	st.markdown("#### ✅ Pregunta lo que sea sobre la estructura de tus datos (API nativa de Gemini)")
+	st.info("Ejemplos: '¿Qué columnas tenemos disponibles?', 'Describe los valores más comunes en la columna dueño'. Si la pregunta no se puede responder con la estructura de los datos, el modelo te lo dirá y te sugerirá una pregunta alternativa.")
+	
+	# --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
+	if GEMINI_API_SECRET_VALUE == "Aiza":
+		st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
+		st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu 
+clave `AIza...`.")
+		st.markdown("---")
+		return
 
-    # --- 2. INTERFAZ DE USUARIO ---
-    user_query = st.text_input(
-        "Tu pregunta sobre el Inventario de Activos:",
-        key="nlp_query"
-    )
+	# --- 2. INICIALIZAR EL CLIENTE GEMINI ---
+	try:
+		client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
+		
+	except Exception as e:
+		st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API.
+Detalle: {e}")
+		st.markdown("---")
+		return
 
-    if st.button("Consultar Datos", use_container_width=True) and user_query:
-        if df.empty:
-            st.error("No hay datos cargados para realizar la consulta.")
-            return
+	# --- 3. PREPARAR CONTEXTO DE DATOS (SCHEMA) ---
+	buffer = io.StringIO()
+	df.info(buf=buffer)
+	df_info_str = buffer.getvalue()
+	
+	data_head = df.head(5).to_markdown(index=False)
 
-        with st.spinner(f"El Asistente está analizando: '{user_query}'..."):
-            try:
-                # Inicializar el cliente (Asegúrate de cambiar a Google-GenAI si usas Gemini)
-                client = OpenAI(api_key=api_key)
-                
-                # Definir el contexto del Agente (System Prompt)
-                system_prompt = f"""
-                Eres un asistente de datos experto en Python y Pandas. Tu tarea es responder preguntas 
-                sobre el DataFrame 'df_analisis_completo'. 
-                El DataFrame contiene {len(df)} activos y tiene las siguientes columnas clave: {df.columns.tolist()}.
-                
-                Genera código Python (pandas) para encontrar la respuesta. Luego, proporciona el resultado
-                de la ejecución del código. NO necesitas ejecutar el código, solo simula la respuesta.
-                """
-                
-                # --- SIMULACIÓN AVANZADA DE RESPUESTAS (para demostrar la funcionalidad) ---
-                
-                if 'riesgo' in user_query.lower() or 'peor' in user_query.lower():
-                    if 'dueño' in df.columns and 'prioridad_riesgo_score' in df.columns:
-                        simulated_code = "df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)"
-                        simulated_result = df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)
-                        
-                        st.success(f"✅ Resultado de la consulta: Entidades con Mayor Riesgo Promedio")
-                        st.code(f"Código ejecutado:\n{simulated_code}", language='python')
-                        st.dataframe(simulated_result.reset_index().rename(columns={'prioridad_riesgo_score': 'Riesgo_Promedio'}), hide_index=True)
-                    else:
-                        st.warning("Columnas 'dueño' o 'prioridad_riesgo_score' no encontradas para esta consulta.")
-                    
-                elif 'completitud' in user_query.lower() or 'promedio' in user_query.lower():
-                    if 'completitud_score' in df.columns:
-                        simulated_code = "df['completitud_score'].mean()"
-                        simulated_result = df['completitud_score'].mean()
-                        
-                        st.success(f"✅ Resultado de la consulta: Completitud Promedio Global")
-                        st.code(f"Código ejecutado:\n{simulated_code}", language='python')
-                        st.write(f"El score de Completitud Promedio Global es: **{simulated_result:.2f}%**")
-                    else:
-                        st.warning("Columna 'completitud_score' no encontrada para esta consulta.")
 
-                else:
-                    st.warning("⚠️ El agente LLM (motor de IA) no ejecutó el código. Esta es una **simulación** que requiere un LLM real y una ejecución segura (por ejemplo, con LangChain) para obtener resultados exactos de consultas complejas.")
-                    st.code("Consulta enviada al LLM. El modelo generaría y ejecutaría el código Pandas aquí.")
+	# --- 4. INTERFAZ DE USUARIO ---
+	user_query = st.text_input(
+		"Tu pregunta sobre la ESTRUCTURA del Inventario de Activos:",
+		key="nlp_query_simple"
+	)
 
-            except Exception as e:
-                st.error(f"❌ Error durante la consulta al LLM: {e}. Asegúrate que la librería **openai** está instalada y la clave API es correcta.")
+	if st.button("Consultar Estructura (Gemini Simple)", use_container_width=True) and user_query:
+		if df.empty:
+			st.error("No hay datos cargados para realizar la consulta.")
+			return
+
+		with st.spinner(f"El Asistente de Gemini está analizando la estructura de los datos para responder: '{user_query}'..."):
+			
+			system_prompt = (
+				"Eres un Asistente de Análisis de Datos experto. Tu objetivo es responder preguntas sobre la ESTRUCTURA y las MUESTRAS "
+				"de un DataFrame de Pandas. NO PUEDES EJECUTAR CÓDIGO de Python para cálculos complejos (sumas, promedios, filtrados extensos), "
+				"solo 
+puedes analizar la información de la MUESTRA y el ESQUEMA que se te proporciona.\n"
+				
+				"CONTEXTO DEL DATAFRAME:\n"
+				f"Esquema (df.info()):\n{df_info_str}\n"
+				f"Muestra de Datos (df.head()):\n{data_head}\n"
+				
+				"REGLAS CRÍTICAS DE RESPUESTA:\n"
+				"1.
+Si la pregunta del usuario puede ser respondida directamente con la MUESTRA o el ESQUEMA (ej: '¿Cuáles son las columnas?', '¿De qué tipo es la columna dueño?', '¿Qué valores aparecen en la muestra para la columna X?'), responde de manera concisa y profesional.\n"
+				"2.
+Si la pregunta requiere CÁLCULOS O AGREGACIONES COMPLEJAS sobre todo el dataset (ej: 'Suma de activos', 'Promedio de riesgo', 'Cuántos hay en la categoría X'), DEBES responder ÚNICAMENTE con el siguiente texto exacto:\n"
+				"'No puedo responder esa pregunta basándome en los datos disponibles.
+Mi funcionalidad actual solo me permite analizar el esquema y una pequeña muestra de los datos.
+Te sugiero preguntar: [SUGERENCIA DE PREGUNTA ALTERNATIVA].'\n"
+				"3. La SUGESTIÓN DE PREGUNTA ALTERNATIVA debe ser una pregunta que SÍ se pueda responder con la muestra o el esquema (ej: '¿Qué columnas son de tipo object?', '¿Qué valores tiene la columna dueño en la muestra?', '¿Qué tan viejo es el activo de la primera fila?')."
+			)
+
+			try:
+				# LLAMADA A LA API DE GEMINI
+				response = client.models.generate_content(
+					model='gemini-2.5-flash',
+					contents=[
+						{"role": "user", "parts": [{"text": user_query}]},
+					],
+					config=genai.types.GenerateContentConfig(
+						system_instruction=system_prompt,
+						temperature=0.0
+					)
+				)
+				
+				st.success("✅ Respuesta generada por el Asistente de IA:")
+				st.markdown(response.text)
+
+			except Exception as e:
+				st.error(f"❌ Error durante la llamada a la API de Gemini. Detalle: {e}")
+				st.warning("Verifica tu clave API y la conexión.")
 
 
 # =================================================================
-# 6. Ejecución Principal del Dashboard
+# 2. Ejecución Principal del Dashboard
 # =================================================================
 
-st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Completo)")
+st.title("📊 Dashboard 
+de Priorización de Activos de Datos (Análisis Completo)")
 
 try:
-    with st.spinner(f'Cargando archivo procesado: **{ARCHIVO_PROCESADO}**...'):
-        df_analisis_completo = load_processed_data(ARCHIVO_PROCESADO) 
+	with st.spinner(f'Cargando archivo procesado: **{ARCHIVO_PROCESADO}**...'):
+		df_analisis_completo = load_processed_data(ARCHIVO_PROCESADO) 
 
-    if df_analisis_completo.empty:
-        st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
-    else:
-        st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
+	if df_analisis_completo.empty:
+		st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**.
+Asegúrate de que existe y se ejecutó `preprocess.py`.")
+	else:
+		df_analisis_completo = calculate_universal_metrics(df_analisis_completo.copy())
+		
+		st.success(f'✅ Archivo pre-procesado y métricas base cargadas. Total de activos: **{len(df_analisis_completo)}**')
 
-        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
-        owners = df_analisis_completo['dueño'].dropna().unique().tolist()
-        owners.sort()
-        owners.insert(0, "Mostrar Análisis General")
-        
-        filtro_dueño = st.selectbox(
-            "Selecciona una Entidad para ver su Desglose de Estadísticas:",
-            owners
-        )
-        
-        # --- DESGLOSE DE ESTADÍSTICAS (KPIs) ---
-        if filtro_dueño != "Mostrar Análisis General":
-            df_entidad_seleccionada = df_analisis_completo[df_analisis_completo['dueño'] == filtro_dueño]
-            
-            if not df_entidad_seleccionada.empty:
-                st.subheader(f"Estadísticas Clave para: **{filtro_dueño}**")
-                
-                total_activos = len(df_entidad_seleccionada)
-                incumplimiento = (df_entidad_seleccionada['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()
-                
-                col1, col2, col3, col4, col5 = st.columns(5)
-                
-                col1.metric("Activos Totales", total_activos)
-                col2.metric("Completitud Promedio", f"{df_entidad_seleccionada['completitud_score'].mean():.2f}%")
-                col3.metric("Riesgo Promedio", f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}")
-                col4.metric("Incumplimiento Absoluto", f"{incumplimiento} / {total_activos}")
-                
-                if 'antiguedad_datos_dias' in df_entidad_seleccionada.columns:
-                    col5.metric("Antigüedad Promedio", f"{df_entidad_seleccionada['antiguedad_datos_dias'].mean():.0f} días")
-                else:
-                    col5.metric("Antigüedad Promedio", "N/A")
-                
-                st.markdown("---")
-            else:
-                st.warning(f"⚠️ No se encontraron activos para la entidad: {filtro_dueño}")
-                st.markdown("---")
+		# --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (FILTROS) ---
+		owners = df_analisis_completo['dueño'].dropna().unique().tolist()
+		owners.sort()
+		owners.insert(0, "Mostrar Análisis General")
+		
+		filtro_dueño = st.selectbox(
+			"Selecciona una Entidad para ver su Desglose de Estadísticas:",
+			owners
+		)
+		
+		# --- DESGLOSE DE ESTADÍSTICAS (KPIs) ---
+		if filtro_dueño != "Mostrar Análisis General":
+			df_entidad_seleccionada = df_analisis_completo[df_analisis_completo['dueño'] == filtro_dueño]
+			
+			if not df_entidad_seleccionada.empty:
+				st.subheader(f"Estadísticas Clave para: **{filtro_dueño}**")
+				
+				total_activos = len(df_entidad_seleccionada)
+				incumplimiento = (df_entidad_seleccionada['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum() if 'estado_actualizacion' in df_entidad_seleccionada.columns else 0
+				
+				col1, col2, col3, col4, col5 = st.columns(5)
+				
+				col1.metric("Activos Totales", total_activos)
+				
+				completitud_promedio_disp = f"{df_entidad_seleccionada['completitud_score'].mean():.2f}%" if 'completitud_score' in df_entidad_seleccionada.columns else "N/A"
+				riesgo_promedio_disp = f"{df_entidad_seleccionada['prioridad_riesgo_score'].mean():.2f}" if 'prioridad_riesgo_score' in df_entidad_seleccionada.columns 
+else "N/A"
+				antiguedad_promedio_disp = f"{df_entidad_seleccionada['antiguedad_datos_dias'].mean():.0f} días" if 'antiguedad_datos_dias' in df_entidad_seleccionada.columns else "N/A"
+				
+				col2.metric("Completitud Promedio", completitud_promedio_disp)
+				col3.metric("Riesgo Promedio", riesgo_promedio_disp)
+				col4.metric("Incumplimiento Absoluto", f"{incumplimiento} / {total_activos}")
+				col5.metric("Antigüedad Promedio", antiguedad_promedio_disp)
 
-        # --- BARRA LATERAL (FILTROS SECUNDARIOS) ---
-        st.sidebar.header("⚙️ Filtros para Visualizaciones")
-        
-        filtro_acceso = "Mostrar Todos"
-        if 'common_core_public_access_level' in df_analisis_completo.columns:
-            access_levels = df_analisis_completo['common_core_public_access_level'].dropna().unique().tolist()
-            access_levels.sort()
-            access_levels.insert(0, "Mostrar Todos")
-            filtro_acceso = st.sidebar.selectbox("Filtrar por Nivel de Acceso:", access_levels)
+				st.markdown("---")
+			else:
+				st.warning(f"⚠️ No se encontraron activos para la entidad: {filtro_dueño}")
+				st.markdown("---")
 
-        filtro_categoria = "Mostrar Todos"
-        if 'categoria' in df_analisis_completo.columns:
-            categories = df_analisis_completo['categoria'].dropna().unique().tolist()
-            categories.sort()
-            categories.insert(0, "Mostrar Todos")
-            filtro_categoria = st.sidebar.selectbox("Filtrar por Categoría:", categories)
+		# --- BARRA LATERAL (FILTROS SECUNDARIOS) ---
+		st.sidebar.header("⚙️ Filtros para Visualizaciones")
+		
+		filtro_acceso = "Mostrar Todos"
+		if 'common_core_public_access_level' in df_analisis_completo.columns:
+			access_levels = df_analisis_completo['common_core_public_access_level'].dropna().unique().tolist()
+			access_levels.sort()
+			access_levels.insert(0, "Mostrar Todos")
+			filtro_acceso = st.sidebar.selectbox("Filtrar por Nivel de Acceso:", access_levels)
 
-
-        # --- APLICAR FILTROS (Para las Visualizaciones) ---
-        df_filtrado = df_analisis_completo.copy()
-        
-        if filtro_dueño != "Mostrar Análisis General":
-             df_filtrado = df_filtrado[df_filtrado['dueño'] == filtro_dueño]
-
-        if filtro_acceso != "Mostrar Todos":
-             df_filtrado = df_filtrado[df_filtrado['common_core_public_access_level'] == filtro_acceso]
-
-        if filtro_categoria != "Mostrar Todos":
-            df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
-
-        st.header("📊 Visualizaciones y Rankings")
-        st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {filtro_acceso}; Categoría: {filtro_categoria})")
-
-        if df_filtrado.empty:
-            st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
-        else:
-            
-            # --- 7. Métricas de la Vista Actual ---
-            st.subheader("Métricas de la Vista Actual")
-            col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
-            col_metrica1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
-            col_metrica2.metric("Activos en Incumplimiento", f"{(df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_filtrado)}")
-            if 'anomalia_score' in df_filtrado.columns:
-                 col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
-            else:
-                 col_metrica3.metric("Anomalías Detectadas (ML)", "N/A")
-            
-            st.markdown("---")
-
-            # --- 8. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) ---
-            st.header("🔍 8. Tabla de Búsqueda y Diagnóstico de Entidades")
-
-            # TEXTO CORREGIDO PARA EL NUEVO UMBRAL (3.0)
-            st.info(f"""
-                La columna **Riesgo Promedio** tiene un formato de color:
-                * 🟢 **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO:.1f}**. Intervención no urgente.
-                * 🔴 **Rojo:** El riesgo promedio es **mayor a {UMBRAL_RIESGO_ALTO:.1f}**. Se requiere **intervención/actualización prioritaria**.
-            """)
-            
-            resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
-                Activos_Totales=('uid', 'count'),
-                Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
-                Completitud_Promedio=('completitud_score', 'mean'),
-                Antiguedad_Promedio_Dias=('antiguedad_datos_dias', 'mean'),
-                Incumplimiento_Absoluto=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
-            ).reset_index()
-
-            resumen_entidades_busqueda['%_Incumplimiento'] = (resumen_entidades_busqueda['Incumplimiento_Absoluto'] / resumen_entidades_busqueda['Activos_Totales']) * 100
-            resumen_entidades_busqueda = resumen_entidades_busqueda.rename(columns={'dueño': 'Entidad Responsable'})
-            resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
-            
-            def color_riesgo_promedio(val):
-                color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
-                return color
-            
-            styled_df = resumen_entidades_busqueda.style.applymap(
-                color_riesgo_promedio, 
-                subset=['Riesgo_Promedio']
-            ).format({
-                'Riesgo_Promedio': '{:.2f}',
-                'Completitud_Promedio': '{:.2f}%',
-                'Antiguedad_Promedio_Dias': '{:.0f}',
-                '%_Incumplimiento': '{:.2f}%'
-            })
+		filtro_categoria = "Mostrar Todos"
+		if 'categoria' in df_analisis_completo.columns:
+			categories = df_analisis_completo['categoria'].dropna().unique().tolist()
+			categories.sort()
+			categories.insert(0, "Mostrar Todos")
+			filtro_categoria = st.sidebar.selectbox("Filtrar por Categoría:", categories)
 
 
-            st.dataframe(
-                styled_df, 
-                use_container_width=True,
-                column_config={
-                    'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable"),
-                    'Activos_Totales': st.column_config.NumberColumn("Activos Totales"),
-                    'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
-                    'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%"),
-                    'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d"),
-                    'Incumplimiento_Absoluto': st.column_config.NumberColumn("Activos en Incumplimiento (Count)"),
-                    '%_Incumplimiento': st.column_config.TextColumn("% Incumplimiento")
-                },
-                hide_index=True
-            )
+		# --- APLICAR FILTROS (GENERANDO df_filtrado) ---
+		df_filtrado = df_analisis_completo.copy()
+		
+		if filtro_dueño != "Mostrar Análisis General":
+			df_filtrado = df_filtrado[df_filtrado['dueño'] == filtro_dueño]
 
-            st.markdown("---")
-            
-            # --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES ---
-            tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Burbujas de Riesgo", "3. Cobertura Temática"])
+		if filtro_acceso != "Mostrar Todos":
+			df_filtrado = df_filtrado[df_filtrado['common_core_public_access_level'] == filtro_acceso]
 
-            with tab1:
-                # --- Visualización 1: Ranking de Completitud (Peor Rendimiento) ---
-                st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
-                
-                try:
-                    COLUMNA_ENTIDAD = 'dueño'
-                    resumen_completitud = df_filtrado.groupby(COLUMNA_ENTIDAD).agg(
-                        Total_Activos=('uid', 'count'),
-                        Completitud_Promedio=('completitud_score', 'mean')
-                    ).reset_index()
-                    
-                    entidades_volumen = resumen_completitud[resumen_completitud['Total_Activos'] >= 5]
-                    df_top_10_peor_completitud = entidades_volumen.sort_values(by='Completitud_Promedio', ascending=True).head(10)
-                    
-                    if not df_top_10_peor_completitud.empty:
-                        fig1, ax1 = plt.subplots(figsize=(10, 6))
-                        sns.barplot(x='Completitud_Promedio', y=COLUMNA_ENTIDAD, data=df_top_10_peor_completitud, palette='Reds_r', ax=ax1)
-                        ax1.set_title('Top 10 Entidades con Peor Completitud Promedio', fontsize=14)
-                        ax1.set_xlabel('Score de Completitud Promedio (%)', fontsize=12)
-                        ax1.set_ylabel('Entidad Responsable', fontsize=12)
-                        st.pyplot(fig1)
-                    else:
-                        st.warning("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking.")
-                except Exception as e:
-                    st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
+		if filtro_categoria != "Mostrar Todos":
+			df_filtrado = 
+df_filtrado[df_filtrado['categoria'] == filtro_categoria]
 
-            with tab2:
-                # --- Visualización 2: Gráfico de Burbujas de Riesgo ---
-                st.subheader("2. 🫧 Burbujas de Priorización de Riesgo por Entidad")
-                st.markdown("Este gráfico muestra la **relación entre el riesgo, la completitud de metadatos y el volumen de activos** por entidad.")
-                st.markdown("* **Eje X:** Riesgo Promedio (Se debe minimizar, mejor a la izquierda).")
-                st.markdown("* **Eje Y:** Completitud Promedio (Se debe maximizar, mejor arriba).")
-                st.markdown("* **Tamaño de Burbuja:** Volumen de Activos.")
+		st.header("📊 Visualizaciones y Rankings")
+		st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {filtro_acceso};
+Categoría: {filtro_categoria})")
 
-                try:
-                    df_bubble = df_filtrado.groupby('dueño').agg(
-                        Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
-                        Completitud_Promedio=('completitud_score', 'mean'),
-                        Volumen=('uid', 'count')
-                    ).reset_index()
-                    
-                    if not df_bubble.empty:
-                        fig2, ax2 = plt.subplots(figsize=(12, 8))
-                        
-                        max_volumen = df_bubble['Volumen'].max()
-                        s_volumen = (df_bubble['Volumen'] / max_volumen) * 2000
-                        
-                        scatter = ax2.scatter(
-                            x=df_bubble['Riesgo_Promedio'], 
-                            y=df_bubble['Completitud_Promedio'], 
-                            s=s_volumen, 
-                            c=df_bubble['Completitud_Promedio'], 
-                            cmap='RdYlGn', 
-                            alpha=0.6, 
-                            edgecolors="w", 
-                            linewidth=1
-                        )
-                        
-                        # Anotar las 5 burbujas más grandes (mayor volumen)
-                        for i in df_bubble.nlargest(5, 'Volumen').index:
-                             ax2.annotate(df_bubble.loc[i, 'dueño'], 
-                                         (df_bubble.loc[i, 'Riesgo_Promedio'], df_bubble.loc[i, 'Completitud_Promedio']), 
-                                         fontsize=8, alpha=0.8)
+		if df_filtrado.empty:
+			st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
+		else:
+			
+			# --- 3. Métricas de la Vista Actual ---
+			st.subheader("Métricas de la Vista Actual")
+			col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
+			
+			completitud_promedio_disp_2 = f"{df_filtrado['completitud_score'].mean():.2f}%" if 'completitud_score' in df_filtrado.columns else "N/A"
+			
+			col_metrica1.metric("Completitud Promedio", completitud_promedio_disp_2)
+			
+			incumplimiento_count = (df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum() if 'estado_actualizacion' in df_filtrado.columns else 0
+			col_metrica2.metric("Activos en Incumplimiento", f"{incumplimiento_count} / {len(df_filtrado)}")
+			
+			if 'anomalia_score' in df_filtrado.columns:
+				col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
+			else:
+				col_metrica3.metric("Anomalías Detectadas (ML)", "N/A")
+			
+			st.markdown("---")
 
-                        ax2.axhline(80, color='gray', linestyle='--', alpha=0.5)
-                        ax2.axvline(UMBRAL_RIESGO_ALTO, color='red', linestyle=':', alpha=0.7)
+			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades ---
+			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
+			
+			# Se actualiza la descripción para reflejar que sólo se usa color de texto
+			st.info(f"""
+				La tabla 
+usa **color de texto** condicional para identificar problemas de calidad rápidamente:
+				* 🔴 **Riesgo Promedio** > **{UMBRAL_RIESGO_ALTO:.1f}** (Prioridad Máxima).
+* 🔴 **%_Incumplimiento** > **20%** (Problema Operacional).
+				* 🔴 **Antigüedad Promedio** > **180 días** (Riesgo de Obsolescencia).
+* 🔴 **Completitud Promedio** < **{UMBRAL_COMPLETITUD_BAJA:.0f}%** (Riesgo de Usabilidad).
+			""")
+			
+			required_cols_summary = ['prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias', 'estado_actualizacion']
+			
+			if all(col in df_filtrado.columns for col in required_cols_summary):
+			
+				resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
+					Activos_Totales=('uid', 'count'),
+					Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
+					Completitud_Promedio=('completitud_score', 'mean'),
+					Antiguedad_Promedio_Dias=('antiguedad_datos_dias', 'mean'),
+					Incumplimiento_Absoluto=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
+				).reset_index()
 
-                        ax2.set_xlabel('Riesgo Promedio (Peor →)', fontsize=12)
-                        ax2.set_ylabel('Completitud Promedio (Mejor ↑)', fontsize=12)
-                        ax2.set_title('Matriz de Priorización de Entidades (Riesgo vs. Completitud)', fontsize=16)
-                        
-                        cbar = fig2.colorbar(scatter, ax=ax2)
-                        cbar.set_label('Completitud Promedio (%)')
-                        
-                        st.pyplot(fig2)
-                    else:
-                        st.warning("No hay suficientes datos de entidad para generar el Gráfico de Burbujas.")
-                        
-                except Exception as e:
-                    st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Gráfico de Burbujas. Detalle: {e}")
+				resumen_entidades_busqueda['%_Incumplimiento'] = (resumen_entidades_busqueda['Incumplimiento_Absoluto'] / resumen_entidades_busqueda['Activos_Totales']) * 100
+				resumen_entidades_busqueda = resumen_entidades_busqueda.rename(columns={'dueño': 'Entidad Responsable'})
+				resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
+				
+				
+				# 🟢 Función de estilo para usar SÓLO color de texto en todas las columnas de riesgo
+				def highlight_metrics_text_color(s):
+					"""Aplica color de texto (rojo/verde) a TODAS las métricas críticas."""
+					styles = [''] * len(s)
+					
+					# 1. Riesgo Promedio (Columna 2)
+					if s['Riesgo_Promedio'] > UMBRAL_RIESGO_ALTO:
+						styles[2] = 'color: red;
+font-weight: bold;'
+					else:
+						styles[2] = 'color: green; font-weight: bold;'
 
-
-            with tab3:
-                # --- Visualización 3: Cobertura Temática por Categoría ---
-                st.subheader("3. 🗺️ Cobertura Temática por Categoría")
-                
-                try:
-                    COLUMNA_CATEGORIA = 'categoria'
-                    if COLUMNA_CATEGORIA in df_filtrado.columns:
-                        conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10)
-                    else:
-                        conteo_categoria = pd.Series([], dtype='int')
-
-                    if not conteo_categoria.empty:
-                        fig3, ax3 = plt.subplots(figsize=(10, 7))
-                        sns.barplot(x=conteo_categoria.values, y=conteo_categoria.index, palette='viridis', ax=ax3)
-                        ax3.set_title('Top 10 Categorías con Mayor Cobertura Temática', fontsize=16)
-                        ax3.set_xlabel('Número de Activos', fontsize=12)
-                        ax3.set_ylabel('Categoría', fontsize=12)
-                        st.pyplot(fig3)
-                    else:
-                        st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización.")
-                except Exception as e:
-                    st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
+					# 2. Completitud Promedio (Columna 3)
+					if s['Completitud_Promedio'] < UMBRAL_COMPLETITUD_BAJA:
+						styles[3] = 'color: red;
+font-weight: bold;'
+					else:
+						styles[3] = 'color: green; font-weight: bold;'
+						
+					# 3. Antigüedad Promedio (Columna 4) - Aplicar color de texto (solo rojo si falla)
+					if s['Antiguedad_Promedio_Dias'] > 180:
+						styles[4] = 'color: red;
+font-weight: bold;'
+					else:
+						styles[4] = 'color: inherit;' # Color por defecto si pasa.
+# 4. % Incumplimiento (Columna 6) - Aplicar color de texto (solo rojo si falla)
+					if s['%_Incumplimiento'] > 20:
+						styles[6] = 'color: red;
+font-weight: bold;'
+					else:
+						styles[6] = 'color: inherit;' # Color por defecto si pasa.
+					return styles
 
 
-        
-        # ----------------------------------------------------------------------
-        # --- SECCIÓN 9: DIAGNÓSTICO DE ARCHIVO EXTERNO
-        # ----------------------------------------------------------------------
-        st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
-        st.header(f"💾 Diagnóstico de Archivo CSV Externo (Calidad Integral)")
-        st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a 5 dimensiones integrales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL_COMPLETO:.1f}**).")
-
-        uploaded_file = st.file_uploader(
-            "Selecciona el Archivo CSV", 
-            type="csv"
-        )
-
-        if uploaded_file is not None:
-            with st.spinner('Analizando archivo...'):
-                try:
-                    uploaded_filename = uploaded_file.name
-                    # Lógica de lectura robusta con detección de delimitadores
-                    uploaded_file.seek(0)
-                    uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False)
-                    if len(uploaded_df.columns) <= 1:
-                        uploaded_file.seek(0)
-                        uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False, sep=';')
-                        if len(uploaded_df.columns) <= 1:
-                            uploaded_file.seek(0)
-                            uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False, sep='\t')
+				# Aplicar la función de estilo a todas las filas
+				styled_df = resumen_entidades_busqueda.style.apply(
+					highlight_metrics_text_color,
+					axis=1
+				).format({
+					'Riesgo_Promedio': '{:.2f}',
+					'Completitud_Promedio': '{:.2f}%',
+					'Antiguedad_Promedio_Dias': '{:.0f}',
+					'%_Incumplimiento': '{:.2f}%'
+				})
 
 
-                    if uploaded_df.empty:
-                        st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío.")
-                    else:
-                        df_diagnostico = process_external_data(uploaded_df.copy())
-                        
-                        if not df_diagnostico.empty:
-                            
-                            # Métricas consolidadas
-                            calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
-                            riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
+				st.dataframe(
+					styled_df, 
+					use_container_width=True,
+					column_config={
+						'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable"),
+						'Activos_Totales': st.column_config.NumberColumn("Activos Totales"),
+						'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
+						'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%", help=f"Rojo < {UMBRAL_COMPLETITUD_BAJA:.0f}%."),
+						'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d", help="Rojo > 180 días."),
+						'Incumplimiento_Absoluto': st.column_config.NumberColumn("Activos en Incumplimiento (Count)"),
+						'%_Incumplimiento': st.column_config.TextColumn("% Incumplimiento", help="Rojo > 20%")
+					},
+					hide_index=True
+				)
+			
+			else:
+				st.warning("⚠️ No se puede generar la Tabla de Diagnóstico de Entidades.
+Faltan métricas clave en los datos cargados.")
 
-                            # Desglose de Riesgos Promedio
-                            riesgos_reporte = pd.DataFrame({
-                                'Dimensión de Riesgo': [
-                                    '1. Datos Incompletos (Completitud)',
-                                    '2. Duplicados Exactos (Unicidad)',
-                                    '3. Consistencia de Tipo (Coherencia)',
-                                    '4. Metadatos Clave Faltantes',
-                                    '5. Anomalía Detectada (ML)',
-                                ],
-                                'Riesgo Promedio (0-Máx)': [
-                                    df_diagnostico['riesgo_datos_incompletos'].mean(),
-                                    df_diagnostico['riesgo_duplicado'].mean(),
-                                    df_diagnostico['riesgo_consistencia_tipo'].mean(),
-                                    df_diagnostico['riesgo_metadato_faltante'].mean(),
-                                    df_diagnostico['riesgo_anomalia_ml'].mean(),
-                                ]
-                            })
-                            riesgos_reporte = riesgos_reporte.sort_values(by='Riesgo Promedio (0-Máx)', ascending=False)
-                            riesgos_reporte['Riesgo Promedio (0-Máx)'] = riesgos_reporte['Riesgo Promedio (0-Máx)'].round(2)
-                            
-                            
-                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA ===
-                            
-                            recomendacion_final_md = ""
-                            
-                            riesgo_max_reportado = riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']
-                            dimension_riesgo_max = riesgos_reporte.iloc[0]['Dimensión de Riesgo']
+			st.markdown("---")
+			
+			# --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES ---
+			tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Segmentación (Clustering K-Means)", "3. Cobertura Temática"])
 
-                            # Determinar la penalización máxima de la dimensión más riesgosa
-                            if 'Datos Incompletos' in dimension_riesgo_max:
-                                PENALIZACION_MAX = PENALIZACION_DATOS_INCOMPLETOS
-                            elif 'Duplicados Exactos' in dimension_riesgo_max:
-                                PENALIZACION_MAX = PENALIZACION_DUPLICADO
-                            elif 'Consistencia de Tipo' in dimension_riesgo_max:
-                                PENALIZACION_MAX = PENALIZACION_INCONSISTENCIA_TIPO
-                            elif 'Metadatos Clave Faltantes' in dimension_riesgo_max:
-                                PENALIZACION_MAX = PENALIZACION_METADATO_CLAVE_FALTA
-                            elif 'Anomalía Detectada (ML)' in dimension_riesgo_max:
-                                PENALIZACION_MAX = PENALIZACION_VENCIMIENTO_ML
-                            else:
-                                PENALIZACION_MAX = 0.0
-                            
-                            # Umbral: Se activa si el riesgo promedio excede el 10% de la penalización máxima de esa dimensión
-                            UMBRAL_ACTIVACION_RECOMENDACION = 0.10 * PENALIZACION_MAX
+			with tab1:
+				# --- Visualización 1: Ranking de Completitud (Plotly - Degradado) ---
+				st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
+				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
+				
+				try:
+					COLUMNA_ENTIDAD = 'dueño'
+					if 'completitud_score' in df_filtrado.columns:
+						resumen_completitud = df_filtrado.groupby(COLUMNA_ENTIDAD).agg(
+							Total_Activos=('uid', 'count'),
+							Completitud_Promedio=('completitud_score', 'mean')
+						).reset_index()
+						
+						entidades_volumen = resumen_completitud[resumen_completitud['Total_Activos'] >= 5]
+						df_top_10_peor_completitud = entidades_volumen.sort_values(by='Completitud_Promedio', ascending=True).head(10)
+						
+						if not df_top_10_peor_completitud.empty:
+							
+							# 🟢 Se mantiene esta configuración para el gradiente
+							fig1 = px.bar(
+								df_top_10_peor_completitud,
+								x='Completitud_Promedio', 
+								y=COLUMNA_ENTIDAD,
+								orientation='h',
+								title='Top 10 Entidades con Peor Completitud Promedio',
+								color='Completitud_Promedio', 
+								color_continuous_scale=px.colors.sequential.Reds_r, 
+# Usa un gradiente de rojo
+								labels={
+									'Completitud_Promedio': 'Score de Completitud Promedio (%)',
+									COLUMNA_ENTIDAD: 'Entidad Responsable'
+								},
+								hover_data={
+									'Completitud_Promedio': ':.2f',
+									'Total_Activos': True
+								}
+							)
+							
+							fig1.update_layout(yaxis={'categoryorder':'total ascending'}, coloraxis_showscale=True) 
+							
+							st.plotly_chart(fig1, use_container_width=True)
+						else:
+							st.warning("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking.")
+					else:
+						st.warning("No se puede generar el Ranking de Completitud.
+Falta la columna 'completitud_score'.")
+				except Exception as e:
+					st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud (Plotly). Detalle: {e}")
 
-                            if riesgo_max_reportado > UMBRAL_ACTIVACION_RECOMENDACION:
-                                # Identificar el riesgo más alto
-                                riesgo_dimension_max = dimension_riesgo_max
-                                
-                                # Generar la explicación específica
-                                explicacion_especifica = generate_specific_recommendation(riesgo_dimension_max)
-                                
-                                # Formato de salida con bloques de código para claridad
-                                recomendacion_final_md = f"""
+			with tab2:
+				# --- Visualización 2: Segmentación de Riesgo (Clustering K-Means) ---
+				st.subheader("2. 🤖 Segmentación de Riesgo (Clustering K-Means y PCA)")
+				st.markdown("Se utiliza el algoritmo **K-Means (No Supervisado)** para agrupar los activos en **3 clusters** según sus métricas de calidad y riesgo. Los clusters se etiquetan automáticamente basándose en el riesgo promedio de cada grupo.")
+				st.caption("Gráfico interactivo: Usa el hover para ver el segmento, el riesgo exacto y la entidad. ")
+				
+				with st.spinner("Ejecutando Modelo de Clustering K-Means y PCA..."):
+					df_segmented_sample, variance_ratio, error_message = run_supervised_segmentation_pca(df_filtrado)
+				
+				if error_message:
+					st.warning(f"⚠️ {error_message}")
+				elif not 
+df_segmented_sample.empty:
+					try:
+						# Definir el mapeo de colores
+						color_map = {
+							'🟢 Completos': 'green', 
+							'🟡 Aceptables': 'gold', 
+							'🔴 Incompletos': 'red'
+						}
+						
+						fig2 = px.scatter(
+							df_segmented_sample, 
+							x='PC1', 
+							y='PC2',
+							color='PREDICTED_SEGMENT',
+							color_discrete_map=color_map,
+							title=f'Segmentos de Calidad por K-Means (Proyección PCA, {len(df_segmented_sample)} muestras)',
+							hover_data={
+								'dueño': True,
+								'titulo': True,
+								'prioridad_riesgo_score': ':.2f',
+								'PREDICTED_SEGMENT': True,
+								'PC1': False, 
+								'PC2': False
+							}
+						)
+						
+						fig2.update_traces(marker=dict(size=8, opacity=0.8))
+						fig2.update_layout(
+							xaxis_title=f"Componente Principal 1 (PC1)",
+							yaxis_title=f"Componente Principal 2 (PC2)",
+							legend_title="Segmento (K-Means)"
+						)
+
+						st.plotly_chart(fig2, use_container_width=True)
+						st.caption(f"Varianza Explicada por PC1 y PC2: **{variance_ratio*100:.2f}%**")
+					except Exception as e:
+						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico de Segmentación (Plotly).
+Detalle: {e}")
+						st.warning("Se recomienda revisar los datos en las columnas 'dueño' y 'titulo' en la muestra.")
+				else:
+					st.warning("No se pudo calcular la Segmentación para los datos filtrados.")
+
+
+			with tab3:
+				# --- Visualización 3: Cobertura Temática por Categoría (Plotly - SIN CAMBIOS) ---
+				st.subheader("3. 🗺️ Cobertura Temática por Categoría")
+				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
+				
+				try:
+					COLUMNA_CATEGORIA = 'categoria'
+					if COLUMNA_CATEGORIA in df_filtrado.columns:
+						conteo_categoria_df = df_filtrado[COLUMNA_CATEGORIA].value_counts().reset_index()
+						conteo_categoria_df.columns = [COLUMNA_CATEGORIA, 'Numero de Activos']
+						
+						conteo_categoria_df = conteo_categoria_df.head(10)
+					else:
+						conteo_categoria_df = pd.DataFrame()
+
+					if not conteo_categoria_df.empty:
+						
+						fig3 = px.bar(
+							conteo_categoria_df,
+							x='Numero de Activos', 
+							y=COLUMNA_CATEGORIA,
+							orientation='h',
+							title='Top 10 Categorías con Mayor Cobertura Temática',
+							color='Numero de Activos',
+							color_continuous_scale=px.colors.sequential.Viridis,
+							labels={
+								'Numero de Activos': 'Número de Activos',
+								COLUMNA_CATEGORIA: 'Categoría'
+							},
+							hover_data={
+								'Numero de Activos': True
+							}
+						)
+						
+						fig3.update_layout(yaxis={'categoryorder':'total ascending'}) 
+						
+						st.plotly_chart(fig3, use_container_width=True)
+
+					else:
+						st.warning("La 
+columna 'categoria' no contiene suficientes valores para generar la visualización.")
+				except Exception as e:
+					st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías (Plotly).
+Detalle: {e}")
+
+
+			
+			# ----------------------------------------------------------------------
+			# --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO ---
+			# ----------------------------------------------------------------------
+			st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
+			st.header("💾 Diagnóstico de Archivo CSV Externo (Calidad Universal)")
+			st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a 3 dimensiones universales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL:.1f}**).")
+
+			uploaded_file = st.file_uploader(
+				"Selecciona el Archivo CSV", 
+				type="csv"
+			)
+
+			if uploaded_file is not None:
+				with st.spinner('Analizando archivo...'):
+					try:
+						uploaded_filename = uploaded_file.name
+						uploaded_file.seek(0)
+						uploaded_content = uploaded_file.getvalue().decode("utf-8")
+						
+						# Lógica de lectura robusta con detección de delimitadores
+						uploaded_df = pd.read_csv(io.StringIO(uploaded_content), low_memory=False)
+						if len(uploaded_df.columns) <= 1:
+							uploaded_df = pd.read_csv(io.StringIO(uploaded_content), low_memory=False, sep=';')
+							if len(uploaded_df.columns) <= 1:
+								uploaded_df = pd.read_csv(io.StringIO(uploaded_content), low_memory=False, sep='\t')
+
+
+						if uploaded_df.empty:
+							st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío.")
+						else:
+							df_diagnostico = process_external_data(uploaded_df.copy())
+							
+							if not df_diagnostico.empty:
+								
+								calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
+								completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
+								riesgo_promedio_total = 
+df_diagnostico['prioridad_riesgo_score'].mean()
+
+								riesgos_reporte = pd.DataFrame({
+									'Dimensión de Riesgo': [
+										'1. Datos Incompletos (Completitud)',
+										'2. Duplicados Exactos (Unicidad)',
+										'3.
+Consistencia de Tipo (Coherencia)',
+									],
+									'Riesgo Promedio (0-Máx)': [
+										df_diagnostico['riesgo_datos_incompletos'].mean(),
+										df_diagnostico['riesgo_duplicado'].mean(),
+										df_diagnostico['riesgo_consistencia_tipo'].mean(),
+									]
+								})
+								riesgos_reporte = riesgos_reporte.sort_values(by='Riesgo Promedio (0-Máx)', ascending=False)
+								riesgos_reporte['Riesgo Promedio (0-Máx)'] = riesgos_reporte['Riesgo Promedio (0-Máx)'].round(2)
+								
+								recomendacion_final_md = ""
+								riesgo_max_reportado = riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']
+								
+								if riesgo_max_reportado > 0.15:
+									riesgo_dimension_max = riesgos_reporte.iloc[0]['Dimensión de Riesgo']
+									explicacion_especifica = generate_specific_recommendation(riesgo_dimension_max)
+									
+									recomendacion_final_md = f"""
 El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f}). Enfoca tu esfuerzo en corregir este problema primero.
-
 <br>
 
 **Detalle y Acciones:**
@@ -707,58 +786,48 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 {explicacion_especifica}
 """
 
-                            if not recomendacion_final_md:
-                                recomendacion_final_md = "La Calidad es excelente. No se requieren mejoras prioritarias en las dimensiones analizadas."
-                                estado = "🟢 CALIDAD ALTA"
-                                color = "green"
-                            else:
-                                if calidad_total_final < 60:
-                                    estado = "🔴 CALIDAD BAJA (URGENTE)"
-                                    color = "red"
-                                elif calidad_total_final < 85:
-                                    estado = "🟡 CALIDAD MEDIA (MEJORA REQUERIDA)"
-                                    color = "orange"
-                                else:
-                                    estado = "🟢 CALIDAD ACEPTABLE"
-                                    color = "green"
+								if not recomendacion_final_md:
+									recomendacion_final_md = "La Calidad es excelente.
+No se requieren mejoras prioritarias en las dimensiones analizadas."
+									estado = "🟢 CALIDAD ALTA"
+									color = "green"
+								else:
+									if calidad_total_final < 60:
+										estado = "🔴 CALIDAD BAJA (URGENTE)"
+										color = "red"
+									elif calidad_total_final < 85:
+										estado = "🟡 CALIDAD MEDIA (MEJORA REQUERIDA)"
+										color = "orange"
+									else:
+										estado = "🟢 CALIDAD ACEPTABLE"
+										color = "green"
 
-                            # === FIN LÓGICA DE RECOMENDACIÓN ===
-                            
-                            # --- DESPLIEGUE DE MÉTRICAS SIMPLIFICADO ---
-                            st.subheader("Resultados del Diagnóstico Rápido")
-                            
-                            col_calidad, col_riesgo = st.columns(2)
-                            
-                            col_calidad.metric("⭐ Calidad Total del Archivo", f"{calidad_total_final:.1f}%")
-                            col_riesgo.metric("Riesgo Promedio Total", f"{riesgo_promedio_total:.2f}")
+								st.subheader(f"Resultado del Diagnóstico para {uploaded_filename}")
+								
+								col_res1, col_res2, col_res3 = st.columns(3)
+								col_res1.metric("Calidad Total (0-100%)", f"{calidad_total_final:.2f}%", delta=estado, delta_color=color)
+								col_res2.metric("Riesgo Promedio Total", f"{riesgo_promedio_total:.2f}")
+								col_res3.metric("Metadatos Base Completitud", f"{completitud_universal_promedio:.2f}%")
 
-                            # Despliegue de la Recomendación
-                            st.markdown(f"""
-                                <div style='border: 2px solid {color}; padding: 15px; border-radius: 5px; background-color: #f9f9f9;'>
-                                    <h4 style='color: {color}; margin-top: 0;'>Diagnóstico General: {estado}</h4>
-                                </div>
-                            """, unsafe_allow_html=True)
-                            
-                            st.markdown("#### 🔬 Desglose de Riesgos (Auditoría)")
-                            
-                            # VISUALIZACIÓN DE TABLA DE RIESGOS
-                            st.dataframe(
-                                riesgos_reporte.style.format({'Riesgo Promedio (0-Máx)': '{:.2f}'}),
-                                use_container_width=True,
-                                hide_index=True
-                            )
-                            
-                            st.markdown("#### 🚀 Recomendación Prioritaria")
-                            st.markdown(recomendacion_final_md)
+								st.markdown("### 📋 Desglose de Riesgos por Dimensión")
+								st.dataframe(riesgos_reporte, use_container_width=True, hide_index=True)
+								
+								st.markdown("### 🛠️ Recomendación de Acción Prioritaria")
+								st.markdown(recomendacion_final_md)
+								
+							else:
+								st.error("❌ Falló el procesamiento del archivo subido.")
+					
+					except Exception as e:
+						st.error(f"❌ Error al procesar el archivo CSV.
+Asegúrate de que el formato sea correcto. Detalle: {e}")
+				
+			
+			# ----------------------------------------------------------------------
+			# --- SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS ---
+			# ----------------------------------------------------------------------
+			setup_data_assistant(df_analisis_completo)
 
 
-                except Exception as e:
-                    st.error(f"❌ Error al procesar el archivo subido: {e}. Asegúrate de que el formato (CSV, delimitador) es correcto.")
-
-        # ----------------------------------------------------------------------
-        # --- SECCIÓN 10: ASISTENTE DE CONSULTA DE DATOS (LLM)
-        # ----------------------------------------------------------------------
-        setup_data_assistant(df_analisis_completo)
-
-except Exception as e:
-    st.error(f"Se produjo un error crítico en el flujo principal del dashboard: {e}")
+except Exception as e_principal:
+	st.error(f"❌ ERROR FATAL en la ejecución del Dashboard: {e_principal}")
