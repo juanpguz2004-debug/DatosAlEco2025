@@ -324,6 +324,22 @@ try:
         df_analisis_completo = apply_advanced_risk_checks(df_analisis_completo) 
         # --- FIN DE APLICACIÓN DE CHEQUEOS AVANZADOS ---
         
+        # --- NUEVA LÓGICA: Cálculo del Score de Información Clave por Activo (Métrica Principal) ---
+        # Se utilizan los campos clave universal definidos para el diagnóstico externo como proxy.
+        KEY_FIELDS = ['titulo', 'descripcion', 'dueño'] 
+        
+        # Filtrar campos que realmente existen en el DataFrame
+        existing_key_fields = [field for field in KEY_FIELDS if field in df_analisis_completo.columns]
+        
+        if existing_key_fields:
+            # Calcular el número de campos clave no nulos para cada fila
+            df_analisis_completo['key_fields_filled'] = df_analisis_completo[existing_key_fields].notna().sum(axis=1)
+            # Calcular el score como porcentaje
+            df_analisis_completo['key_info_score'] = (df_analisis_completo['key_fields_filled'] / len(existing_key_fields)) * 100
+        else:
+            df_analisis_completo['key_info_score'] = 0.0 # Valor por defecto si faltan los campos
+        # --- FIN NUEVA LÓGICA ---
+        
         st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
 
         # --- Carga de la Base de Conocimiento (Inicialización) ---
@@ -594,11 +610,16 @@ try:
             # ----------------------------------------------------------------------
             
             if filtro_acceso_publico:
-                # 📌 CASO: Activos Públicos (Priorización)
+                # 📌 CASO: Activos Públicos (Priorización) - Mantenemos 3 tabs
                 tab1, tab2, tab3 = st.tabs(["1. Ranking de Priorización (Riesgo/Incompletitud)", "2. K-Means Clustering", "3. Activos Menos Actualizados (Antigüedad)"])
             else:
-                # 📌 CASO: Vista General (Completitud/Riesgo)
-                tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática"])
+                # 📌 CASO: Vista General (Completitud/Riesgo) - Añadimos 2 tabs (total 4)
+                tab1, tab2, tab3, tab4 = st.tabs([
+                    "1. Ranking de Completitud", 
+                    "2. K-Means Clustering (Priorización)", 
+                    "3. % Info Clave por Categoría (Nuevo KPI)", # NUEVO KPI (Métrica solicitada)
+                    "4. Matriz de Cobertura Temática (Volumen)" # NUEVO (Matriz solicitada)
+                ])
 
             with tab1:
                 # --- Visualización 1: Ranking de Priorización (Combinado o por Entidad) ---
@@ -730,11 +751,11 @@ try:
                     st.error(f"❌ ERROR [Visualización 2]: Falló la generación del K-Means Clustering. Detalle: Asegúrate de tener suficientes datos ({len(df_cluster)}) para el clustering. Error técnico: {e}")
 
 
-            with tab3:
-                # --- Visualización 3: Cobertura Temática (General) o Activos Menos Actualizados (Público) ---
-                
-                if filtro_acceso_publico:
-                    # 📌 NUEVO GRÁFICO: Activos Menos Actualizados (Antigüedad)
+            
+            if filtro_acceso_publico:
+                # --- Lógica de la Pestaña 3 para Vista PÚBLICA (Activos Menos Actualizados) ---
+                with tab3:
+                    # 📌 GRÁFICO: Activos Menos Actualizados (Antigüedad)
                     st.subheader("3. ⏰ Ranking Top 10 Activos Públicos Menos Actualizados")
                     st.info("Estos activos requieren una revisión inmediata de su proceso de recolección de datos, ya que su antigüedad es la más alta en el inventario público.")
                     
@@ -746,48 +767,104 @@ try:
                     Y_TITLE = 'Activo'
                     COLOR_SCALE = px.colors.sequential.YlOrRd # Escala que va a rojo (peor)
 
-                else:
-                    # 📌 GRÁFICO EXISTENTE: Cobertura Temática (General)
-                    st.subheader("3. 🗺️ Cobertura Temática por Categoría (Mayor a Menor)")
+                    try:
+                        if not df_viz3.empty:
+                            fig3 = px.bar(
+                                df_viz3, 
+                                x=X_COLUMN, 
+                                y=EJE_Y, 
+                                orientation='h',
+                                title=TITULO,
+                                labels={X_COLUMN: X_TITLE, EJE_Y: Y_TITLE},
+                                color=X_COLUMN,
+                                color_continuous_scale=COLOR_SCALE,
+                                height=500
+                            )
+                            fig3.update_layout(xaxis_title=X_TITLE, yaxis_title=Y_TITLE)
+                            st.plotly_chart(fig3, use_container_width=True)
+                        else:
+                            st.warning("La columna 'antiguedad_datos_dias' no contiene suficientes valores para generar la visualización.")
+                    except Exception as e:
+                        st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot. Detalle: {e}")
+
+            else:
+                # --- Lógica de la Pestaña 3 para Vista GENERAL (Nuevo KPI) ---
+                with tab3:
+                    st.subheader("3. 🔑 Ranking Top 10: % de Activos con Información Clave por Categoría")
+                    st.info("Esta métrica indica la calidad de los metadatos esenciales (**título, descripción, dueño**) dentro de cada categoría. Valores bajos requieren priorizar la documentación de esos activos.")
                     
                     COLUMNA_CATEGORIA = 'categoria'
-                    if COLUMNA_CATEGORIA in df_filtrado.columns:
-                        conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10).reset_index()
-                        conteo_categoria.columns = ['Categoria', 'Numero_de_Activos']
-                        conteo_categoria = conteo_categoria.sort_values(by='Numero_de_Activos', ascending=False)
-                    else:
-                        conteo_categoria = pd.DataFrame({'Categoria': [], 'Numero_de_Activos': []})
-                        
-                    df_viz3 = conteo_categoria
-                    EJE_Y = 'Categoria'
-                    X_COLUMN = 'Numero_de_Activos'
-                    TITULO = 'Top 10 Categorías con Mayor Cobertura Temática'
-                    X_TITLE = 'Número de Activos'
-                    Y_TITLE = 'Categoría'
-                    COLOR_SCALE = px.colors.sequential.Viridis
                     
-
-                try:
-                    if not df_viz3.empty:
-                        fig3 = px.bar(
-                            df_viz3, 
-                            x=X_COLUMN, 
-                            y=EJE_Y, 
-                            orientation='h',
-                            title=TITULO,
-                            labels={X_COLUMN: X_TITLE, EJE_Y: Y_TITLE},
-                            color=X_COLUMN,
-                            color_continuous_scale=COLOR_SCALE,
-                            height=500
-                        )
-                        fig3.update_layout(xaxis_title=X_TITLE, yaxis_title=Y_TITLE)
-                        st.plotly_chart(fig3, use_container_width=True)
+                    if COLUMNA_CATEGORIA in df_filtrado.columns:
+                        resumen_key_info = df_filtrado.groupby(COLUMNA_CATEGORIA).agg(
+                            Total_Activos=('uid', 'count'),
+                            Key_Info_Promedio=('key_info_score', 'mean') # Usar el nuevo score
+                        ).reset_index()
+                        
+                        # Filtrar categorías con suficiente volumen para ranking
+                        entidades_volumen = resumen_key_info[resumen_key_info['Total_Activos'] >= 5]
+                        
+                        # Ordenar por el score de información clave (peor primero)
+                        df_viz3_new = entidades_volumen.sort_values(by='Key_Info_Promedio', ascending=True).head(10)
+                        EJE_Y = COLUMNA_CATEGORIA
+                        X_COLUMN = 'Key_Info_Promedio'
+                        TITULO = 'Top 10 Categorías con Peor % de Información Clave'
+                        Y_TITLE = 'Categoría'
+                        X_TITLE = '% de Información Clave Promedio (0-100)'
+                        
+                        try:
+                            if not df_viz3_new.empty:
+                                fig3_new = px.bar(
+                                    df_viz3_new, 
+                                    x=X_COLUMN, 
+                                    y=EJE_Y, 
+                                    orientation='h',
+                                    title=TITULO,
+                                    labels={X_COLUMN: X_TITLE, EJE_Y: Y_TITLE},
+                                    color=X_COLUMN,
+                                    color_continuous_scale=px.colors.sequential.Sunsetdark_r, 
+                                    height=500
+                                )
+                                fig3_new.update_layout(xaxis_title=X_TITLE, yaxis_title=Y_TITLE)
+                                st.plotly_chart(fig3_new, use_container_width=True) 
+                            else:
+                                st.warning("No hay suficientes datos (mínimo 5 activos por categoría) para generar el ranking del KPI de Información Clave.")
+                        except Exception as e:
+                            st.error(f"❌ ERROR [Visualización 3 - KPI]: Falló la generación del Gráfico de KPI de Información Clave. Detalle: {e}")
                     else:
-                        st.warning("La columna 'antiguedad_datos_dias' o 'categoria' no contiene suficientes valores para generar la visualización.")
-                except Exception as e:
-                    st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot. Detalle: {e}")
+                        st.warning("La columna 'categoria' no está disponible para generar el ranking de KPI.")
 
+                # --- Lógica de la Pestaña 4 para Vista GENERAL (Matriz de Cobertura - Treemap) ---
+                with tab4:
+                    st.subheader("4. 🌳 Matriz de Cobertura Temática (Volumen de Activos por Categoría)")
+                    st.info("El **Treemap** actúa como una matriz, mostrando qué categorías (sectores) están más representadas (cuadros grandes) y cuáles están subrepresentadas (cuadros pequeños). El color indica la Completitud Promedio.")
 
+                    COLUMNA_CATEGORIA = 'categoria'
+                    
+                    if COLUMNA_CATEGORIA in df_filtrado.columns:
+                        
+                        # Contar activos por categoría y calcular completitud promedio
+                        df_treemap = df_filtrado.groupby(COLUMNA_CATEGORIA).agg(
+                            Numero_de_Activos=('uid', 'count'),
+                            Completitud_Promedio=('completitud_score', 'mean')
+                        ).reset_index()
+                        
+                        df_treemap.columns = ['Categoria', 'Numero_de_Activos', 'Completitud_Promedio']
+                        
+                        fig4 = px.treemap(
+                            df_treemap,
+                            path=['Categoria'],
+                            values='Numero_de_Activos',
+                            color='Completitud_Promedio', # Usar la completitud promedio como color
+                            color_continuous_scale='RdYlGn', # Escala de rojo a verde para completitud
+                            title='Volumen de Activos Segmentados por Categoría (Treemap)',
+                            height=600
+                        )
+                        fig4.update_layout(margin=dict(t=50, l=25, r=25, b=25))
+                        st.plotly_chart(fig4, use_container_width=True)
+                        
+                    else:
+                        st.warning("La columna 'categoria' no está disponible para generar el Treemap.")
             
             # ----------------------------------------------------------------------
             # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
