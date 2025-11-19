@@ -6,20 +6,22 @@ import seaborn as sns
 from matplotlib.ticker import PercentFormatter
 import io 
 from datetime import datetime
-import re # Necesario para check_universals en el app.py
+import re 
 import warnings
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
 # --- Variables Globales ---
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
-UMBRAL_RIESGO_ALTO = 1.0 
+# CRITERIO CORREGIDO: Subimos el umbral a 3.0 para balancear la nueva escala de riesgo (~7.5 máx)
+UMBRAL_RIESGO_ALTO = 3.0 
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES (DEBE COINCIDIR CON PREPROCESS.PY) ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0  
 PENALIZACION_METADATOS_NULOS = 1.5      
 PENALIZACION_INCONSISTENCIA_TIPO = 0.5   
 PENALIZACION_DUPLICADO = 1.0             
-RIESGO_MAXIMO_TEORICO_UNIVERSAL = 5.0 # (2.0 + 1.5 + 0.5 + 1.0) -> Máx. riesgo en app.py
+# Suma del riesgo universal máximo posible: 2.0 + 1.5 + 0.5 + 1.0 = 5.0
+RIESGO_MAXIMO_TEORICO_UNIVERSAL = 5.0 
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -124,7 +126,7 @@ try:
         st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
 
         # [ ... Bloque de selección de entidad, filtros y visualizaciones se mantiene sin cambios ... ]
-        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (SE MANTIENE) ---
+        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
         owners.sort()
         owners.insert(0, "Mostrar Análisis General")
@@ -210,10 +212,11 @@ try:
             # --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) ---
             st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 
+            # TEXTO CORREGIDO PARA EL NUEVO UMBRAL
             st.info(f"""
                 La columna **Riesgo Promedio** tiene un formato de color:
-                * 🟢 **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO}**. Intervención no urgente.
-                * 🔴 **Rojo:** El riesgo promedio es **mayor a {UMBRAL_RIESGO_ALTO}**. Se requiere **intervención/actualización prioritaria**.
+                * 🟢 **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO:.1f}**. Intervención no urgente.
+                * 🔴 **Rojo:** El riesgo promedio es **mayor a {UMBRAL_RIESGO_ALTO:.1f}**. Se requiere **intervención/actualización prioritaria**.
             """)
             
             resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
@@ -229,6 +232,7 @@ try:
             resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
             
             def color_riesgo_promedio(val):
+                # Aplicamos el nuevo umbral 
                 color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
                 return color
             
@@ -249,7 +253,7 @@ try:
                 column_config={
                     'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable"),
                     'Activos_Totales': st.column_config.NumberColumn("Activos Totales"),
-                    'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO}."),
+                    'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
                     'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%"),
                     'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d"),
                     'Incumplimiento_Absoluto': st.column_config.NumberColumn("Activos en Incumplimiento (Count)"),
@@ -353,8 +357,16 @@ try:
             with st.spinner('Analizando archivo...'):
                 try:
                     uploaded_filename = uploaded_file.name
+                    # Intentar lectura robusta (asumiendo que podría usar otro delimitador)
                     uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False)
-                    
+                    if len(uploaded_df.columns) <= 1:
+                        uploaded_file.seek(0)
+                        uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False, sep=';')
+                        if len(uploaded_df.columns) <= 1:
+                            uploaded_file.seek(0)
+                            uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False, sep='\t')
+
+
                     if uploaded_df.empty:
                         st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío.")
                     else:
