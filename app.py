@@ -9,11 +9,9 @@ from datetime import datetime
 import re 
 import warnings
 import os 
-# --- Importaciones para el Agente de IA ---
+# --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
-from langchain_google_genai import ChatGoogleGenerativeAI
-# ¡¡¡SOLUCIÓN FINAL!!! Importación corregida a la ruta más reciente y estable.
-from langchain.agents.agent_toolkits import create_pandas_dataframe_agent
+# Eliminamos todas las importaciones de LangChain para máxima estabilidad.
 # --- Fin de Importaciones para el Agente de IA ---
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
@@ -163,19 +161,19 @@ def generate_specific_recommendation(risk_dimension):
         return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
 # =================================================================
-# NUEVA SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
+# NUEVA SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) - (API NATIVA ESTABLE)
 # =================================================================
 
 def setup_data_assistant(df):
     """
-    Configura el asistente de consulta de datos usando el Agente de Pandas de LangChain
-    con el modelo Gemini.
+    Configura el asistente de consulta de datos usando la API nativa de Gemini.
+    Este asistente solo analiza la estructura y una muestra de los datos.
     """
     
     st.markdown("---")
-    st.header("🧠 Asistente de Consulta de Datos (NLP)")
-    st.markdown("#### ✅ Pregunta lo que sea sobre tus datos (Agente de Ejecución Real)")
-    st.info("Ejemplos: '¿Cuál es la suma de activos que tienen un Riesgo Promedio mayor a 2.5?', 'Muéstrame el promedio de Completitud por las 3 categorías con más activos'.")
+    st.header("🧠 Asistente de Consulta de Datos (Análisis de Lenguaje Natural)")
+    st.markdown("#### ✅ Pregunta lo que sea sobre la estructura de tus datos (API nativa de Gemini)")
+    st.info("Ejemplos: '¿Qué columnas tenemos disponibles?', 'Describe los valores más comunes en la columna dueño'. Si la pregunta no se puede responder con la estructura de los datos, el modelo te lo dirá y te sugerirá una pregunta alternativa.")
     
     # --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
     if GEMINI_API_SECRET_VALUE == "DatosEco121212":
@@ -184,60 +182,78 @@ def setup_data_assistant(df):
         st.markdown("---")
         return
 
-    # --- 2. INICIALIZAR EL AGENTE DE LANGCHAIN ---
+    # --- 2. INICIALIZAR EL CLIENTE GEMINI ---
     try:
-        # Inicializar el modelo Gemini. Usamos gemini-2.5-flash por su velocidad y costo.
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash", 
-            google_api_key=GEMINI_API_SECRET_VALUE
-        )
-        
-        # Crear el Agente de Pandas.
-        pandas_agent = create_pandas_dataframe_agent(
-            llm,
-            df,
-            verbose=False, 
-            agent_type="openai-tools", 
-            allow_dangerous_code=True 
-        )
+        # Usar la clave API directamente para inicializar el cliente nativo
+        client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
         
     except Exception as e:
-        st.error(f"❌ Error al inicializar el Agente Gemini/LangChain. Verifica tu clave API y la instalación de librerías. Detalle: {e}")
+        st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}")
         st.markdown("---")
         return
 
-    # --- 3. INTERFAZ DE USUARIO ---
+    # --- 3. PREPARAR CONTEXTO DE DATOS (SCHEMA) ---
+    # Usaremos el encabezado y el resumen de tipos para darle contexto al modelo.
+    
+    # Capturar la información de tipos (df.info()) en una cadena
+    buffer = io.StringIO()
+    df.info(buf=buffer)
+    df_info_str = buffer.getvalue()
+    
+    # Capturar el encabezado de datos (df.head())
+    data_head = df.head(5).to_markdown(index=False)
+
+
+    # --- 4. INTERFAZ DE USUARIO ---
     user_query = st.text_input(
-        "Tu pregunta sobre el Inventario de Activos:",
-        key="nlp_query"
+        "Tu pregunta sobre la ESTRUCTURA del Inventario de Activos:",
+        key="nlp_query_simple"
     )
 
-    if st.button("Consultar Datos (Agente Real)", use_container_width=True) and user_query:
+    if st.button("Consultar Estructura (Gemini Simple)", use_container_width=True) and user_query:
         if df.empty:
             st.error("No hay datos cargados para realizar la consulta.")
             return
 
-        with st.spinner(f"El Agente de Gemini está ejecutando la consulta: '{user_query}'..."):
+        with st.spinner(f"El Asistente de Gemini está analizando la estructura de los datos para responder: '{user_query}'..."):
+            
+            # --- CONSTRUIR PROMPT ROBUSTO ---
+            system_prompt = (
+                "Eres un Asistente de Análisis de Datos experto. Tu objetivo es responder preguntas sobre la ESTRUCTURA y las MUESTRAS "
+                "de un DataFrame de Pandas. NO PUEDES EJECUTAR CÓDIGO de Python para cálculos complejos (sumas, promedios, filtrados extensos), "
+                "solo puedes analizar la información de la MUESTRA y el ESQUEMA que se te proporciona.\n"
+                
+                "CONTEXTO DEL DATAFRAME:\n"
+                f"Esquema (df.info()):\n{df_info_str}\n"
+                f"Muestra de Datos (df.head()):\n{data_head}\n"
+                
+                "REGLAS CRÍTICAS DE RESPUESTA:\n"
+                "1. Si la pregunta del usuario puede ser respondida directamente con la MUESTRA o el ESQUEMA (ej: '¿Cuáles son las columnas?', '¿De qué tipo es la columna dueño?', '¿Qué valores aparecen en la muestra para la columna X?'), responde de manera concisa y profesional.\n"
+                "2. Si la pregunta requiere CÁLCULOS O AGREGACIONES COMPLEJAS sobre todo el dataset (ej: 'Suma de activos', 'Promedio de riesgo', 'Cuántos hay en la categoría X'), DEBES responder ÚNICAMENTE con el siguiente texto exacto:\n"
+                "'No puedo responder esa pregunta basándome en los datos disponibles. Mi funcionalidad actual solo me permite analizar el esquema y una pequeña muestra de los datos. Te sugiero preguntar: [SUGERENCIA DE PREGUNTA ALTERNATIVA].'\n"
+                "3. La SUGESTIÓN DE PREGUNTA ALTERNATIVA debe ser una pregunta que SÍ se pueda responder con la muestra o el esquema (ej: '¿Qué columnas son de tipo object?', '¿Qué valores tiene la columna dueño en la muestra?', '¿Qué tan viejo es el activo de la primera fila?')."
+            )
+
             try:
-                # La instrucción clave para el agente es decirle qué hacer con el DF llamado 'df'.
-                prompt = (
-                    f"El DataFrame se llama 'df' y contiene datos de activos. Responde la siguiente pregunta: {user_query}. "
-                    "Si la respuesta es un valor, muéstralo directamente. Si la respuesta es una tabla, muéstrala como DataFrame."
+                # LLAMADA A LA API DE GEMINI
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=[
+                        {"role": "user", "parts": [{"text": user_query}]},
+                    ],
+                    config=genai.types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.0 # Bajar la temperatura para respuestas más determinísticas
+                    )
                 )
                 
-                # Ejecutar la consulta a través del agente
-                response = pandas_agent.invoke(prompt)
-                
                 # Mostrar el resultado
-                st.success("✅ Respuesta generada por el Agente de IA:")
-                
-                # El agente devuelve el resultado en la clave 'output'
-                st.write(response['output'])
+                st.success("✅ Respuesta generada por el Asistente de IA:")
+                st.markdown(response.text)
 
             except Exception as e:
-                # Este error se dispara si el LLM no puede generar código válido o si la API falla.
-                st.error(f"❌ Error durante la ejecución del Agente de Datos. Detalle: {e}")
-                st.warning("El agente pudo fallar debido a una consulta demasiado compleja o a límites de la API. Intenta simplificar la pregunta.")
+                st.error(f"❌ Error durante la llamada a la API de Gemini. Detalle: {e}")
+                st.warning("Verifica tu clave API y la conexión.")
 
 
 # =================================================================
