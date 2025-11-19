@@ -9,10 +9,18 @@ from datetime import datetime
 import re 
 import warnings
 import os 
-from google import genai # Importar la librería de Google Gemini
+# --- Importaciones para el Agente de IA ---
+from google import genai 
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.agents import create_pandas_dataframe_agent
+# --- Fin de Importaciones para el Agente de IA ---
+
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
-# --- Variables Globales ---
+# =================================================================
+# 0. VARIABLES GLOBALES Y CONFIGURACIÓN
+# =================================================================
+
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 # CRITERIO DE RIESGO
 UMBRAL_RIESGO_ALTO = 3.0 
@@ -23,6 +31,11 @@ PENALIZACION_INCONSISTENCIA_TIPO = 0.5
 PENALIZACION_DUPLICADO = 1.0             
 # RIESGO MÁXIMO TEÓRICO: 2.0 + 0.5 + 1.0 = 3.5
 RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5 
+
+# ⚠️ CLAVE SECRETA DE GEMINI
+# REEMPLAZA ESTE VALOR con tu clave secreta real de Gemini (comienza con AIza...).
+# Si usas Streamlit Cloud, se recomienda usar st.secrets["GEMINI_API_KEY"] en lugar de hardcodearla.
+GEMINI_API_SECRET_VALUE = "REEMPLAZA_ESTO_CON_TU_CLAVE_SECRETA_AIza..."
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -155,81 +168,76 @@ def generate_specific_recommendation(risk_dimension):
 
 def setup_data_assistant(df):
     """
-    Configura el asistente de consulta de datos usando LLM.
-    
-    La clave API se ha hardcodeado para evitar pedirla al usuario. 
-    ¡ATENCIÓN! Debes reemplazar el placeholder por el valor secreto real.
+    Configura el asistente de consulta de datos usando el Agente de Pandas de LangChain
+    con el modelo Gemini.
     """
     
     st.markdown("---")
     st.header("🧠 Asistente de Consulta de Datos (NLP)")
-    st.markdown("#### 💬 Haz una pregunta sobre los Activos (Lenguaje Natural)")
-    st.info("Ejemplos: '¿Cuál es la entidad con el riesgo promedio más alto?' o 'Dame el promedio de Completitud por categoría'.")
+    st.markdown("#### ✅ Pregunta lo que sea sobre tus datos (Agente de Ejecución Real)")
+    st.info("Ejemplos: '¿Cuál es la suma de activos que tienen un Riesgo Promedio mayor a 2.5?', 'Muéstrame el promedio de Completitud por las 3 categorías con más activos'.")
     
-    # --- 1. CONFIGURACIÓN DE CLAVE API (HARDCODEADA) ---
-    # REEMPLAZA EL VALOR DE ABAJO con tu clave secreta real de Gemini (comienza con AIza...).
-    GEMINI_API_SECRET_VALUE = "DatosEco121212"
-    
-    if GEMINI_API_SECRET_VALUE == "REEMPLAZA_ESTO_CON_TU_CLAVE_SECRETA_AIza...":
+    # --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
+    if GEMINI_API_SECRET_VALUE == "DatosEco121212":
         st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
-        st.markdown("Por favor, **reemplaza `REEMPLAZA_ESTO_CON_TU_CLAVE_SECRETA_AIza...`** en el código por el valor secreto real.")
+        st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
         st.markdown("---")
         return
 
-    # Initialize the client with the hardcoded key
+    # --- 2. INICIALIZAR EL AGENTE DE LANGCHAIN ---
     try:
-        # Usamos genai.Client y la clave proporcionada
-        client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
+        # Inicializar el modelo Gemini. Usamos gemini-2.5-flash por su velocidad y costo.
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash", 
+            google_api_key=GEMINI_API_SECRET_VALUE
+        )
+        
+        # Crear el Agente de Pandas.
+        pandas_agent = create_pandas_dataframe_agent(
+            llm,
+            df,
+            verbose=False, 
+            agent_type="openai-tools", 
+            allow_dangerous_code=True 
+        )
+        
     except Exception as e:
-        st.error(f"❌ Error al inicializar el cliente Gemini. Verifica el valor de la clave. Detalle: {e}")
+        st.error(f"❌ Error al inicializar el Agente Gemini/LangChain. Verifica tu clave API y la instalación de librerías. Detalle: {e}")
         st.markdown("---")
         return
 
-    # --- 2. INTERFAZ DE USUARIO ---
+    # --- 3. INTERFAZ DE USUARIO ---
     user_query = st.text_input(
         "Tu pregunta sobre el Inventario de Activos:",
         key="nlp_query"
     )
 
-    if st.button("Consultar Datos", use_container_width=True) and user_query:
+    if st.button("Consultar Datos (Agente Real)", use_container_width=True) and user_query:
         if df.empty:
             st.error("No hay datos cargados para realizar la consulta.")
             return
 
-        with st.spinner(f"El Asistente está analizando: '{user_query}'..."):
-            
-            # Definir el contexto del Agente (System Prompt)
-            system_prompt = f"""
-            Eres un asistente de datos experto en Python y Pandas. Tu tarea es responder preguntas 
-            sobre el DataFrame 'df'. El DataFrame contiene {len(df)} activos y tiene las siguientes 
-            columnas clave: {df.columns.tolist()}.
-            
-            Genera código Python (pandas) para encontrar la respuesta. Luego, proporciona el resultado
-            de la ejecución del código. NO necesitas ejecutar el código, solo simula la respuesta.
-            """
-            
-            # --- SIMULACIÓN AVANZADA DE RESPUESTAS (para demostrar la funcionalidad) ---
-            
-            if 'riesgo' in user_query.lower() or 'peor' in user_query.lower():
-                 simulated_code = "df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)"
-                 simulated_result = df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)
-                 
-                 st.success(f"✅ Resultado de la consulta: Entidades con Mayor Riesgo Promedio")
-                 st.code(f"Código que el LLM ejecutaría:\n{simulated_code}", language='python')
-                 st.dataframe(simulated_result.reset_index().rename(columns={'prioridad_riesgo_score': 'Riesgo_Promedio'}), hide_index=True)
-                 
-            elif 'completitud' in user_query.lower() or 'promedio' in user_query.lower():
-                 simulated_code = "df['completitud_score'].mean()"
-                 simulated_result = df['completitud_score'].mean()
-                 
-                 st.success(f"✅ Resultado de la consulta: Completitud Promedio Global")
-                 st.code(f"Código que el LLM ejecutaría:\n{simulated_code}", language='python')
-                 st.write(f"El score de Completitud Promedio Global es: **{simulated_result:.2f}%**")
+        with st.spinner(f"El Agente de Gemini está ejecutando la consulta: '{user_query}'..."):
+            try:
+                # La instrucción clave para el agente es decirle qué hacer con el DF llamado 'df'.
+                prompt = (
+                    f"El DataFrame se llama 'df' y contiene datos de activos. Responde la siguiente pregunta: {user_query}. "
+                    "Si la respuesta es un valor, muéstralo directamente. Si la respuesta es una tabla, muéstrala como DataFrame."
+                )
+                
+                # Ejecutar la consulta a través del agente
+                response = pandas_agent.invoke(prompt)
+                
+                # Mostrar el resultado
+                st.success("✅ Respuesta generada por el Agente de IA:")
+                
+                # El agente devuelve el resultado en la clave 'output'
+                st.write(response['output'])
 
-            else:
-                 # Esta es la parte que requiere la integración real con un agente LLM
-                 st.warning("⚠️ El agente LLM no ejecutó el código para esta consulta compleja. Se requiere una integración segura de agente/ejecución de código para obtener resultados exactos de consultas arbitrarias.")
-                 st.code(f"Mensaje del sistema (Gemini): Se ha recibido la consulta pero se requiere ejecución de código para responder.", language='python')
+            except Exception as e:
+                # Este error se dispara si el LLM no puede generar código válido o si la API falla.
+                st.error(f"❌ Error durante la ejecución del Agente de Datos. Detalle: {e}")
+                st.warning("El agente pudo fallar debido a una consulta demasiado compleja o a límites de la API. Intenta simplificar la pregunta.")
 
 
 # =================================================================
@@ -628,4 +636,3 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
-
