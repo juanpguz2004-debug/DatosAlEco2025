@@ -8,3 +8,6 @@ python-dateutil
 plotly
 openai
 google-genai
+langchain
+langchain-google-genai
+numexpr
