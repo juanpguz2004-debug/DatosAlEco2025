@@ -11,7 +11,8 @@ import warnings
 import os 
 # --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
-# Eliminamos todas las importaciones de LangChain para máxima estabilidad.
+# --- Importación de Plotly Express (¡NUEVO!) ---
+import plotly.express as px
 # --- Fin de Importaciones para el Agente de IA ---
 
 # --- Importaciones para el Clustering Dinámico (ML) ---
@@ -24,7 +25,7 @@ from sklearn.decomposition import PCA
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
 # =================================================================
-# 0. VARIABLES GLOBALES Y CONFIGURACIÓN
+# 0. VARIABLES GLOBALES Y CONFIGURACIÓN (SIN CAMBIOS)
 # =================================================================
 
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
@@ -44,7 +45,7 @@ RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5
 GEMINI_API_SECRET_VALUE = "Aiza"
 
 # =================================================================
-# 1. Funciones de Carga y Procesamiento
+# 1. Funciones de Carga y Procesamiento (SIN CAMBIOS)
 # =================================================================
 
 @st.cache_data
@@ -115,17 +116,24 @@ def process_external_data(df):
 	df = check_universals_external(df)
 	
 	# --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO (SOLO PARA MÉTRICA) ---
+	# MEJORA: Evaluar completitud promedio en TODAS las filas (si las columnas existen)
 	campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
-	campos_existentes_y_llenos = 0
 	num_campos_totales_base = len(campos_clave_universal)
-
+	
+	df['campos_clave_llenados'] = 0
+	
 	for campo in campos_clave_universal:
-		# Corregida la lógica para verificar si existe y si NO está NaN en la primera fila
-		if campo in df.columns and pd.notna(df[campo].iloc[0]):
-			campos_existentes_y_llenos += 1
+		if campo in df.columns:
+			# Sumar 1 si el campo no es NaN para CADA FILA
+			df['campos_clave_llenados'] += df[campo].notna().astype(int)
 			
-	completitud_metadatos_universal = (campos_existentes_y_llenos / num_campos_totales_base) * 100
-	df['completitud_metadatos_universal'] = completitud_metadatos_universal
+	# Calcular la completitud por fila para estas columnas clave y luego el promedio
+	df['completitud_metadatos_universal'] = (df['campos_clave_llenados'] / num_campos_totales_base) * 100
+	
+	# Usar el promedio de esa nueva columna para el score del archivo
+	completitud_metadatos_universal_score = df['completitud_metadatos_universal'].mean()
+	df['completitud_metadatos_universal'] = completitud_metadatos_universal_score
+
 	
 	# --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD ---
 	
@@ -172,7 +180,7 @@ def generate_specific_recommendation(risk_dimension):
 		return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
 # =================================================================
-# FUNCIÓN CORE: CLUSTERING DINÁMICO Y PCA (NUEVO)
+# FUNCIÓN CORE: CLUSTERING DINÁMICO Y PCA (SIN CAMBIOS)
 # =================================================================
 
 # Parámetros por defecto para usar en la info: K=5, MAX_SAMPLE=15000
@@ -247,10 +255,8 @@ def run_dynamic_clustering_pca(df_input, K_FIXED=5, MAX_SAMPLE_SIZE=15000):
 	return df_sample, variance_ratio, None
 
 # =================================================================
-# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
+# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) (SIN CAMBIOS)
 # =================================================================
-# Nota: La función setup_data_assistant se asume que existe en el código original,
-# aquí se incluye para mantener la coherencia y su contenido es el mismo que proveíste.
 
 def setup_data_assistant(df):
 	"""
@@ -360,7 +366,7 @@ try:
 	else:
 		st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
 
-		# --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
+		# --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (SIN CAMBIOS) ---
 		owners = df_analisis_completo['dueño'].dropna().unique().tolist()
 		owners.sort()
 		owners.insert(0, "Mostrar Análisis General")
@@ -370,7 +376,7 @@ try:
 			owners
 		)
 		
-		# --- DESGLOSE DE ESTADÍSTICAS (KPIs) ---
+		# --- DESGLOSE DE ESTADÍSTICAS (KPIs) (SIN CAMBIOS) ---
 		if filtro_dueño != "Mostrar Análisis General":
 			df_entidad_seleccionada = df_analisis_completo[df_analisis_completo['dueño'] == filtro_dueño]
 			
@@ -398,7 +404,7 @@ try:
 				st.warning(f"⚠️ No se encontraron activos para la entidad: {filtro_dueño}")
 				st.markdown("---")
 
-		# --- BARRA LATERAL (FILTROS SECUNDARIOS) ---
+		# --- BARRA LATERAL (FILTROS SECUNDARIOS) (SIN CAMBIOS) ---
 		st.sidebar.header("⚙️ Filtros para Visualizaciones")
 		
 		filtro_acceso = "Mostrar Todos"
@@ -416,7 +422,7 @@ try:
 			filtro_categoria = st.sidebar.selectbox("Filtrar por Categoría:", categories)
 
 
-		# --- APLICAR FILTROS (Para las Visualizaciones) ---
+		# --- APLICAR FILTROS (Para las Visualizaciones) (SIN CAMBIOS) ---
 		df_filtrado = df_analisis_completo.copy()
 		
 		if filtro_dueño != "Mostrar Análisis General":
@@ -435,7 +441,7 @@ try:
 			st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
 		else:
 			
-			# --- 3. Métricas de la Vista Actual ---
+			# --- 3. Métricas de la Vista Actual (SIN CAMBIOS) ---
 			st.subheader("Métricas de la Vista Actual")
 			col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
 			col_metrica1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
@@ -449,14 +455,16 @@ try:
 			
 			st.markdown("---")
 
-			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) ---
+			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (SIN CAMBIOS en la lógica de estilo) ---
 			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 
-			# TEXTO CORREGIDO PARA EL NUEVO UMBRAL (3.0)
+			# AÑADIDO: Explicación de las nuevas reglas de color
 			st.info(f"""
-				La columna **Riesgo Promedio** tiene un formato de color:
-				* 🟢 **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO:.1f}**. Intervención no urgente.
-				* 🔴 **Rojo:** El riesgo promedio es **mayor a {UMBRAL_RIESGO_ALTO:.1f}**. Se requiere **intervención/actualización prioritaria**.
+				La tabla usa color condicional para identificar problemas de calidad rápidamente:
+				* 🔴 **Riesgo Promedio** > **{UMBRAL_RIESGO_ALTO:.1f}** (Prioridad Máxima).
+				* 🔴 **%_Incumplimiento** > **20%** (Problema Operacional).
+				* 🔴 **Antigüedad Promedio** > **180 días** (Riesgo de Obsolescencia).
+				* 🔴 **Completitud Promedio** < **85%** (Riesgo de Usabilidad).
 			""")
 			
 			resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
@@ -471,14 +479,37 @@ try:
 			resumen_entidades_busqueda = resumen_entidades_busqueda.rename(columns={'dueño': 'Entidad Responsable'})
 			resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
 			
-			def color_riesgo_promedio(val):
-				color = 'background-color: #f79999' if val > UMBRAL_RIESGO_ALTO else 'background-color: #a9dfbf'
-				return color
 			
-			# Aplicar el formato antes de pasar a st.dataframe
-			styled_df = resumen_entidades_busqueda.style.applymap(
-				color_riesgo_promedio, 
-				subset=['Riesgo_Promedio']
+			# --- FUNCIÓN DE ESTILO (SIN CAMBIOS) ---
+			def highlight_metrics(row):
+				"""Aplica el estilo de color a toda la fila según las métricas críticas."""
+				styles = [''] * len(row)
+				
+				# 1. Riesgo Promedio (Columna 2)
+				if row['Riesgo_Promedio'] > UMBRAL_RIESGO_ALTO:
+					styles[2] = 'background-color: #f79999' # Rojo claro
+				else:
+					styles[2] = 'background-color: #a9dfbf' # Verde claro
+
+				# 2. % Incumplimiento (Columna 6)
+				if row['%_Incumplimiento'] > 20:
+					styles[6] = 'background-color: #f79999' # Rojo claro
+				
+				# 3. Antigüedad Promedio (Columna 4)
+				if row['Antiguedad_Promedio_Dias'] > 180:
+					styles[4] = 'background-color: #f79999' # Rojo claro
+
+				# 4. Completitud Promedio (Columna 3)
+				if row['Completitud_Promedio'] < 85:
+					styles[3] = 'background-color: #f79999' # Rojo claro
+					
+				return styles
+
+
+			# Aplicar la función de estilo a todas las filas
+			styled_df = resumen_entidades_busqueda.style.apply(
+				highlight_metrics,
+				axis=1
 			).format({
 				'Riesgo_Promedio': '{:.2f}',
 				'Completitud_Promedio': '{:.2f}%',
@@ -494,22 +525,23 @@ try:
 					'Entidad Responsable': st.column_config.TextColumn("Entidad Responsable"),
 					'Activos_Totales': st.column_config.NumberColumn("Activos Totales"),
 					'Riesgo_Promedio': st.column_config.NumberColumn("Riesgo Promedio (Score)", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
-					'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%"),
-					'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d"),
+					'Completitud_Promedio': st.column_config.NumberColumn("Completitud Promedio", format="%.2f%%", help="Rojo < 85%."),
+					'Antiguedad_Promedio_Dias': st.column_config.NumberColumn("Antigüedad Promedio (Días)", format="%d", help="Rojo > 180 días."),
 					'Incumplimiento_Absoluto': st.column_config.NumberColumn("Activos en Incumplimiento (Count)"),
-					'%_Incumplimiento': st.column_config.TextColumn("% Incumplimiento")
+					'%_Incumplimiento': st.column_config.TextColumn("% Incumplimiento", help="Rojo > 20%")
 				},
 				hide_index=True
 			)
 
 			st.markdown("---")
 			
-			# --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES (MODIFICADAS) ---
+			# --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES ---
 			tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Visualización de Clusters (PCA Dinámico)", "3. Cobertura Temática"])
 
 			with tab1:
-				# --- Visualización 1: Ranking de Completitud (Peor Rendimiento) ---
+				# --- Visualización 1: Ranking de Completitud (¡USANDO PLOTLY!) ---
 				st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
+				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
 				try:
 					COLUMNA_ENTIDAD = 'dueño'
@@ -522,19 +554,37 @@ try:
 					df_top_10_peor_completitud = entidades_volumen.sort_values(by='Completitud_Promedio', ascending=True).head(10)
 					
 					if not df_top_10_peor_completitud.empty:
-						fig1, ax1 = plt.subplots(figsize=(10, 6))
-						sns.barplot(x='Completitud_Promedio', y=COLUMNA_ENTIDAD, data=df_top_10_peor_completitud, palette='Reds_r', ax=ax1)
-						ax1.set_title('Top 10 Entidades con Peor Completitud Promedio', fontsize=14)
-						ax1.set_xlabel('Score de Completitud Promedio (%)', fontsize=12)
-						ax1.set_ylabel('Entidad Responsable', fontsize=12)
-						st.pyplot(fig1)
+						
+						# *** NUEVO: Usar Plotly Express ***
+						fig1 = px.bar(
+							df_top_10_peor_completitud,
+							x='Completitud_Promedio', 
+							y=COLUMNA_ENTIDAD,
+							orientation='h', # Barras horizontales
+							title='Top 10 Entidades con Peor Completitud Promedio',
+							color='Completitud_Promedio',
+							color_continuous_scale=px.colors.sequential.Reds_r, # Usar escala de rojos invertida
+							labels={
+								'Completitud_Promedio': 'Score de Completitud Promedio (%)',
+								COLUMNA_ENTIDAD: 'Entidad Responsable'
+							},
+							hover_data={
+								'Completitud_Promedio': ':.2f', # Formato a 2 decimales en el hover
+								'Total_Activos': True
+							}
+						)
+						
+						# Ajustar layout para mejor visualización
+						fig1.update_layout(yaxis={'categoryorder':'total ascending'}) 
+						
+						st.plotly_chart(fig1, use_container_width=True)
 					else:
 						st.warning("No hay entidades con suficiente volumen (>= 5 activos) para generar el ranking.")
 				except Exception as e:
-					st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
+					st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud (Plotly). Detalle: {e}")
 
 			with tab2:
-				# --- Visualización 2: Clustering y PCA Dinámico (NUEVO) ---
+				# --- Visualización 2: Clustering y PCA Dinámico (SIN CAMBIOS) ---
 				st.subheader("2. 🧩 Visualización de Grupos de Activos (Clustering PCA Dinámico)")
 				st.markdown("El Clustering (**MiniBatchKMeans**) y la reducción de dimensionalidad (**PCA**) se ejecutan **en vivo** sobre el conjunto de datos filtrado para encontrar patrones de riesgo.")
 				
@@ -574,7 +624,7 @@ try:
 						cbar = fig2.colorbar(scatter, ax=ax2, boundaries=bounds - 0.5, ticks=bounds[:-1])
 						cbar.set_label("Etiqueta de Cluster")
 						
-						st.pyplot(fig2)
+						st.pyplot(fig2) # Se mantiene Matplotlib para PCA/ML
 						st.caption(f"Varianza Explicada por PC1 y PC2: **{variance_ratio*100:.2f}%**")
 					except Exception as e:
 						st.error(f"❌ ERROR [Visualización 2 - Gráfico]: Falló la generación del Gráfico PCA. Detalle: {e}")
@@ -583,32 +633,55 @@ try:
 
 
 			with tab3:
-				# --- Visualización 3: Cobertura Temática por Categoría ---
+				# --- Visualización 3: Cobertura Temática por Categoría (¡USANDO PLOTLY!) ---
 				st.subheader("3. 🗺️ Cobertura Temática por Categoría")
+				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
 				try:
 					COLUMNA_CATEGORIA = 'categoria'
 					if COLUMNA_CATEGORIA in df_filtrado.columns:
-						conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10)
+						conteo_categoria_df = df_filtrado[COLUMNA_CATEGORIA].value_counts().reset_index()
+						conteo_categoria_df.columns = [COLUMNA_CATEGORIA, 'Numero de Activos']
+						
+						# Tomar solo el Top 10 para la visualización
+						conteo_categoria_df = conteo_categoria_df.head(10)
 					else:
-						conteo_categoria = pd.Series([], dtype='int')
+						conteo_categoria_df = pd.DataFrame()
 
-					if not conteo_categoria.empty:
-						fig3, ax3 = plt.subplots(figsize=(10, 7))
-						sns.barplot(x=conteo_categoria.values, y=conteo_categoria.index, palette='viridis', ax=ax3)
-						ax3.set_title('Top 10 Categorías con Mayor Cobertura Temática', fontsize=16)
-						ax3.set_xlabel('Número de Activos', fontsize=12)
-						ax3.set_ylabel('Categoría', fontsize=12)
-						st.pyplot(fig3)
+					if not conteo_categoria_df.empty:
+						
+						# *** NUEVO: Usar Plotly Express ***
+						fig3 = px.bar(
+							conteo_categoria_df,
+							x='Numero de Activos', 
+							y=COLUMNA_CATEGORIA,
+							orientation='h', # Barras horizontales
+							title='Top 10 Categorías con Mayor Cobertura Temática',
+							color='Numero de Activos',
+							color_continuous_scale=px.colors.sequential.Viridis,
+							labels={
+								'Numero de Activos': 'Número de Activos',
+								COLUMNA_CATEGORIA: 'Categoría'
+							},
+							hover_data={
+								'Numero de Activos': True
+							}
+						)
+						
+						# Ajustar layout para mejor visualización
+						fig3.update_layout(yaxis={'categoryorder':'total ascending'}) 
+						
+						st.plotly_chart(fig3, use_container_width=True)
+
 					else:
 						st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización.")
 				except Exception as e:
-					st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
+					st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías (Plotly). Detalle: {e}")
 
 
 			
 			# ----------------------------------------------------------------------
-			# --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
+			# --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO (SIN CAMBIOS)
 			# ----------------------------------------------------------------------
 			st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
 			st.header("💾 Diagnóstico de Archivo CSV Externo (Calidad Universal)")
@@ -642,6 +715,7 @@ try:
 								
 								# Métricas consolidadas
 								calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
+								# CORREGIDO: Usar el valor que es promedio de todas las filas
 								completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
 								riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
 
@@ -662,7 +736,7 @@ try:
 								riesgos_reporte['Riesgo Promedio (0-Máx)'] = riesgos_reporte['Riesgo Promedio (0-Máx)'].round(2)
 								
 								
-								# === LÓGICA DE RECOMENDACIÓN PRÁCTICA (CORREGIDA) ===
+								# === LÓGICA DE RECOMENDACIÓN PRÁCTICA (SIN CAMBIOS) ===
 								
 								recomendacion_final_md = ""
 								
@@ -724,7 +798,7 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 				
 			
 			# ----------------------------------------------------------------------
-			# --- SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS
+			# --- SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (SIN CAMBIOS)
 			# ----------------------------------------------------------------------
 			setup_data_assistant(df_analisis_completo)
 
