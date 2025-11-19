@@ -470,7 +470,7 @@ try:
 				resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
 				
 				
-				# 🟢 CAMBIO CRÍTICO: Nueva función de estilo para usar SÓLO color de texto
+				# 🟢 CORRECCIÓN: Función de estilo para usar SÓLO color de texto en todas las columnas de riesgo
 				def highlight_metrics_text_color(s):
 					"""Aplica color de texto (rojo/verde) a TODAS las métricas críticas."""
 					styles = [''] * len(s)
@@ -487,15 +487,17 @@ try:
 					else:
 						styles[3] = 'color: green; font-weight: bold;'
 						
-					# 3. Antigüedad Promedio (Columna 4) - Aplicar color de texto
+					# 3. Antigüedad Promedio (Columna 4) - Aplicar color de texto (solo rojo si falla)
 					if s['Antiguedad_Promedio_Dias'] > 180:
 						styles[4] = 'color: red; font-weight: bold;'
-					# No hay "verde" para Antigüedad, solo es blanco (default) si es baja.
+					else:
+						styles[4] = 'color: inherit;' # Color por defecto si pasa.
 
-					# 4. % Incumplimiento (Columna 6) - Aplicar color de texto
+					# 4. % Incumplimiento (Columna 6) - Aplicar color de texto (solo rojo si falla)
 					if s['%_Incumplimiento'] > 20:
 						styles[6] = 'color: red; font-weight: bold;'
-					# No hay "verde" para Incumplimiento, solo es blanco (default) si es bajo.
+					else:
+						styles[6] = 'color: inherit;' # Color por defecto si pasa.
 						
 					return styles
 
@@ -553,14 +555,16 @@ try:
 						
 						if not df_top_10_peor_completitud.empty:
 							
+							# 🟢 CORRECCIÓN: Se mantiene esta configuración. 'color' define la columna que determina el color,
+							# y 'color_continuous_scale' aplica el gradiente.
 							fig1 = px.bar(
 								df_top_10_peor_completitud,
 								x='Completitud_Promedio', 
 								y=COLUMNA_ENTIDAD,
 								orientation='h',
 								title='Top 10 Entidades con Peor Completitud Promedio',
-								color='Completitud_Promedio',
-								color_continuous_scale=px.colors.sequential.Reds_r,
+								color='Completitud_Promedio', # <--- Asigna el color basado en la métrica (clave para el gradiente)
+								color_continuous_scale=px.colors.sequential.Reds_r, # <--- Define la escala de gradiente
 								labels={
 									'Completitud_Promedio': 'Score de Completitud Promedio (%)',
 									COLUMNA_ENTIDAD: 'Entidad Responsable'
