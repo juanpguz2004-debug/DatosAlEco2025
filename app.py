@@ -26,7 +26,7 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 # =================================================================
 
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
-KNOWLEDGE_FILE = "knowledge_base.txt" # Nuevo
+KNOWLEDGE_FILE = "knowledge_base.txt" 
 # CRITERIO DE RIESGO
 UMBRAL_RIESGO_ALTO = 3.0 
 
@@ -163,11 +163,10 @@ def load_knowledge_base(file_path):
             with open(file_path, 'r', encoding='utf-8') as f:
                 return f.read()
         else:
-            st.warning(f"⚠️ El archivo de base de conocimiento '{file_path}' no se encontró.")
-            st.warning("El Asistente de IA no funcionará hasta que se genere este archivo.")
+            # st.warning() no funciona en esta parte del código que se ejecuta antes de la interfaz.
             return None
     except Exception as e:
-        st.error(f"Error al leer la base de conocimiento: {e}")
+        # st.error() no funciona aquí.
         return None
 
 # =================================================================
@@ -179,6 +178,7 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
     Función robusta que interactúa con la API de Gemini utilizando la Base de Conocimiento (RAG).
     """
     
+    # 1. Manejo de error de base de conocimiento (mostrar mensaje en el placeholder)
     if knowledge_base_content is None:
         error_msg = "No puedo responder. La base de conocimiento no ha sido cargada."
         st.session_state.messages.append({"role": "user", "content": user_query})
@@ -187,7 +187,7 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
         return
 
-    # --- 1. CONFIGURACIÓN DEL CLIENTE GEMINI ---
+    # --- 2. CONFIGURACIÓN DEL CLIENTE GEMINI ---
     try:
         client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
     except Exception as e:
@@ -198,7 +198,7 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
         return
 
-    # --- 2. CONSTRUIR PROMPT ROBUSTO ---
+    # --- 3. CONSTRUIR PROMPT ROBUSTO ---
     system_prompt = (
         "Eres un **Analista de Inventario de Datos experto**, especializado en el análisis de calidad y riesgo de activos. "
         "Tu objetivo es responder a las preguntas del usuario basándote **ÚNICA Y EXCLUSIVAMENTE** en la 'BASE DE CONOCIMIENTO ROBUSTA' proporcionada. "
@@ -215,7 +215,8 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
     )
 
     # Añadir la pregunta del usuario al historial
-    st.session_state.messages.append({"role": "user", "content": user_query})
+    # NOTA: Ya fue añadido antes de llamar a esta función para que aparezca inmediatamente.
+    # st.session_state.messages.append({"role": "user", "content": user_query}) # Esta línea se mueve fuera
 
     # Generar la respuesta
     with model_placeholder.chat_message("assistant"):
@@ -245,6 +246,8 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
 # 3. Ejecución Principal del Dashboard
 # =================================================================
 
+st.set_page_config(page_title="Asistente de Análisis de Inventario", layout="wide") # Asegura layout wide
+
 st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Completo)")
 
 try:
@@ -256,43 +259,62 @@ try:
     else:
         st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
 
-        # --- SECCIÓN DE CHAT DE ANALISIS ROBUSTO (NUEVO) ---
-        st.markdown("<hr style='border: 4px solid #38c8f0;'>", unsafe_allow_html=True)
-        st.header("🧠 Asistente de Análisis Experto (RAG)")
-        st.info(
-            "Pregunta por los **KPIs, rankings o diagnósticos** basados en la Base de Conocimiento. "
-            "Ej: '¿Qué entidad tiene más activos?', 'Dime el Top 5 peores activos por riesgo', "
-            "'¿Cuál es el riesgo promedio en activos en incumplimiento?'"
-        )
-        
-        # --- Carga de la Base de Conocimiento ---
+        # --- Carga de la Base de Conocimiento (Inicialización) ---
         if "knowledge_content" not in st.session_state:
             st.session_state.knowledge_content = load_knowledge_base(KNOWLEDGE_FILE)
 
         knowledge_base_content = st.session_state.knowledge_content
-
-        # --- Mostrar Historial de Conversación ---
+        
+        # --- Inicialización de variables de estado (Main) ---
         if "messages" not in st.session_state:
             st.session_state.messages = []
-            
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
 
-        # --- Lógica de Interacción ---
-        if prompt := st.chat_input("Escribe aquí tu pregunta de análisis complejo:"):
-            
-            # Placeholder para la respuesta
-            model_response_placeholder = st.empty() 
-
-            # Llama a la función de generación de respuesta con el contexto
-            generate_ai_response(prompt, knowledge_base_content, model_response_placeholder)
         
-        st.markdown("---")
-        
-        # --- FIN DE SECCIÓN CHAT ROBUSTO ---
+        # ----------------------------------------------------------------------
+        # 🧠 ASISTENTE EN EL SIDEBAR (CÓDIGO MODIFICADO)
+        # ----------------------------------------------------------------------
+        with st.sidebar:
+            st.header("🧠 Asistente de Análisis Experto")
+            st.info(
+                "Pregunta por los **KPIs, rankings o diagnósticos** basados en la Base de Conocimiento. "
+                "Ej: '¿Qué entidad tiene más activos?'"
+            )
+            
+            if knowledge_base_content is None:
+                 st.error("La base de conocimiento `knowledge_base.txt` no fue encontrada.")
+            
+            # 1. Contenedor para el Historial de Conversación
+            chat_history_container = st.container(height=350)
+            
+            with chat_history_container:
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
 
-        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
+            # 2. Lógica de Interacción (Chat Input - siempre al final del sidebar)
+            if prompt := st.chat_input("Escribe aquí tu pregunta de análisis complejo:", key="sidebar_chat_input_key", disabled=(knowledge_base_content is None)):
+                
+                # --- Agregar el mensaje del usuario y simular la respuesta inmediata ---
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                
+                # Para que el mensaje del usuario aparezca inmediatamente en el historial
+                with chat_history_container:
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+
+                    # Placeholder para la respuesta del Asistente (se llenará en la función)
+                    model_response_placeholder = st.empty() 
+                    
+                    # Llamar a la función de generación
+                    generate_ai_response(prompt, knowledge_base_content, model_response_placeholder)
+
+        # ----------------------------------------------------------------------
+        # --- FIN ASISTENTE EN EL SIDEBAR ---
+        # ----------------------------------------------------------------------
+        
+        st.markdown("---") # Separador para el contenido principal
+        
+        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (Contenido Principal) ---
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
         owners.sort()
         owners.insert(0, "Mostrar Análisis General")
@@ -329,25 +351,26 @@ try:
                 st.warning(f"⚠️ No se encontraron activos para la entidad: {filtro_dueño}")
                 st.markdown("---")
 
-        # --- BARRA LATERAL (FILTROS SECUNDARIOS) ---
-        st.sidebar.header("⚙️ Filtros para Visualizaciones")
-        
-        filtro_acceso_publico = False 
-        
-        if 'common_core_public_access_level' in df_analisis_completo.columns:
-            # Creamos el checkbox
-            filtro_acceso_publico = st.sidebar.checkbox(
-                "Mostrar Solo Activos 'public'",
-                value=False, # Por defecto, mostrar todos (False)
-                help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public'."
-            )
-        
-        filtro_categoria = "Mostrar Todos"
-        if 'categoria' in df_analisis_completo.columns:
-            categories = df_analisis_completo['categoria'].dropna().unique().tolist()
-            categories.sort()
-            categories.insert(0, "Mostrar Todos")
-            filtro_categoria = st.sidebar.selectbox("Filtrar por Categoría:", categories)
+        # --- BARRA LATERAL (FILTROS SECUNDARIOS - Se mantiene en la barra lateral para filtros) ---
+        with st.sidebar:
+            st.header("⚙️ Filtros para Visualizaciones")
+            
+            filtro_acceso_publico = False 
+            
+            if 'common_core_public_access_level' in df_analisis_completo.columns:
+                # Creamos el checkbox
+                filtro_acceso_publico = st.checkbox(
+                    "Mostrar Solo Activos 'public'",
+                    value=False, # Por defecto, mostrar todos (False)
+                    help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public'."
+                )
+            
+            filtro_categoria = "Mostrar Todos"
+            if 'categoria' in df_analisis_completo.columns:
+                categories = df_analisis_completo['categoria'].dropna().unique().tolist()
+                categories.sort()
+                categories.insert(0, "Mostrar Todos")
+                filtro_categoria = st.selectbox("Filtrar por Categoría:", categories)
 
 
         # --- APLICAR FILTROS (Para las Visualizaciones) ---
@@ -818,11 +841,5 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
                         st.error(f"❌ Error al leer o procesar el archivo CSV: {e}")
                         st.warning("Asegúrate de que el archivo es un CSV válido y tiene un formato consistente.")
             
-            # ----------------------------------------------------------------------
-            # --- NOTA: LLAMADA A LA SECCIÓN DE NLP ELIMINADA (setup_data_assistant) ---
-            # --- El chat principal ahora es el Agente Experto y robusto. ---
-            # ----------------------------------------------------------------------
-
-
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
