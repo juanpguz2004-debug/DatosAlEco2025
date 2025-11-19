@@ -316,13 +316,20 @@ try:
         # --- BARRA LATERAL (FILTROS SECUNDARIOS) ---
         st.sidebar.header("⚙️ Filtros para Visualizaciones")
         
-        filtro_acceso = "Mostrar Todos"
+        # --- MODIFICACIÓN CLAVE: REEMPLAZO DEL SELECTBOX POR CHECKBOX ---
+        
+        # Inicializamos la variable que contendrá el estado del filtro
+        filtro_acceso_publico = False 
+        
         if 'common_core_public_access_level' in df_analisis_completo.columns:
-            access_levels = df_analisis_completo['common_core_public_access_level'].dropna().unique().tolist()
-            access_levels.sort()
-            access_levels.insert(0, "Mostrar Todos")
-            filtro_acceso = st.sidebar.selectbox("Filtrar por Nivel de Acceso:", access_levels)
-
+            # Creamos el checkbox
+            filtro_acceso_publico = st.sidebar.checkbox(
+                "Mostrar Solo Activos 'public'",
+                value=False, # Por defecto, mostrar todos (False)
+                help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public'."
+            )
+        
+        # Definimos filtro_categoria como antes
         filtro_categoria = "Mostrar Todos"
         if 'categoria' in df_analisis_completo.columns:
             categories = df_analisis_completo['categoria'].dropna().unique().tolist()
@@ -337,14 +344,22 @@ try:
         if filtro_dueño != "Mostrar Análisis General":
              df_filtrado = df_filtrado[df_filtrado['dueño'] == filtro_dueño]
 
-        if filtro_acceso != "Mostrar Todos":
-             df_filtrado = df_filtrado[df_filtrado['common_core_public_access_level'] == filtro_acceso]
-
+        # --- LÓGICA DE FILTRO MODIFICADA PARA EL CHECKBOX ---
+        if filtro_acceso_publico:
+             # Si el checkbox está marcado, filtramos donde el nivel de acceso es 'public'
+             df_filtrado = df_filtrado[df_filtrado['common_core_public_access_level'] == 'public']
+        # Si no está marcado, no se aplica ningún filtro de acceso (se muestran todos los niveles)
+        
         if filtro_categoria != "Mostrar Todos":
             df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
 
+        # --- Fin de la Lógica de Filtro Modificada ---
+            
         st.header("📊 Visualizaciones y Rankings")
-        st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {filtro_acceso}; Categoría: {filtro_categoria})")
+        
+        # Actualizar el texto informativo
+        info_acceso = "solo Activos Públicos" if filtro_acceso_publico else "Todos los Niveles de Acceso"
+        st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {info_acceso}; Categoría: {filtro_categoria})")
 
         if df_filtrado.empty:
             st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
@@ -523,8 +538,6 @@ try:
                             yaxis_title='Completitud Score del Activo (%)'
                         )
                         
-                        # Los centroides ya no se añaden explícitamente como se solicitó.
-                        
                         st.plotly_chart(fig2, use_container_width=True)
 
                         # Mostrar tabla de centroides para interpretación
@@ -552,16 +565,13 @@ try:
                         conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10).reset_index()
                         conteo_categoria.columns = ['Categoria', 'Numero_de_Activos']
                         
-                        # --- MODIFICACIÓN CLAVE: Ordenar de forma descendente (Mayor a Menor) ---
+                        # Ordenar de forma descendente (Mayor a Menor)
                         conteo_categoria = conteo_categoria.sort_values(by='Numero_de_Activos', ascending=False)
                         
                     else:
                         conteo_categoria = pd.DataFrame({'Categoria': [], 'Numero_de_Activos': []})
 
                     if not conteo_categoria.empty:
-                        # Plotly, al usar un gráfico de barras horizontales (orientation='h'),
-                        # respeta el orden del DataFrame para el eje Y, de abajo hacia arriba.
-                        # Al ordenar de forma descendente y usar Plotly, el valor más alto queda arriba.
                         fig3 = px.bar(
                             conteo_categoria, 
                             x='Numero_de_Activos', 
