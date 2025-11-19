@@ -176,7 +176,7 @@ def setup_data_assistant(df):
     st.info("Ejemplos: '¿Qué columnas tenemos disponibles?', 'Describe los valores más comunes en la columna dueño'. Si la pregunta no se puede responder con la estructura de los datos, el modelo te lo dirá y te sugerirá una pregunta alternativa.")
     
     # --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
-    if GEMINI_API_SECRET_VALUE == "AIzaSyCCMwqZAxVfq1CPPk8T0VHpcS6kMKlegJI":
+    if GEMINI_API_SECRET_VALUE == AIzaSyCCMwqZAxVfq1CPPk8T0VHpcS6kMKlegJI:
         st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
         st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
         st.markdown("---")
@@ -652,4 +652,5 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
 
