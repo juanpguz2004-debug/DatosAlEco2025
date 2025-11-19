@@ -5,17 +5,21 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.ticker import PercentFormatter
 import io 
-from datetime import datetime # Necesario para la función de fecha, aunque no se use en el diagnóstico externo
-
-# Configuración de la página
-st.set_page_config(
-    page_title="Dashboard de Diagnóstico de Activos",
-    layout="wide"
-)
+from datetime import datetime
+import re # Necesario para check_universals en el app.py
+import warnings
+warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
 # --- Variables Globales ---
-ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" # Usamos el archivo pre-calculado
+ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 UMBRAL_RIESGO_ALTO = 1.0 
+
+# --- CONFIGURACIÓN DE RIESGOS UNIVERSALES (DEBE COINCIDIR CON PREPROCESS.PY) ---
+PENALIZACION_DATOS_INCOMPLETOS = 2.0  
+PENALIZACION_METADATOS_NULOS = 1.5      
+PENALIZACION_INCONSISTENCIA_TIPO = 0.5   
+PENALIZACION_DUPLICADO = 1.0             
+RIESGO_MAXIMO_TEORICO_UNIVERSAL = 5.0 # (2.0 + 1.5 + 0.5 + 1.0) -> Máx. riesgo en app.py
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -25,60 +29,79 @@ UMBRAL_RIESGO_ALTO = 1.0
 def load_processed_data(file_path):
     """Carga el archivo CSV YA PROCESADO y lo cachea."""
     try:
-        # Cargamos el DF que ya tiene todos los scores calculados
         df = pd.read_csv(file_path, low_memory=False)
         return df
     except FileNotFoundError:
         return pd.DataFrame()
 
+def check_universals_external(df):
+    """
+    Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad 
+    para el diagnóstico rápido.
+    """
+    n_cols = df.shape[1]
+    
+    # --- 1. COMPLETITUD: Datos por Fila (Densidad) ---
+    df['datos_por_fila_score'] = (df.notna().sum(axis=1) / n_cols) * 100
+    df['riesgo_datos_incompletos'] = np.where(
+        df['datos_por_fila_score'] < 70, PENALIZACION_DATOS_INCOMPLETOS, 0.0
+    )
+
+    # --- 2. CONSISTENCIA: Mezcla de Tipos ---
+    df['riesgo_consistencia_tipo'] = 0.0
+    for col in df.select_dtypes(include='object').columns:
+        inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
+        df.loc[inconsistencies, 'riesgo_consistencia_tipo'] = PENALIZACION_INCONSISTENCIA_TIPO
+        
+    # --- 5. UNICIDAD: Duplicados Exactos ---
+    df['es_duplicado'] = df.duplicated(keep=False) 
+    df['riesgo_duplicado'] = np.where(
+        df['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
+    )
+    
+    return df
+
 def process_external_data(df):
     """
-    Lógica de riesgo universal para el archivo externo subido, separando la 
-    evaluación de datos (fila por fila) y la evaluación de metadatos (archivo).
+    Lógica de riesgo universal para el archivo externo subido.
     """
     
-    # --- 1. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO ---
+    # --- 1. EVALUACIÓN DE UNIVERSALES (Completitud, Consistencia, Unicidad) ---
+    df = check_universals_external(df)
+    
+    # --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO ---
     
     campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
-    
-    # Lógica de detección de falta de metadatos
     riesgo_metadatos = 0.0
     
-    # Calculamos la completitud de metadatos (necesario para la recomendación)
     campos_existentes_y_llenos = 0
-    num_campos_totales_base = len(campos_clave_universal) # Base 3
+    num_campos_totales_base = len(campos_clave_universal)
 
     for campo in campos_clave_universal:
-        # Penalización: Si la columna no existe O si existe pero el primer valor es nulo
+        # Penalización si la columna no existe O si existe pero el primer valor es nulo
         if campo not in df.columns or pd.isna(df[campo].iloc[0]):
-            riesgo_metadatos = 1.5
+            riesgo_metadatos = PENALIZACION_METADATOS_NULOS
         else:
             campos_existentes_y_llenos += 1
             
-    # Aplicamos el riesgo a TODAS las filas (es un riesgo del activo completo)
     df['riesgo_metadatos_nulo'] = riesgo_metadatos
-    
-    # Calculamos el porcentaje de completitud de metadatos
     completitud_metadatos_universal = (campos_existentes_y_llenos / num_campos_totales_base) * 100
     df['completitud_metadatos_universal'] = completitud_metadatos_universal
     
-    # --- 2. EVALUACIÓN DE DATOS (FILA POR FILA) ---
-    
-    # Métrica Universal: Completitud de Datos por Fila (Densidad de datos)
-    df['datos_por_fila_score'] = (df.notna().sum(axis=1) / df.shape[1]) * 100
-    
-    # Penalización 1: Riesgo por Datos Incompletos (Máx 2.0)
-    df['riesgo_datos_incompletos'] = np.where(df['datos_por_fila_score'] < 70, 2.0, 0.0)
-    
     # --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD ---
     
-    # Score de riesgo universal (Sigue siendo un máximo de 3.5)
-    df['prioridad_riesgo_score'] = df['riesgo_datos_incompletos'] + df['riesgo_metadatos_nulo']
+    # Score de riesgo universal
+    df['prioridad_riesgo_score'] = (
+        df['riesgo_datos_incompletos'] + 
+        df['riesgo_metadatos_nulo'] +
+        df['riesgo_consistencia_tipo'] +
+        df['riesgo_duplicado']
+    )
     
     # CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
-    max_risk = 3.5
+    # Usamos la media del riesgo para la calidad total del archivo
     avg_file_risk = df['prioridad_riesgo_score'].mean()
-    quality_score = 100 - (avg_file_risk / max_risk * 100)
+    quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100)
     
     df['calidad_total_score'] = np.clip(quality_score, 0, 100)
 
@@ -86,7 +109,7 @@ def process_external_data(df):
 
 
 # =================================================================
-# 2. Ejecución Principal
+# 2. Ejecución Principal del Dashboard
 # =================================================================
 
 st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Completo)")
@@ -100,6 +123,7 @@ try:
     else:
         st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
 
+        # [ ... Bloque de selección de entidad, filtros y visualizaciones se mantiene sin cambios ... ]
         # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (SE MANTIENE) ---
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
         owners.sort()
@@ -318,7 +342,7 @@ try:
         # ----------------------------------------------------------------------
         st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
         st.header("💾 Diagnóstico de Archivo CSV Externo (Calidad Universal)")
-        st.markdown("Sube un archivo CSV. La **Calidad Total** se calcula en base a la Completitud de Datos por Fila y Metadatos UNIVERSALES.")
+        st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a las 4 dimensiones universales principales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL:.1f}**).")
 
         uploaded_file = st.file_uploader(
             "Selecciona el Archivo CSV", 
@@ -340,29 +364,45 @@ try:
                             
                             # Métricas consolidadas
                             calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
-                            completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] # Es el mismo valor para todas las filas
+                            completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
                             datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
+                            riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
+
+                            # Desglose de Riesgos Promedio
+                            riesgos_reporte = pd.DataFrame({
+                                'Dimensión de Riesgo': [
+                                    '1. Datos Incompletos (Completitud)',
+                                    '2. Metadatos Faltantes (Gobernanza)',
+                                    '3. Duplicados Exactos (Unicidad)',
+                                    '4. Consistencia de Tipo (Coherencia)',
+                                ],
+                                'Riesgo Promedio (0-Máx)': [
+                                    df_diagnostico['riesgo_datos_incompletos'].mean(),
+                                    df_diagnostico['riesgo_metadatos_nulo'].mean(),
+                                    df_diagnostico['riesgo_duplicado'].mean(),
+                                    df_diagnostico['riesgo_consistencia_tipo'].mean(),
+                                ]
+                            })
+                            riesgos_reporte = riesgos_reporte.sort_values(by='Riesgo Promedio (0-Máx)', ascending=False)
+                            riesgos_reporte['Riesgo Promedio (0-Máx)'] = riesgos_reporte['Riesgo Promedio (0-Máx)'].round(2)
+                            
                             
                             # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (Final) ===
-                            avg_riesgo_datos_incompletos = df_diagnostico['riesgo_datos_incompletos'].mean()
                             
                             recomendacion_lista = []
                             
-                            # 1. Recomendación: Datos por Fila 
-                            if avg_riesgo_datos_incompletos > 0.5: 
-                                recomendacion_lista.append(f"Mejore la **Completitud de Datos por Fila** (actualmente: {datos_fila_promedio:.2f}%) llenando las celdas vacías o nulas. Cerca de {int((avg_riesgo_datos_incompletos/2.0) * 100)}% de sus activos tienen baja densidad de datos.")
+                            if riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)'] > 0.15: 
+                                recomendacion_lista.append(f"El riesgo más alto es por **{riesgos_reporte.iloc[0]['Dimensión de Riesgo']}** ({riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']:.2f}). Enfoca tu esfuerzo en corregir este problema primero.")
 
                             # 2. Recomendación: Metadatos (Siempre que no sea 100%)
                             if completitud_universal_promedio < 100.0:
-                                faltantes = 100.0 - completitud_universal_promedio
-                                recomendacion_lista.append(f"Asegure el **Metadato Universal**: La Completitud de Metadatos es de **{completitud_universal_promedio:.2f}%**. Es crítico que el archivo contenga las columnas diligenciadas (`titulo`, `descripcion`, `dueño`) para evitar que el activo sea huérfano.")
+                                recomendacion_lista.append(f"Asegure el **Metadato Universal**: La Completitud de Metadatos es de **{completitud_universal_promedio:.2f}%**. Diligencie las columnas (`titulo`, `descripcion`, `dueño`) para evitar que el activo sea huérfano.")
                             
                             if not recomendacion_lista:
                                 recomendacion_final = "La **Calidad** es excelente. No se requieren mejoras prioritarias."
                                 estado = "🟢 CALIDAD ALTA"
                                 color = "green"
                             else:
-                                # Preparamos el texto de la recomendación con formato Markdown
                                 recomendaciones_md = "\n".join([f"* {r}" for r in recomendacion_lista])
                                 recomendacion_final = f"Para aumentar la Calidad Total, se requiere **atención prioritaria** en los siguientes aspectos:\n\n{recomendaciones_md}"
                                 
@@ -381,24 +421,29 @@ try:
                             st.subheader("Resultados del Diagnóstico Rápido")
                             
                             # --- DESPLIEGUE DE MÉTRICAS SIMPLIFICADO ---
-                            col_calidad, col_meta = st.columns(2)
+                            col_calidad, col_meta, col_riesgo = st.columns(3)
                             
                             col_calidad.metric("⭐ Calidad Total del Archivo", f"{calidad_total_final:.1f}%")
                             col_meta.metric("Completitud Metadatos (Avg)", f"{completitud_universal_promedio:.2f}%") 
+                            col_riesgo.metric("Riesgo Promedio Total", f"{riesgo_promedio_total:.2f}")
 
-                            # Despliegue de la Recomendación (CORRECCIÓN FINAL DE VISIBILIDAD)
+                            # Despliegue de la Recomendación
                             st.markdown(f"""
                                 <div style='border: 2px solid {color}; padding: 15px; border-radius: 5px; background-color: #f9f9f9;'>
                                     <h4 style='color: {color}; margin-top: 0;'>Diagnóstico General: {estado}</h4>
-                                    <p style='color: black;'>Este puntaje mapea el nivel de riesgo de tu archivo (máx. 3.5) a una escala de calidad de **0% a 100%**.</p>
                                 </div>
                             """, unsafe_allow_html=True)
                             
-                            # Nuevo bloque para las recomendaciones para evitar problemas de anidación HTML/Markdown
+                            st.markdown("#### 🔬 Desglose de Riesgos (Auditoría)")
+                            st.dataframe(
+                                riesgos_reporte,
+                                use_container_width=True,
+                                hide_index=True
+                            )
+
                             st.markdown(f"#### ✨ Recomendación de Acciones:")
                             st.markdown(recomendacion_final)
-                            # Eliminamos la tabla de desglose final.
-                            
+
                         else:
                             st.error(f"❌ El archivo subido **{uploaded_filename}** no pudo ser procesado.")
                             
