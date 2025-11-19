@@ -30,7 +30,7 @@ def clean_col_name(col):
     return name
 
 def calculate_antiguedad_y_estado(df_temp):
-    """Calcula la antigüedad y el estado de cumplimiento (coherencia)."""
+    """Calcula la antigüedad y el estado de cumplimiento (coherencia) para el INVENTARIO PRINCIPAL."""
     try:
         COL_FECHA_ACTUALIZACION = 'fecha_de_ultima_actualizacion_de_datos_utc'
         COL_FRECUENCIA = 'informacion_de_datos_frecuencia_de_actualizacion'
@@ -54,7 +54,7 @@ def calculate_antiguedad_y_estado(df_temp):
         )
         return df_temp
     except KeyError:
-        # En caso de que el archivo subido no tenga las columnas, se establecen valores por defecto.
+        # Si el archivo subido no tiene las columnas, se establecen valores por defecto.
         df_temp['antiguedad_datos_dias'] = 9999
         df_temp['estado_actualizacion'] = 'NO APLICA'
         return df_temp
@@ -76,16 +76,23 @@ def load_data(file_path):
         return pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
-def process_data(df):
+def process_data(df, is_external_file=False):
     """Aplica todos los cálculos de métricas y scores de riesgo."""
     
     # 1. Limpieza de nombres de columnas
     df.columns = [clean_col_name(col) for col in df.columns]
 
-    # --- Popularidad (Vistas/Descargas) ---
+    # --- Popularidad (Vistas/Descargas) CORREGIDO ---
     try:
-        df['vistas'] = pd.to_numeric(df.get('vistas', 0), errors='coerce').fillna(0)
-        df['descargas'] = pd.to_numeric(df.get('descargas', 0), errors='coerce').fillna(0)
+        # Función utilitaria para obtener Series con valor 0 si la columna no existe
+        def get_series(col_name, df_local):
+            if col_name in df_local.columns:
+                return df_local[col_name]
+            else:
+                return pd.Series(0, index=df_local.index)
+
+        df['vistas'] = pd.to_numeric(get_series('vistas', df), errors='coerce').fillna(0)
+        df['descargas'] = pd.to_numeric(get_series('descargas', df), errors='coerce').fillna(0)
         df['popularidad_score'] = df['vistas'] + df['descargas'] 
     except Exception as e:
         st.error(f"❌ ERROR [Paso Popularidad]: Falló la conversión o suma de 'vistas'/'descargas'. Detalle: {e}")
@@ -97,7 +104,7 @@ def process_data(df):
     except Exception:
         return pd.DataFrame() 
     
-    # 3. Completitud de Metadatos
+    # 3. Completitud de Metadatos (Se usa la base de 10 campos para el inventario principal)
     try:
         campos_minimos = [
             'titulo', 'descripcion', 'dueño', 'correo_electronico_de_contacto',
@@ -105,40 +112,69 @@ def process_data(df):
             'common_core_public_access_level', 'informacion_de_datos_cobertura_geografica'
         ]
         campos_existentes = [col for col in campos_minimos if col in df.columns]
-        num_campos_totales = len(campos_minimos)
+        num_campos_totales_base = len(campos_minimos)
         
-        if num_campos_totales == 0:
+        if num_campos_totales_base == 0:
             df['completitud_score'] = 0
         else:
             df['campos_diligenciados'] = df[campos_existentes].notna().sum(axis=1)
-            df['completitud_score'] = (df['campos_diligenciados'] / num_campos_totales) * 100
+            df['completitud_score'] = (df['campos_diligenciados'] / num_campos_totales_base) * 100
     except Exception as e:
         st.error(f"❌ ERROR [Paso Completitud]: Falló el cálculo de 'completitud_score'. Detalle: {e}")
         return pd.DataFrame()
     
-    # 4. Detección de Anomalías (Isolation Forest)
+    # 4. Detección de Anomalías (Isolation Forest RESTAURADO)
     df['anomalia_score'] = 0 
-    # El modelo de ML Isolation Forest se excluye temporalmente o se deja simple para reducir el uso de RAM.
+    if not is_external_file: # Solo ejecutamos en el inventario principal
+        try:
+            df_modelo = df[(df['antiguedad_datos_dias'] < 9999) & (df['popularidad_score'] > 0)].copy()
+            
+            if not df_modelo.empty and len(df_modelo) > 1: 
+                features = df_modelo[['antiguedad_datos_dias', 'popularidad_score', 'completitud_score']]
+                model = IsolationForest(contamination=0.01, random_state=42)
+                model.fit(features)
+                anomalias = model.predict(features)
+                df.loc[df_modelo.index, 'anomalia_score'] = np.where(anomalias == -1, -1, 0)
+        except Exception as e:
+            # Captura de errores para evitar que caiga toda la app por el modelo ML
+            st.warning(f"⚠️ Aviso [Paso Anomalías]: El modelo Isolation Forest no se ejecutó. Detalle: {e}")
+            df['anomalia_score'] = 0
+
 
     # 5. CÁLCULO DE SCORE DE RIESGO/PRIORIDAD
-    try:
-        max_popularidad = df['popularidad_score'].max()
-        max_popularidad = max_popularidad if max_popularidad > 0 else 1 
-
-        df['riesgo_incumplimiento'] = np.where(df['estado_actualizacion'] == '🔴 INCUMPLIMIENTO', 3.0, 0.0)
-        df['riesgo_completitud'] = np.where(df['completitud_score'] < 50, 1.5, 0.0)
-        df['riesgo_demanda'] = (df['popularidad_score'] / max_popularidad) * 1.0 if max_popularidad > 1 else 0.0
-        df['riesgo_anomalia'] = np.where(df['anomalia_score'] == -1, 2.0, 0.0)
+    if is_external_file:
+        # --- LÓGICA DE RIESGO UNIVERSAL PARA ARCHIVO SUBIDO ---
+        df['datos_por_fila_score'] = (df.notna().sum(axis=1) / df.shape[1]) * 100
         
-        df['prioridad_riesgo_score'] = (
-            df['riesgo_incumplimiento'] +
-            df['riesgo_completitud'] +
-            df['riesgo_demanda'] +
-            df['riesgo_anomalia']
-        )
-    except Exception as e:
-        st.error(f"❌ ERROR [Paso Score Riesgo]: Falló el cálculo del score final. Detalle: {e}")
-        return pd.DataFrame() 
+        # Penalización 1: Score bajo de Datos por Fila (riesgo de datos incompletos)
+        df['riesgo_datos_incompletos'] = np.where(df['datos_por_fila_score'] < 70, 2.0, 0.0)
+        
+        # Penalización 2: Completitud de Metadatos (se asume 0 si las columnas no están, por lo que un score < 10% es penalizado)
+        df['riesgo_metadatos_nulo'] = np.where(df['completitud_score'] < 10, 1.0, 0.0)
+        
+        # El score de riesgo para el archivo externo es la suma de estas dos métricas universales
+        df['prioridad_riesgo_score'] = df['riesgo_datos_incompletos'] + df['riesgo_metadatos_nulo']
+        
+    else:
+        # --- LÓGICA DE RIESGO COMPLEJA PARA EL INVENTARIO PRINCIPAL ---
+        try:
+            max_popularidad = df['popularidad_score'].max()
+            max_popularidad = max_popularidad if max_popularidad > 0 else 1 
+
+            df['riesgo_incumplimiento'] = np.where(df['estado_actualizacion'] == '🔴 INCUMPLIMIENTO', 3.0, 0.0)
+            df['riesgo_completitud'] = np.where(df['completitud_score'] < 50, 1.5, 0.0)
+            df['riesgo_demanda'] = (df['popularidad_score'] / max_popularidad) * 1.0 if max_popularidad > 1 else 0.0
+            df['riesgo_anomalia'] = np.where(df['anomalia_score'] == -1, 2.0, 0.0)
+            
+            df['prioridad_riesgo_score'] = (
+                df['riesgo_incumplimiento'] +
+                df['riesgo_completitud'] +
+                df['riesgo_demanda'] +
+                df['riesgo_anomalia']
+            )
+        except Exception as e:
+            st.error(f"❌ ERROR [Paso Score Riesgo Principal]: Falló el cálculo del score final. Detalle: {e}")
+            return pd.DataFrame() 
     
     return df
 
@@ -150,13 +186,14 @@ st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Complet
 
 try:
     with st.spinner(f'Cargando archivo: **{ARCHIVO_CSV}**...'):
-        df = load_data(ARCHIVO_CSV) # Carga cacheada
+        df = load_data(ARCHIVO_CSV) 
 
     if df.empty:
         st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_CSV}**. Asegúrate de que existe.")
     else:
         with st.spinner('Procesando datos y calculando métricas...'):
-            df_analisis_completo = process_data(df.copy()) # Procesamiento cacheado
+            # Llama a process_data con el valor por defecto is_external_file=False
+            df_analisis_completo = process_data(df.copy()) 
             
         if df_analisis_completo.empty:
             st.error("🛑 Proceso de datos detenido debido a errores en los cálculos.")
@@ -164,8 +201,8 @@ try:
             st.success(f'✅ Archivo **{ARCHIVO_CSV}** cargado y procesamiento completado. Total de activos: **{len(df_analisis_completo)}**')
 
             # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
-            st.header("🔬 Desglose de Métricas por Entidad")
-            
+            # ... (Lógica de selección de entidad, filtros y métricas se mantiene) ...
+
             owners = df_analisis_completo['dueño'].dropna().unique().tolist()
             owners.sort()
             owners.insert(0, "Mostrar Análisis General")
@@ -293,7 +330,7 @@ try:
 
                 st.markdown("---")
 
-                # --- Visualización 1: Ranking de Completitud (Peor Rendimiento) ---
+                # --- Visualización 1: Ranking de Completitud ---
                 st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
                 
                 try:
@@ -319,7 +356,7 @@ try:
 
                 st.markdown("---")
 
-                # --- Visualización 2: Gráfico de PARETO de Riesgo (Activos más Críticos) ---
+                # --- Visualización 2: Gráfico de PARETO de Riesgo ---
                 st.subheader("2. 🎯 Gráfico de Pareto de Riesgo (Activos más Críticos)")
                 
                 try:
@@ -347,7 +384,6 @@ try:
                 
                 st.markdown("---")
 
-
                 # --- Visualización 3: Cobertura Temática por Categoría ---
                 st.subheader("3. 🗺️ Cobertura Temática por Categoría")
                 
@@ -372,8 +408,12 @@ try:
             # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
             # ----------------------------------------------------------------------
             st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
-            st.header("💾 Diagnóstico de Archivo CSV Externo")
-            st.markdown("Sube un archivo CSV de activos para obtener un diagnóstico rápido de su calidad basado en nuestras métricas.")
+            st.header("💾 Diagnóstico de Archivo CSV Externo (Riesgo Universal)")
+            st.markdown("""
+                Sube un archivo CSV. El riesgo se calcula basándose en dos métricas universales de calidad de datos:
+                1.  **Datos por Fila:** Porcentaje de celdas completas en el archivo.
+                2.  **Completitud de Metadatos:** Presencia de columnas de metadatos clave (si aplican).
+            """)
 
             uploaded_file = st.file_uploader(
                 "Selecciona el Archivo CSV", 
@@ -388,39 +428,46 @@ try:
                         if uploaded_df.empty:
                             st.warning("⚠️ El archivo subido está vacío.")
                         else:
-                            df_diagnostico = process_data(uploaded_df.copy())
+                            # Llama a process_data con is_external_file=True
+                            df_diagnostico = process_data(uploaded_df.copy(), is_external_file=True)
                             
                             if not df_diagnostico.empty:
                                 total_activos_subidos = len(df_diagnostico)
                                 riesgo_promedio_general = df_diagnostico['prioridad_riesgo_score'].mean()
                                 
-                                if riesgo_promedio_general > UMBRAL_RIESGO_ALTO:
+                                # El umbral de riesgo universal es 1.0 (máximo riesgo 3.0)
+                                if riesgo_promedio_general >= 1.0:
                                     estado = "🔴 RIESGO ALTO (REQUIERE INTERVENCIÓN)"
                                     color = "red"
                                 else:
                                     estado = "🟢 RIESGO BAJO (CALIDAD ACEPTABLE)"
                                     color = "green"
                                 
+                                # Nueva métrica de datos por fila (media)
+                                datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
+                                
                                 st.subheader("Resultados del Diagnóstico Rápido")
                                 
                                 col_info1, col_info2, col_info3 = st.columns(3)
                                 col_info1.metric("Activos Analizados", total_activos_subidos)
-                                col_info2.metric("Completitud Promedio", f"{df_diagnostico['completitud_score'].mean():.2f}%")
-                                col_info3.metric("Riesgo Promedio General", f"{riesgo_promedio_general:.2f}")
+                                col_info2.metric("Completitud de Metadatos", f"{df_diagnostico['completitud_score'].mean():.2f}%")
+                                col_info3.metric("Riesgo Promedio Universal", f"{riesgo_promedio_general:.2f}")
 
                                 st.markdown(f"""
                                     <div style='border: 2px solid {color}; padding: 15px; border-radius: 5px; background-color: #f9f9f9;'>
                                         <h4 style='color: {color}; margin-top: 0;'>Diagnóstico General: {estado}</h4>
-                                        <p>El score de riesgo promedio ({riesgo_promedio_general:.2f}) indica la prioridad de intervención.</p>
+                                        <p>El Score de Riesgo Universal de **{riesgo_promedio_general:.2f}** indica la prioridad de intervención. (Máximo teórico: 3.0)</p>
+                                        <p><b>Promedio de Datos por Fila:</b> {datos_fila_promedio:.2f}% (Indica cuántas celdas están llenas).</p>
                                     </div>
                                 """, unsafe_allow_html=True)
 
                                 st.markdown("---")
-                                st.subheader("Desglose de Calidad de los Activos Subidos (Top 10 Riesgo)")
-                                st.dataframe(df_diagnostico[['titulo', 'dueño', 'completitud_score', 'antiguedad_datos_dias', 'estado_actualizacion', 'prioridad_riesgo_score']].sort_values(by='prioridad_riesgo_score', ascending=False).head(10), use_container_width=True)
+                                st.subheader("Desglose de Calidad de las Filas (Top 10 Riesgo)")
+                                # Usamos el riesgo universal y el score de datos por fila
+                                st.dataframe(df_diagnostico[['prioridad_riesgo_score', 'datos_por_fila_score', 'riesgo_datos_incompletos', 'riesgo_metadatos_nulo']].sort_values(by='prioridad_riesgo_score', ascending=False).head(10), use_container_width=True)
 
                             else:
-                                st.error("❌ El archivo subido no pudo ser procesado debido a un error en el formato o las columnas.")
+                                st.error("❌ El archivo subido no pudo ser procesado. Revisa los mensajes de error anteriores.")
                                 
                     except Exception as e:
                         st.error(f"❌ Error al leer o procesar el archivo CSV: {e}")
