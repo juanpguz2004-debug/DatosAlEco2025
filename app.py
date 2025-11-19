@@ -523,20 +523,7 @@ try:
                             yaxis_title='Completitud Score del Activo (%)'
                         )
                         
-                        # --- TRAZO ELIMINADO: Se quita la adición explícita de los centroides (diamond-open) ---
-                        # centers_df['Calidad_Cluster'] = centers_df['index'].map(cluster_map)
-                        # fig2.add_trace(px.scatter(
-                        #     centers_df,
-                        #     x='prioridad_riesgo_score', 
-                        #     y='completitud_score', 
-                        #     color='Calidad_Cluster',
-                        #     size=[10] * 3, # Tamaño fijo para los centros
-                        #     color_discrete_map=color_map,
-                        #     symbol=[ 'diamond-open'] * 3, # Símbolo de diamante para los centros
-                        #     opacity=1,
-                        #     hover_name='Calidad_Cluster'
-                        # ).data[0])
-                        # --- FIN DEL TRAZO ELIMINADO ---
+                        # Los centroides ya no se añaden explícitamente como se solicitó.
                         
                         st.plotly_chart(fig2, use_container_width=True)
 
@@ -557,17 +544,24 @@ try:
 
             with tab3:
                 # --- Visualización 3: Cobertura Temática por Categoría (Plotly Express Bar Plot) ---
-                st.subheader("3. 🗺️ Cobertura Temática por Categoría")
+                st.subheader("3. 🗺️ Cobertura Temática por Categoría (Mayor a Menor)")
                 
                 try:
                     COLUMNA_CATEGORIA = 'categoria'
                     if COLUMNA_CATEGORIA in df_filtrado.columns:
                         conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10).reset_index()
                         conteo_categoria.columns = ['Categoria', 'Numero_de_Activos']
+                        
+                        # --- MODIFICACIÓN CLAVE: Ordenar de forma descendente (Mayor a Menor) ---
+                        conteo_categoria = conteo_categoria.sort_values(by='Numero_de_Activos', ascending=False)
+                        
                     else:
                         conteo_categoria = pd.DataFrame({'Categoria': [], 'Numero_de_Activos': []})
 
                     if not conteo_categoria.empty:
+                        # Plotly, al usar un gráfico de barras horizontales (orientation='h'),
+                        # respeta el orden del DataFrame para el eje Y, de abajo hacia arriba.
+                        # Al ordenar de forma descendente y usar Plotly, el valor más alto queda arriba.
                         fig3 = px.bar(
                             conteo_categoria, 
                             x='Numero_de_Activos', 
