@@ -15,12 +15,11 @@ ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv"
 # CRITERIO DE RIESGO
 UMBRAL_RIESGO_ALTO = 3.0 
 
-# --- CONFIGURACIÓN DE RIESGOS UNIVERSALES (AJUSTADO: SIN METADATOS) ---
+# --- CONFIGURACIÓN DE RIESGOS UNIVERSALES (AJUSTADO: SIN METADATOS EN SCORE FINAL) ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0  
-# PENALIZACION_METADATOS_NULOS = 1.5 # ELIMINADO del diagnóstico rápido
 PENALIZACION_INCONSISTENCIA_TIPO = 0.5   
 PENALIZACION_DUPLICADO = 1.0             
-# RIESGO MÁXIMO AJUSTADO: 2.0 (Incompletos) + 0.5 (Consistencia) + 1.0 (Duplicados) = 3.5
+# RIESGO MÁXIMO AJUSTADO: 2.0 + 0.5 + 1.0 = 3.5
 RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5 
 
 # =================================================================
@@ -35,6 +34,28 @@ def load_processed_data(file_path):
         return df
     except FileNotFoundError:
         return pd.DataFrame()
+
+# NUEVA FUNCIÓN para hacer la detección más robusta en el diagnóstico rápido
+def clean_and_convert_types_external(df):
+    """Fuerza a las columnas a ser tipo string para asegurar la detección de inconsistencias."""
+    
+    # Columnas que suelen ser de tipo 'object' (string)
+    object_cols = ['titulo', 'descripcion', 'dueño'] 
+    
+    # Columnas que contienen los datos que queremos chequear por tipo mixto
+    data_cols = [col for col in df.columns if col not in object_cols]
+    
+    # Intentamos convertir las columnas de datos a strings para chequear la mezcla
+    for col in data_cols:
+        if df[col].dtype != 'object':
+             # Convertir solo si no es ya object, para evitar mezclar types si ya son strings
+            try:
+                # La coerción a string (object) es necesaria para que el check_universals funcione
+                df[col] = df[col].astype(object) 
+            except:
+                pass # Si falla la conversión, dejamos el tipo como está
+
+    return df
 
 def check_universals_external(df):
     """
@@ -51,11 +72,13 @@ def check_universals_external(df):
 
     # --- 2. CONSISTENCIA: Mezcla de Tipos ---
     df['riesgo_consistencia_tipo'] = 0.0
+    # Chequeamos TODAS las columnas que son 'object' (ahora forzadas a ser strings)
     for col in df.select_dtypes(include='object').columns:
+        # Penaliza filas donde hay valores no-string y NO nulos (e.g., números o booleanos)
         inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
         df.loc[inconsistencies, 'riesgo_consistencia_tipo'] = PENALIZACION_INCONSISTENCIA_TIPO
         
-    # --- 5. UNICIDAD: Duplicados Exactos ---
+    # --- 3. UNICIDAD: Duplicados Exactos ---
     df['es_duplicado'] = df.duplicated(keep=False) 
     df['riesgo_duplicado'] = np.where(
         df['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
@@ -68,12 +91,13 @@ def process_external_data(df):
     Lógica de riesgo universal para el archivo externo subido (AJUSTADA).
     """
     
+    # PASO CLAVE CORREGIDO: Asegurar que los tipos permitan la detección
+    df = clean_and_convert_types_external(df)
+
     # --- 1. EVALUACIÓN DE UNIVERSALES (Completitud, Consistencia, Unicidad) ---
     df = check_universals_external(df)
     
-    # --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO (REDUCIDA A SIMPLE SCORE) ---
-    # La penalización fue removida del score final, pero mantenemos este cálculo 
-    # para dar información al usuario sobre sus metadatos.
+    # --- 2. EVALUACIÓN DE METADATOS A NIVEL DE ARCHIVO (SOLO PARA INFORME) ---
     campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
     campos_existentes_y_llenos = 0
     num_campos_totales_base = len(campos_clave_universal)
@@ -87,7 +111,7 @@ def process_external_data(df):
     
     # --- 3. CÁLCULO FINAL DE RIESGO Y CALIDAD ---
     
-    # Score de riesgo universal (SOLO 3 DIMENSIONES: DATOS INCOMPLETOS, CONSISTENCIA, DUPLICADOS)
+    # Score de riesgo universal (SOLO 3 DIMENSIONES)
     df['prioridad_riesgo_score'] = (
         df['riesgo_datos_incompletos'] + 
         df['riesgo_consistencia_tipo'] +
@@ -285,7 +309,7 @@ try:
                     st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
 
             with tab2:
-                # --- Visualización 2: Gráfico de Burbujas de Riesgo (NUEVO) ---
+                # --- Visualización 2: Gráfico de Burbujas de Riesgo ---
                 st.subheader("2. 🫧 Burbujas de Priorización de Riesgo por Entidad")
                 st.markdown("Este gráfico muestra la **relación entre el riesgo, la completitud de metadatos y el volumen de activos** por entidad.")
                 st.markdown("* **Eje X:** Riesgo Promedio (Se debe minimizar, mejor a la izquierda).")
@@ -302,29 +326,25 @@ try:
                     if not df_bubble.empty:
                         fig2, ax2 = plt.subplots(figsize=(12, 8))
                         
-                        # Usamos el Volumen escalado para el tamaño de la burbuja (s)
                         max_volumen = df_bubble['Volumen'].max()
                         s_volumen = (df_bubble['Volumen'] / max_volumen) * 2000 
                         
-                        # Color: Usamos la Completitud como factor de color (verde oscuro = bueno)
                         scatter = ax2.scatter(
                             x=df_bubble['Riesgo_Promedio'], 
                             y=df_bubble['Completitud_Promedio'], 
                             s=s_volumen, 
                             c=df_bubble['Completitud_Promedio'], 
-                            cmap='RdYlGn', # Rojo a Amarillo a Verde
+                            cmap='RdYlGn', 
                             alpha=0.6, 
                             edgecolors="w", 
                             linewidth=1
                         )
                         
-                        # Añadir anotaciones para algunas entidades grandes
                         for i in df_bubble.nlargest(5, 'Volumen').index:
                              ax2.annotate(df_bubble.loc[i, 'dueño'], 
                                          (df_bubble.loc[i, 'Riesgo_Promedio'], df_bubble.loc[i, 'Completitud_Promedio']), 
                                          fontsize=8, alpha=0.8)
 
-                        # Añadir límites de referencia
                         ax2.axhline(80, color='gray', linestyle='--', alpha=0.5)
                         ax2.axvline(UMBRAL_RIESGO_ALTO, color='red', linestyle=':', alpha=0.7)
 
@@ -332,7 +352,6 @@ try:
                         ax2.set_ylabel('Completitud Promedio (Mejor ↑)', fontsize=12)
                         ax2.set_title('Matriz de Priorización de Entidades (Riesgo vs. Completitud)', fontsize=16)
                         
-                        # Barra de color
                         cbar = fig2.colorbar(scatter, ax=ax2)
                         cbar.set_label('Completitud Promedio (%)')
                         
@@ -374,7 +393,6 @@ try:
         # ----------------------------------------------------------------------
         st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
         st.header("💾 Diagnóstico de Archivo CSV Externo (Calidad Universal)")
-        # RIESGO MÁXIMO TEÓRICO AJUSTADO a 3.5
         st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a 3 dimensiones universales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL:.1f}**).")
 
         uploaded_file = st.file_uploader(
@@ -386,7 +404,7 @@ try:
             with st.spinner('Analizando archivo...'):
                 try:
                     uploaded_filename = uploaded_file.name
-                    # Lógica de lectura robusta con detección de delimitadores (Mantenida)
+                    # Lógica de lectura robusta con detección de delimitadores
                     uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False)
                     if len(uploaded_df.columns) <= 1:
                         uploaded_file.seek(0)
@@ -406,16 +424,15 @@ try:
                             # Métricas consolidadas
                             calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
                             completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
-                            datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
                             riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
 
-                            # Desglose de Riesgos Promedio (AJUSTADO: Metadatos removido del score, pero se muestra su info)
+                            # Desglose de Riesgos Promedio (CORREGIDO PARA MOSTRAR LOS 4 ITEMS)
                             riesgos_reporte = pd.DataFrame({
                                 'Dimensión de Riesgo': [
                                     '1. Datos Incompletos (Completitud)',
                                     '2. Duplicados Exactos (Unicidad)',
                                     '3. Consistencia de Tipo (Coherencia)',
-                                    '4. Metadatos Faltantes (Informativo, Score = N/A)', 
+                                    '4. Metadatos Faltantes (Informativo)', 
                                 ],
                                 'Riesgo Promedio (0-Máx)': [
                                     df_diagnostico['riesgo_datos_incompletos'].mean(),
@@ -428,16 +445,15 @@ try:
                             riesgos_reporte['Riesgo Promedio (0-Máx)'] = riesgos_reporte['Riesgo Promedio (0-Máx)'].round(2)
                             
                             
-                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (Final) ===
-                            
+                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA ===
                             recomendacion_lista = []
                             
                             # 1. Recomendación: Riesgo más alto (excluyendo la línea informativa de metadatos)
                             riesgo_max_reportado = riesgos_reporte.iloc[0]['Riesgo Promedio (0-Máx)']
-                            if riesgo_max_reportado > 0.15 and riesgos_reporte.iloc[0]['Dimensión de Riesgo'] != '4. Metadatos Faltantes (Informativo, Score = N/A)':
+                            if riesgo_max_reportado > 0.15 and riesgos_reporte.iloc[0]['Dimensión de Riesgo'] != '4. Metadatos Faltantes (Informativo)':
                                 recomendacion_lista.append(f"El riesgo más alto es por **{riesgos_reporte.iloc[0]['Dimensión de Riesgo']}** ({riesgo_max_reportado:.2f}). Enfoca tu esfuerzo en corregir este problema primero.")
 
-                            # 2. Recomendación: Metadatos (Siempre que no sea 100% y era la más crítica)
+                            # 2. Recomendación: Metadatos 
                             if completitud_universal_promedio < 100.0:
                                 recomendacion_lista.append(f"Revise el **Metadato Universal**: La Completitud de Metadatos es de **{completitud_universal_promedio:.2f}%**. Diligencie las columnas (`titulo`, `descripcion`, `dueño`) para evitar que el activo sea huérfano.")
                             
@@ -481,6 +497,12 @@ try:
                             st.dataframe(
                                 riesgos_reporte,
                                 use_container_width=True,
+                                column_config={
+                                    'Riesgo Promedio (0-Máx)': st.column_config.NumberColumn(
+                                        "Riesgo Promedio (0-Máx)", 
+                                        format="%.2f"
+                                    )
+                                },
                                 hide_index=True
                             )
 
