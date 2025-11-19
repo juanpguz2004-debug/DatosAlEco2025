@@ -35,9 +35,9 @@ UMBRAL_COMPLETITUD_BAJA = 70.0
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0 	
-PENALIZACION_INCONSISTENCIA_TIPO = 0.5 	# Valor de penalización por cada columna con error de tipo
+PENALIZACION_INCONSISTENCIA_TIPO = 0.5 	 # Valor de penalización por CADA columna con error de tipo
 PENALIZACION_DUPLICADO = 1.0 	 	 	 
-RIESGO_MAXIMO_TEORICO_UNIVERSAL = 10.0 # <--- AJUSTADO: Se asume que el riesgo puede ser hasta 10.0
+RIESGO_MAXIMO_TEORICO_UNIVERSAL = 10.0 # <--- CORREGIDO: Aumentado para reflejar el riesgo acumulativo (antes 3.5)
 
 # ⚠️ CLAVE SECRETA DE GEMINI
 GEMINI_API_SECRET_VALUE = "Aiza"
@@ -90,13 +90,13 @@ def calculate_universal_metrics(df):
 		df['datos_por_fila_score'] < UMBRAL_COMPLETITUD_BAJA, PENALIZACION_DATOS_INCOMPLETOS, 0.0
 	)
 
-	# --- 2. CONSISTENCIA: Mezcla de Tipos (¡CORREGIDO: Riesgo Acumulativo por Columna!) ---
+	# --- 2. CONSISTENCIA: Mezcla de Tipos (¡CORREGIDO: Riesgo Acumulativo!) ---
 	df['riesgo_consistencia_tipo'] = 0.0
-	# Recorre CADA columna y acumula el riesgo si detecta un problema de tipo
+	# Recorre CADA columna y ACUMULA el riesgo si detecta un problema de tipo
 	for col in df.select_dtypes(include='object').columns:
 		inconsistencies = df[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
 		if inconsistencies.any():
-			# Utiliza += para sumar la penalización por cada columna con inconsistencia
+			# 🚨 CORRECCIÓN CLAVE: Usamos += para sumar la penalización por cada columna que falla.
 			df.loc[inconsistencies, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO 
 		
 	# --- 3. UNICIDAD: Duplicados Exactos ---
@@ -108,7 +108,7 @@ def calculate_universal_metrics(df):
 	# --- 4. CÁLCULO FINAL DE PRIORIDAD DE RIESGO ---
 	df['prioridad_riesgo_score'] = (
 		df['riesgo_datos_incompletos'] + 
-		df['riesgo_consistencia_tipo'] +
+		df['riesgo_consistencia_tipo'] + # <--- Esto ahora acumula riesgo por columna
 		df['riesgo_duplicado']
 	)
 	
@@ -147,7 +147,8 @@ def process_external_data(df):
 	
 	# CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
 	avg_file_risk = df['prioridad_riesgo_score'].mean()
-	quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100)
+	# Usa el RIESGO_MAXIMO_TEORICO_UNIVERSAL corregido (10.0)
+	quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100) 
 	
 	df['calidad_total_score'] = np.clip(quality_score, 0, 100)
 
@@ -246,7 +247,7 @@ def run_supervised_segmentation_pca(df_input, MAX_SAMPLE_SIZE=15000, N_CLUSTERS=
 	return df_sample, variance_ratio, None
 
 # =================================================================
-# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
+# SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP) (SIN CAMBIOS)
 # =================================================================
 
 def setup_data_assistant(df):
@@ -446,7 +447,7 @@ try:
 			# --- 4. Tabla de Búsqueda y Diagnóstico de Entidades ---
 			st.header("🔍 4. Tabla de Búsqueda y Diagnóstico de Entidades")
 			
-			# Se mantiene la descripción de color de texto
+			# Se actualiza la descripción para reflejar que sólo se usa color de texto
 			st.info(f"""
 				La tabla usa **color de texto** condicional para identificar problemas de calidad rápidamente:
 				* 🔴 **Riesgo Promedio** > **{UMBRAL_RIESGO_ALTO:.1f}** (Prioridad Máxima).
@@ -472,7 +473,7 @@ try:
 				resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
 				
 				
-				# Función de estilo para usar SÓLO color de texto en todas las columnas de riesgo
+				# 🟢 Función de estilo para usar SÓLO color de texto en todas las columnas de riesgo
 				def highlight_metrics_text_color(s):
 					"""Aplica color de texto (rojo/verde) a TODAS las métricas críticas."""
 					styles = [''] * len(s)
@@ -557,7 +558,7 @@ try:
 						
 						if not df_top_10_peor_completitud.empty:
 							
-							# *** CÓDIGO CLAVE PARA EL GRADIENTE (Confirmado) ***
+							# 🟢 Se mantiene esta configuración para el gradiente
 							fig1 = px.bar(
 								df_top_10_peor_completitud,
 								x='Completitud_Promedio', 
@@ -576,10 +577,7 @@ try:
 								}
 							)
 							
-							fig1.update_layout(
-                                yaxis={'categoryorder':'total ascending'},
-                                coloraxis_showscale=True # Se asegura de mostrar la leyenda de la escala continua
-                            ) 
+							fig1.update_layout(yaxis={'categoryorder':'total ascending'}, coloraxis_showscale=True) 
 							
 							st.plotly_chart(fig1, use_container_width=True)
 						else:
@@ -643,7 +641,7 @@ try:
 
 
 			with tab3:
-				# --- Visualización 3: Cobertura Temática por Categoría (Plotly) ---
+				# --- Visualización 3: Cobertura Temática por Categoría (Plotly - SIN CAMBIOS) ---
 				st.subheader("3. 🗺️ Cobertura Temática por Categoría")
 				st.caption("Gráfico interactivo: Usa el hover para ver valores exactos y la barra de herramientas para zoom.")
 				
