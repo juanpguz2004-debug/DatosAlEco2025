@@ -271,7 +271,7 @@ def setup_data_assistant(df):
 	# --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
 	if GEMINI_API_SECRET_VALUE == "Aiza":
 		st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
-		# 🚨 CORRECCIÓN DE SYNTAX ERROR: Se une la cadena en una sola línea.
+		# 🚨 CORRECCIÓN DE SYNTAX ERROR: Se unió la cadena en una sola línea.
 		st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
 		st.markdown("---")
 		return
@@ -282,8 +282,8 @@ def setup_data_assistant(df):
 		client = object() # Esto es solo para evitar errores de IDE/ejecución simulada
 		
 	except Exception as e:
-		st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API.
-Detalle: {e}")
+		# 🚨 CORRECCIÓN DE SYNTAX ERROR: La f-string ahora está en una sola línea.
+		st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}")
 		st.markdown("---")
 		return
 
