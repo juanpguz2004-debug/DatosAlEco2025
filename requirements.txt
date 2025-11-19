@@ -12,3 +12,4 @@ langchain
 langchain-google-genai
 numexpr
 langchain-community
+tabulate
