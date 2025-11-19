@@ -12,7 +12,7 @@ import warnings
 import os 
 # --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
-# --- FIN DE IMPORTACIÓN DE GEMINI ---
+# --- FIN DE IMPORTACIÓN DE GEMINI ---\
 
 # --- NUEVAS IMPORTACIONES PARA CLUSTERING NO SUPERVISADO (K-MEANS) ---
 from sklearn.cluster import KMeans
@@ -216,7 +216,6 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
 
     # Añadir la pregunta del usuario al historial
     # NOTA: Ya fue añadido antes de llamar a esta función para que aparezca inmediatamente.
-    # st.session_state.messages.append({"role": "user", "content": user_query}) # Esta línea se mueve fuera
 
     # Generar la respuesta
     with model_placeholder.chat_message("assistant"):
@@ -271,50 +270,32 @@ try:
 
         
         # ----------------------------------------------------------------------
-        # 🧠 ASISTENTE EN EL SIDEBAR (CÓDIGO MODIFICADO)
+        # --- FILTROS EN EL SIDEBAR (SE MANTIENEN AQUÍ) ---
         # ----------------------------------------------------------------------
         with st.sidebar:
-            st.header("🧠 Asistente de Análisis Experto")
-            st.info(
-                "Pregunta por los **KPIs, rankings o diagnósticos** basados en la Base de Conocimiento. "
-                "Ej: '¿Qué entidad tiene más activos?'"
-            )
+            st.header("⚙️ Filtros para Visualizaciones")
             
-            if knowledge_base_content is None:
-                 st.error("La base de conocimiento `knowledge_base.txt` no fue encontrada.")
+            filtro_acceso_publico = False 
             
-            # 1. Contenedor para el Historial de Conversación
-            chat_history_container = st.container(height=350)
+            if 'common_core_public_access_level' in df_analisis_completo.columns:
+                filtro_acceso_publico = st.checkbox(
+                    "Mostrar Solo Activos 'public'",
+                    value=False,
+                    help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public'."
+                )
             
-            with chat_history_container:
-                for message in st.session_state.messages:
-                    with st.chat_message(message["role"]):
-                        st.markdown(message["content"])
-
-            # 2. Lógica de Interacción (Chat Input - siempre al final del sidebar)
-            if prompt := st.chat_input("Escribe aquí tu pregunta de análisis complejo:", key="sidebar_chat_input_key", disabled=(knowledge_base_content is None)):
-                
-                # --- Agregar el mensaje del usuario y simular la respuesta inmediata ---
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                
-                # Para que el mensaje del usuario aparezca inmediatamente en el historial
-                with chat_history_container:
-                    with st.chat_message("user"):
-                        st.markdown(prompt)
-
-                    # Placeholder para la respuesta del Asistente (se llenará en la función)
-                    model_response_placeholder = st.empty() 
-                    
-                    # Llamar a la función de generación
-                    generate_ai_response(prompt, knowledge_base_content, model_response_placeholder)
+            filtro_categoria = "Mostrar Todos"
+            if 'categoria' in df_analisis_completo.columns:
+                categories = df_analisis_completo['categoria'].dropna().unique().tolist()
+                categories.sort()
+                categories.insert(0, "Mostrar Todos")
+                filtro_categoria = st.selectbox("Filtrar por Categoría:", categories)
 
         # ----------------------------------------------------------------------
-        # --- FIN ASISTENTE EN EL SIDEBAR ---
+        # --- CONTENIDO PRINCIPAL ---
         # ----------------------------------------------------------------------
         
-        st.markdown("---") # Separador para el contenido principal
-        
-        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD (Contenido Principal) ---
+        # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
         owners.sort()
         owners.insert(0, "Mostrar Análisis General")
@@ -350,28 +331,6 @@ try:
             else:
                 st.warning(f"⚠️ No se encontraron activos para la entidad: {filtro_dueño}")
                 st.markdown("---")
-
-        # --- BARRA LATERAL (FILTROS SECUNDARIOS - Se mantiene en la barra lateral para filtros) ---
-        with st.sidebar:
-            st.header("⚙️ Filtros para Visualizaciones")
-            
-            filtro_acceso_publico = False 
-            
-            if 'common_core_public_access_level' in df_analisis_completo.columns:
-                # Creamos el checkbox
-                filtro_acceso_publico = st.checkbox(
-                    "Mostrar Solo Activos 'public'",
-                    value=False, # Por defecto, mostrar todos (False)
-                    help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public'."
-                )
-            
-            filtro_categoria = "Mostrar Todos"
-            if 'categoria' in df_analisis_completo.columns:
-                categories = df_analisis_completo['categoria'].dropna().unique().tolist()
-                categories.sort()
-                categories.insert(0, "Mostrar Todos")
-                filtro_categoria = st.selectbox("Filtrar por Categoría:", categories)
-
 
         # --- APLICAR FILTROS (Para las Visualizaciones) ---
         df_filtrado = df_analisis_completo.copy()
@@ -510,7 +469,7 @@ try:
             st.markdown("---")
             
             # ----------------------------------------------------------------------
-            # --- BLOQUE CLAVE DE PESTAÑAS ---
+            # --- BLOQUE CLAVE DE PESTAÑAS (GRÁFICOS) ---
             # ----------------------------------------------------------------------
             
             if filtro_acceso_publico:
@@ -841,5 +800,45 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
                         st.error(f"❌ Error al leer o procesar el archivo CSV: {e}")
                         st.warning("Asegúrate de que el archivo es un CSV válido y tiene un formato consistente.")
             
+            # ----------------------------------------------------------------------
+            # 🧠 ASISTENTE DE DATOS (AL FINAL DE LA PÁGINA)
+            # ----------------------------------------------------------------------
+            st.markdown("<hr style='border: 4px solid #38c8f0;'>", unsafe_allow_html=True)
+            st.header("🧠 Asistente de Análisis Experto (Base de Conocimiento)")
+            st.info(
+                "Pregunta por los **KPIs, rankings o diagnósticos** basados en la Base de Conocimiento. "
+                "Ej: '¿Qué entidad tiene más activos?', 'Dime el Top 5 peores activos por riesgo', "
+                "'¿Cuál es el riesgo promedio en activos en incumplimiento?'"
+            )
+            
+            if knowledge_base_content is None:
+                 st.error("La base de conocimiento `knowledge_base.txt` no fue encontrada. El asistente no funcionará.")
+            
+            # 1. Contenedor para el Historial de Conversación
+            # Usamos un contenedor simple ya que estamos en el cuerpo principal
+            chat_history_container = st.container()
+            
+            with chat_history_container:
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+
+            # 2. Lógica de Interacción (Chat Input - en el cuerpo principal)
+            if prompt := st.chat_input("Escribe aquí tu pregunta de análisis complejo:", key="main_chat_input_key", disabled=(knowledge_base_content is None)):
+                
+                # --- Agregar el mensaje del usuario y simular la respuesta inmediata ---
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                
+                # Para que el mensaje del usuario aparezca inmediatamente en el historial
+                with chat_history_container:
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+
+                    # Placeholder para la respuesta del Asistente (se llenará en la función)
+                    model_response_placeholder = st.empty() 
+                    
+                    # Llamar a la función de generación
+                    generate_ai_response(prompt, knowledge_base_content, model_response_placeholder)
+
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
