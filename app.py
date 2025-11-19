@@ -798,3 +798,4 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e_principal:
 	st.error(f"❌ ERROR FATAL en la ejecución del Dashboard: {e_principal}")
+
