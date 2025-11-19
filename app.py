@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt 
 import seaborn as sns 
-import plotly.express as px # <--- IMPORTACIÓN CLAVE PARA LOS GRÁFICOS
+import plotly.express as px
 from matplotlib.ticker import PercentFormatter
 import io 
 from datetime import datetime
@@ -12,8 +12,12 @@ import warnings
 import os 
 # --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
-# Eliminamos todas las importaciones de LangChain para máxima estabilidad.
-# --- Fin de Importaciones para el Agente de IA ---
+# --- FIN DE IMPORTACIÓN DE GEMINI ---
+
+# --- NUEVAS IMPORTACIONES PARA CLUSTERING NO SUPERVISADO (K-MEANS) ---
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+# --- FIN DE NUEVAS IMPORTACIONES ---
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
@@ -410,7 +414,7 @@ try:
             st.markdown("---")
             
             # --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES (CON PLOTLY EXPRESS) ---
-            tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. Burbujas de Riesgo", "3. Cobertura Temática"])
+            tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática"])
 
             with tab1:
                 # --- Visualización 1: Ranking de Completitud (Plotly Express Bar Plot) ---
@@ -446,48 +450,108 @@ try:
                     st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
 
             with tab2:
-                # --- Visualización 2: Gráfico de Burbujas de Riesgo (Plotly Express Scatter Plot) ---
-                st.subheader("2. 🫧 Burbujas de Priorización de Riesgo por Entidad")
-                st.markdown("Este gráfico muestra la **relación entre el riesgo, la completitud de metadatos y el volumen de activos** por entidad.")
-                st.markdown("* **Eje X:** Riesgo Promedio (Se debe minimizar, mejor a la izquierda).")
-                st.markdown("* **Eje Y:** Completitud Promedio (Se debe maximizar, mejor arriba).")
-                st.markdown("* **Tamaño de Burbuja:** Volumen de Activos.")
-
+                # --- Visualización 2: K-Means Clustering para Segmentación de Calidad (NUEVO) ---
+                st.subheader("2. 💡 K-Means Clustering: Segmentación de Calidad (3 Grupos)")
+                st.markdown("Se aplica el algoritmo K-Means para segmentar los activos en **3 grupos de calidad** basándose en su **Riesgo** y **Completitud**.")
+                
                 try:
-                    df_bubble = df_filtrado.groupby('dueño').agg(
-                        Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
-                        Completitud_Promedio=('completitud_score', 'mean'),
-                        Volumen=('uid', 'count')
-                    ).reset_index()
+                    # 1. Preparación de datos: Seleccionar características y manejar NaNs
+                    features = ['prioridad_riesgo_score', 'completitud_score']
+                    df_cluster = df_filtrado[features].dropna().copy()
                     
-                    if not df_bubble.empty:
+                    if len(df_cluster) < 3:
+                        st.warning("Se requieren al menos 3 activos para ejecutar K-Means.")
+                    else:
+                        # 2. Normalización (Escalado)
+                        scaler = StandardScaler()
+                        data_scaled = scaler.fit_transform(df_cluster)
+                        
+                        # 3. Modelo K-Means
+                        kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+                        df_cluster['cluster'] = kmeans.fit_predict(data_scaled)
+                        
+                        # 4. Etiquetado de Clusters
+                        # Obtener los centros de los clusters escalados
+                        centers_scaled = kmeans.cluster_centers_
+                        # Invertir el escalado para tener los centros en valores originales (más fácil de interpretar)
+                        centers = scaler.inverse_transform(centers_scaled)
+                        centers_df = pd.DataFrame(centers, columns=features)
+                        
+                        # Definición de etiquetas basada en Riesgo (menor es mejor) y Completitud (mayor es mejor)
+                        # Creamos una 'puntuación' para ordenar los clusters: (Completitud - Riesgo)
+                        centers_df['sort_score'] = centers_df['completitud_score'] - centers_df['prioridad_riesgo_score']
+                        
+                        # Ordenar los clusters por la puntuación: Mayor puntuación = Mejor calidad (Completo)
+                        centers_df = centers_df.sort_values(by='sort_score', ascending=False).reset_index()
+                        
+                        # Asignar etiquetas a los clusters originales
+                        cluster_map = {}
+                        cluster_map[centers_df.loc[0, 'index']] = '🟢 Completo/Riesgo Bajo' # El mejor cluster
+                        cluster_map[centers_df.loc[1, 'index']] = '🟡 Aceptable/Mejora Necesaria' # El medio
+                        cluster_map[centers_df.loc[2, 'index']] = '🔴 Incompleto/Riesgo Alto' # El peor cluster
+
+                        # Mapear las etiquetas al DataFrame de los activos
+                        df_cluster['Calidad_Cluster'] = df_cluster['cluster'].map(cluster_map)
+
+                        # Crear una columna de color para Plotly
+                        color_map = {
+                            '🟢 Completo/Riesgo Bajo': 'green',
+                            '🟡 Aceptable/Mejora Necesaria': 'orange',
+                            '🔴 Incompleto/Riesgo Alto': 'red'
+                        }
+                        df_cluster['Color'] = df_cluster['Calidad_Cluster'].map(color_map)
+
+                        # 5. Visualización (Gráfico de dispersión)
                         fig2 = px.scatter(
-                            df_bubble, 
-                            x='Riesgo_Promedio', 
-                            y='Completitud_Promedio', 
-                            size='Volumen', 
-                            color='Completitud_Promedio',
-                            hover_name='dueño',
-                            size_max=60, 
-                            color_continuous_scale=px.colors.sequential.RdYlGn, 
-                            title='Matriz de Priorización de Entidades (Riesgo vs. Completitud)',
+                            df_cluster.merge(df_filtrado[['titulo', 'dueño']], left_index=True, right_index=True), # Añadir info para hover
+                            x='prioridad_riesgo_score', 
+                            y='completitud_score', 
+                            color='Calidad_Cluster',
+                            color_discrete_map=color_map,
+                            hover_data=['titulo', 'dueño'],
+                            title='Segmentación de Activos por Calidad (K-Means)',
                             labels={
-                                'Riesgo_Promedio': 'Riesgo Promedio (Peor →)', 
-                                'Completitud_Promedio': 'Completitud Promedio (Mejor ↑)',
-                                'Volumen': 'Volumen de Activos'
+                                'prioridad_riesgo_score': 'Riesgo Promedio (Peor →)', 
+                                'completitud_score': 'Completitud Score (Mejor ↑)',
+                                'Calidad_Cluster': 'Segmento de Calidad'
                             },
                             height=600
                         )
                         
-                        fig2.add_hline(y=80, line_dash="dash", line_color="gray", annotation_text="Meta de Completitud (80%)", annotation_position="top left")
-                        fig2.add_vline(x=UMBRAL_RIESGO_ALTO, line_dash="dot", line_color="red", annotation_text=f"Umbral de Riesgo Alto ({UMBRAL_RIESGO_ALTO:.1f})", annotation_position="top right")
-
-                        st.plotly_chart(fig2, use_container_width=True)
-                    else:
-                        st.warning("No hay suficientes datos de entidad para generar el Gráfico de Burbujas.")
+                        fig2.update_layout(
+                            xaxis_title='Riesgo Promedio del Activo',
+                            yaxis_title='Completitud Score del Activo (%)'
+                        )
                         
+                        # Añadir los centroides
+                        centers_df['Calidad_Cluster'] = centers_df['index'].map(cluster_map)
+                        fig2.add_trace(px.scatter(
+                            centers_df,
+                            x='prioridad_riesgo_score', 
+                            y='completitud_score', 
+                            color='Calidad_Cluster',
+                            size=[10] * 3, # Tamaño fijo para los centros
+                            color_discrete_map=color_map,
+                            symbol=[ 'diamond-open'] * 3, # Símbolo de diamante para los centros
+                            opacity=1,
+                            hover_name='Calidad_Cluster'
+                        ).data[0])
+                        
+                        st.plotly_chart(fig2, use_container_width=True)
+
+                        # Mostrar tabla de centroides para interpretación
+                        st.markdown("##### Centros de los Clusters (Interpretación)")
+                        st.dataframe(
+                            centers_df[['Calidad_Cluster', 'prioridad_riesgo_score', 'completitud_score']].rename(columns={
+                                'prioridad_riesgo_score': 'Riesgo Promedio',
+                                'completitud_score': 'Completitud Promedio'
+                            }).set_index('Calidad_Cluster').style.format({'Riesgo Promedio': '{:.2f}', 'Completitud Promedio': '{:.2f}%'}),
+                            use_container_width=True
+                        )
+
+                    
                 except Exception as e:
-                    st.error(f"❌ ERROR [Visualización 2]: Falló la generación del Gráfico de Burbujas. Detalle: {e}")
+                    st.error(f"❌ ERROR [Visualización 2]: Falló la generación del K-Means Clustering. Asegúrate de tener suficientes datos y las columnas 'prioridad_riesgo_score' y 'completitud_score' presentes. Detalle: {e}")
 
 
             with tab3:
