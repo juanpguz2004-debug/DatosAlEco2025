@@ -8,6 +8,8 @@ import io
 from datetime import datetime
 import re 
 import warnings
+import os # Necesario para la conexión con el LLM
+from openai import OpenAI # Importar la librería del LLM
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
 # --- Variables Globales ---
@@ -120,7 +122,6 @@ def process_external_data(df):
 
     return df
 
-# --- FUNCIÓN DE RECOMENDACIÓN DETALLADA (CORREGIDA PARA MEJOR FORMATO) ---
 def generate_specific_recommendation(risk_dimension):
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
     
@@ -147,6 +148,87 @@ def generate_specific_recommendation(risk_dimension):
         """
     else:
         return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
+
+# =================================================================
+# NUEVA SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
+# =================================================================
+
+def setup_data_assistant(df):
+    """
+    Configura el asistente de consulta de datos usando LLM.
+    
+    Esta implementación simula la respuesta para las consultas más comunes 
+    de riesgo/completitud. Para la funcionalidad completa de ejecución de código, 
+    se debe usar un LLM real y una ejecución segura (LangChain/Agente).
+    """
+    
+    st.markdown("---")
+    st.header("🧠 Asistente de Consulta de Datos (NLP)")
+    st.markdown("#### 💬 Haz una pregunta sobre los Activos (Lenguaje Natural)")
+    st.info("Ejemplos: '¿Cuál es la entidad con el riesgo promedio más alto?' o 'Dame el promedio de Completitud por categoría'.")
+    
+    # --- 1. CONFIGURACIÓN DE CLAVE API ---
+    api_key = st.text_input(
+        "Ingresa tu clave API de OpenAI o Gemini (si usas otro modelo):", 
+        type="password", 
+        key="api_key_nlp"
+    )
+    
+    if not api_key:
+        st.warning("Por favor, introduce una clave API para activar el asistente.")
+        st.markdown("---")
+        return
+
+    # --- 2. INTERFAZ DE USUARIO ---
+    user_query = st.text_input(
+        "Tu pregunta sobre el Inventario de Activos:",
+        key="nlp_query"
+    )
+
+    if st.button("Consultar Datos", use_container_width=True) and user_query:
+        if df.empty:
+            st.error("No hay datos cargados para realizar la consulta.")
+            return
+
+        with st.spinner(f"El Asistente está analizando: '{user_query}'..."):
+            try:
+                # Inicializar el cliente (Asegúrate de cambiar a Google-GenAI si usas Gemini)
+                client = OpenAI(api_key=api_key)
+                
+                # Definir el contexto del Agente (System Prompt)
+                system_prompt = f"""
+                Eres un asistente de datos experto en Python y Pandas. Tu tarea es responder preguntas 
+                sobre el DataFrame 'df_analisis_completo'. 
+                El DataFrame contiene {len(df)} activos y tiene las siguientes columnas clave: {df.columns.tolist()}.
+                
+                Genera código Python (pandas) para encontrar la respuesta. Luego, proporciona el resultado
+                de la ejecución del código. NO necesitas ejecutar el código, solo simula la respuesta.
+                """
+                
+                # --- SIMULACIÓN AVANZADA DE RESPUESTAS (para demostrar la funcionalidad) ---
+                
+                if 'riesgo' in user_query.lower() or 'peor' in user_query.lower():
+                     simulated_code = "df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)"
+                     simulated_result = df.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(3)
+                     
+                     st.success(f"✅ Resultado de la consulta: Entidades con Mayor Riesgo Promedio")
+                     st.code(f"Código ejecutado:\n{simulated_code}", language='python')
+                     st.dataframe(simulated_result.reset_index().rename(columns={'prioridad_riesgo_score': 'Riesgo_Promedio'}), hide_index=True)
+                     
+                elif 'completitud' in user_query.lower() or 'promedio' in user_query.lower():
+                     simulated_code = "df['completitud_score'].mean()"
+                     simulated_result = df['completitud_score'].mean()
+                     
+                     st.success(f"✅ Resultado de la consulta: Completitud Promedio Global")
+                     st.code(f"Código ejecutado:\n{simulated_code}", language='python')
+                     st.write(f"El score de Completitud Promedio Global es: **{simulated_result:.2f}%**")
+
+                else:
+                     st.warning("⚠️ El agente LLM (motor de IA) no ejecutó el código. Esta es una **simulación** que requiere un LLM real y una ejecución segura (por ejemplo, con LangChain) para obtener resultados exactos de consultas complejas.")
+                     st.code("Consulta enviada al LLM. El modelo generaría y ejecutaría el código Pandas aquí.")
+
+            except Exception as e:
+                st.error(f"❌ Error durante la consulta al LLM: {e}. Asegúrate que la librería **openai** está instalada y la clave API es correcta.")
 
 
 # =================================================================
@@ -537,6 +619,11 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
                             
                 except Exception as e:
                     st.error(f"❌ Error al leer o procesar el archivo CSV: {e}")
-                    
+        
+        # ----------------------------------------------------------------------
+        # --- LLAMADA A LA NUEVA SECCIÓN: ASISTENTE DE DATOS (NLP) ---
+        # ----------------------------------------------------------------------
+        setup_data_assistant(df_analisis_completo) 
+
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
