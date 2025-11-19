@@ -41,12 +41,12 @@ def process_external_data(df):
     if 'titulo' not in df.columns:
         df['titulo'] = 'Activo sin título'
     if 'dueño' not in df.columns:
-        df['dueño'] = 'Desconocido'
+        df['dueño'] = 'Desconocido' # Mantenemos 'dueño' pero solo para despliegue.
 
     # 1. Métrica Universal: Completitud de Datos por Fila (Densidad de datos)
     df['datos_por_fila_score'] = (df.notna().sum(axis=1) / df.shape[1]) * 100
     
-    # 2. Métrica Universal: Completitud de Metadatos (Verifica si existen columnas básicas de descripción)
+    # 2. Métrica Universal: Completitud de Metadatos 
     campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
     campos_existentes = [col for col in campos_clave_universal if col in df.columns]
     num_campos_totales_base = len(campos_clave_universal) # Base 3
@@ -57,15 +57,23 @@ def process_external_data(df):
     
     # 3. CÁLCULO DE SCORE DE RIESGO UNIVERSAL (Máximo teórico 3.5)
     
-    # Penalización 1: Score bajo de Datos por Fila (riesgo de datos incompletos)
+    # Penalización 1: Riesgo por Datos Incompletos (Máx 2.0)
     df['riesgo_datos_incompletos'] = np.where(df['datos_por_fila_score'] < 70, 2.0, 0.0)
     
-    # Penalización 2: Metadatos insuficientes (Riesgo 1.5)
+    # Penalización 2: Riesgo por Metadatos Insuficientes (Máx 1.5)
     df['riesgo_metadatos_nulo'] = np.where(df['completitud_metadatos_universal'] < 50, 1.5, 0.0)
     
     # Score de riesgo universal
     df['prioridad_riesgo_score'] = df['riesgo_datos_incompletos'] + df['riesgo_metadatos_nulo']
     
+    # 4. NUEVO: CÁLCULO DE CALIDAD TOTAL DEL ARCHIVO (0% a 100%)
+    max_risk = 3.5
+    avg_file_risk = df['prioridad_riesgo_score'].mean()
+    quality_score = 100 - (avg_file_risk / max_risk * 100)
+    
+    # Aseguramos que el score no sea negativo y lo asignamos al DataFrame
+    df['calidad_total_score'] = np.clip(quality_score, 0, 100)
+
     return df
 
 
@@ -301,8 +309,8 @@ try:
         # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
         # ----------------------------------------------------------------------
         st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
-        st.header("💾 Diagnóstico de Archivo CSV Externo (Riesgo Universal)")
-        st.markdown("Sube un archivo CSV. El riesgo se calcula basándose en la Completitud de Datos por Fila y Metadatos UNIVERSALES.")
+        st.header("💾 Diagnóstico de Archivo CSV Externo (Calidad Universal)")
+        st.markdown("Sube un archivo CSV. La **Calidad Total** se calcula en base a la Completitud de Datos por Fila y Metadatos UNIVERSALES.")
 
         uploaded_file = st.file_uploader(
             "Selecciona el Archivo CSV", 
@@ -318,76 +326,81 @@ try:
                     if uploaded_df.empty:
                         st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío.")
                     else:
-                        # Llama a la lógica universal DE RIESGO (Agnóstica al esquema)
                         df_diagnostico = process_external_data(uploaded_df.copy())
                         
                         if not df_diagnostico.empty:
                             total_activos_subidos = len(df_diagnostico)
+                            
+                            # Nuevas métricas consolidadas
+                            calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
                             riesgo_promedio_general = df_diagnostico['prioridad_riesgo_score'].mean()
-                            
                             completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].mean()
-                            
                             datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
                             
-                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (CORREGIDA) ===
+                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA (Corregida) ===
                             avg_riesgo_datos_incompletos = df_diagnostico['riesgo_datos_incompletos'].mean()
                             avg_riesgo_metadatos_nulo = df_diagnostico['riesgo_metadatos_nulo'].mean()
                             
                             recomendacion_lista = []
                             
-                            # 1. Recomendación: Datos por Fila (Penalización máx 2.0)
-                            # Se activa si el riesgo promedio de esta categoría es > 0.5
+                            # 1. Recomendación: Datos por Fila (Umbral de Riesgo > 0.5)
                             if avg_riesgo_datos_incompletos > 0.5: 
-                                recomendacion_lista.append("Muchas filas tienen **celdas vacías** (datos incompletos). Debe llenar los valores nulos.")
+                                recomendacion_lista.append("Llene las **celdas vacías o nulas** en las filas. Esto mejora la **Completitud de Datos por Fila**.")
 
-                            # 2. Recomendación: Metadatos (Penalización máx 1.5)
-                            # Se activa si el riesgo promedio de esta categoría es > 0.1 Y la Completitud Universal es menor a 90%
+                            # 2. Recomendación: Metadatos (Umbral de Riesgo > 0.1 Y Completitud < 90%)
                             if avg_riesgo_metadatos_nulo > 0.1 and completitud_universal_promedio < 90:
-                                recomendacion_lista.append("Faltan **metadatos básicos** (`titulo`, `descripcion`, `dueño`) para catalogar el archivo.")
+                                recomendacion_lista.append("Asegure que las columnas de **metadatos básicos** (`titulo`, `descripcion`, `dueño`) estén diligenciadas.")
                             
                             if not recomendacion_lista:
-                                recomendacion_final = "La calidad general es **Alta**. Los scores de riesgo indican que el archivo cumple con las expectativas básicas."
-                                estado = "🟢 RIESGO BAJO (CALIDAD ACEPTABLE)"
+                                recomendacion_final = "La **Calidad** es excelente. No se requieren mejoras prioritarias."
+                                estado = "🟢 CALIDAD ALTA"
                                 color = "green"
                             else:
-                                recomendacion_final = "Se requiere **atención prioritaria** en los siguientes aspectos: " + " ".join([f"* {r}" for r in recomendacion_lista])
-                                if riesgo_promedio_general >= 1.0:
-                                    estado = "🔴 RIESGO ALTO (REQUIERE INTERVENCIÓN)"
+                                # Creamos una lista de Markdown para que Streamlit la renderice correctamente
+                                recomendaciones_md = "\n".join([f"* {r}" for r in recomendacion_lista])
+                                recomendacion_final = f"Para aumentar la Calidad Total, se requiere **atención prioritaria** en los siguientes aspectos:\n\n{recomendaciones_md}"
+                                
+                                if calidad_total_final < 60:
+                                    estado = "🔴 CALIDAD BAJA (URGENTE)"
                                     color = "red"
-                                else:
-                                    estado = "🟡 RIESGO MEDIO (ATENCIÓN REQUERIDA)"
+                                elif calidad_total_final < 85:
+                                    estado = "🟡 CALIDAD MEDIA (MEJORA REQUERIDA)"
                                     color = "orange"
+                                else:
+                                    estado = "🟢 CALIDAD ACEPTABLE"
+                                    color = "green"
 
                             # === FIN LÓGICA DE RECOMENDACIÓN ===
                             
                             st.subheader("Resultados del Diagnóstico Rápido")
                             
                             # --- DESPLIEGUE DE MÉTRICAS ---
-                            col_info1, col_info2, col_info3 = st.columns(3)
-                            col_info1.metric("Activos Analizados", total_activos_subidos)
-                            col_info2.metric("Completitud de Metadatos", f"{completitud_universal_promedio:.2f}%") 
-                            col_info3.metric("Riesgo Promedio Universal", f"{riesgo_promedio_general:.2f}")
+                            col_calidad, col_riesgo, col_meta = st.columns(3)
+                            
+                            col_calidad.metric("⭐ Calidad Total del Archivo", f"{calidad_total_final:.1f}%")
+                            col_riesgo.metric("Riesgo Promedio Universal", f"{riesgo_promedio_general:.2f}")
+                            col_meta.metric("Completitud Metadatos (Avg)", f"{completitud_universal_promedio:.2f}%") 
 
-                            # Usamos la recomendación y forzamos el texto a negro para la visibilidad en modo oscuro
+                            # Despliegue de la Recomendación (CORREGIDO)
+                            # Usamos un solo bloque de Markdown para evitar problemas de etiquetas
                             st.markdown(f"""
                                 <div style='border: 2px solid {color}; padding: 15px; border-radius: 5px; background-color: #f9f9f9;'>
                                     <h4 style='color: {color}; margin-top: 0;'>Diagnóstico General: {estado}</h4>
-                                    <p style='color: black;'>El Score de Riesgo Universal de **{riesgo_promedio_general:.2f}** indica la prioridad de intervención. (Máximo teórico: 3.5)</p>
-                                    <p style='color: black;'><b>Promedio de Datos por Fila:</b> {datos_fila_promedio:.2f}% (Indica cuántas celdas están llenas).</p>
+                                    <p style='color: black;'>Este puntaje mapea el nivel de riesgo de tu archivo (máx. 3.5) a una escala de calidad de **0% a 100%**.</p>
                                     
-                                    <br>
-                                    <h5 style='color: black;'>✨ Recomendación de Mejora:</h5>
-                                    <p style='color: black; font-weight: bold;'>{recomendacion_final}</p>
+                                    <h5 style='color: black; margin-top: 10px; margin-bottom: 5px;'>✨ Recomendación de Acciones:</h5>
+                                    <div style='color: black; font-weight: bold;'>
+                                        {recomendacion_final}
+                                    </div>
                                 </div>
                             """, unsafe_allow_html=True)
+                            # NOTA: Usamos el <div style='...'> para contener el texto sin conflicto.
 
                             st.markdown("---")
                             st.subheader("Desglose de Calidad de las Filas (Top 10 Riesgo)")
                             
-                            # === CORRECCIÓN DE VISIBILIDAD REFORZADA ===
-                            # Aplicamos un estilo CSS que anula la configuración de color de texto para asegurar la visibilidad.
+                            # Función para forzar texto negro en modo oscuro
                             def make_text_black_important(s):
-                                # Usamos !important para intentar forzar el color de texto a negro
                                 return ['color: black !important' for v in s]
 
                             cols_diagnostico = ['prioridad_riesgo_score', 'datos_por_fila_score', 'riesgo_datos_incompletos', 'riesgo_metadatos_nulo']
@@ -397,7 +410,6 @@ try:
                                 df_cols_disponibles.sort_values(by='prioridad_riesgo_score', ascending=False).head(10).style.apply(make_text_black_important, axis=1), 
                                 use_container_width=True
                             )
-                            # ========================================
 
                         else:
                             st.error(f"❌ El archivo subido **{uploaded_filename}** no pudo ser procesado.")
