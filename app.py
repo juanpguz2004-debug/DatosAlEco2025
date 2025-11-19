@@ -12,7 +12,7 @@ import warnings
 import os 
 # --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
-# --- FIN DE IMPORTACIÓN DE GEMINI ---\
+# --- FIN DE IMPORTACIÓN DE GEMINI ---
 
 # --- NUEVAS IMPORTACIONES PARA CLUSTERING NO SUPERVISADO (K-MEANS) ---
 from sklearn.cluster import KMeans
@@ -28,14 +28,21 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
 KNOWLEDGE_FILE = "knowledge_base.txt" 
 # CRITERIO DE RIESGO
-UMBRAL_RIESGO_ALTO = 3.0 
+UMBRAL_RIESGO_ALTO = 5.0 # Aumentado de 3.0 a 5.0 para reflejar el nuevo riesgo avanzado
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
 PENALIZACION_DATOS_INCOMPLETOS = 2.0  
 PENALIZACION_INCONSISTENCIA_TIPO = 0.5    
 PENALIZACION_DUPLICADO = 1.0          
-# RIESGO MÁXIMO TEÓRICO: 2.0 + 0.5 + 1.0 = 3.5
+# RIESGO MÁXIMO TEÓRICO UNIVERSAL: 3.5
 RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5 
+
+# --- NUEVAS PENALIZACIONES AVANZADAS (Agregadas por la modificación) ---
+PENALIZACION_INCONSISTENCIA_METADATOS = 1.5 # Inconsistencia de metadatos (ej. frecuencia vs. antigüedad)
+PENALIZACION_ANOMALIA_SILENCIOSA = 1.0     # Duplicidad semántica/Cambios abruptos (Anomalía + Baja Popularidad)
+PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías populares
+# RIESGO MÁXIMO TEÓRICO AVANZADO (3.5 + 1.5 + 1.0 + 2.0 = 8.0)
+RIESGO_MAXIMO_TEORICO_AVANZADO = RIESGO_MAXIMO_TEORICO_UNIVERSAL + PENALIZACION_INCONSISTENCIA_METADATOS + PENALIZACION_ANOMALIA_SILENCIOSA + PENALIZACION_ACTIVO_VACIO
 
 # ⚠️ CLAVE SECRETA DE GEMINI
 # REEMPLAZA ESTE VALOR con tu clave secreta real de Gemini (comienza con AIza...).
@@ -130,6 +137,63 @@ def process_external_data(df):
     df['calidad_total_score'] = np.clip(quality_score, 0, 100)
 
     return df
+
+# --- NUEVA FUNCIÓN PARA CHEQUEOS AVANZADOS (Implementa la lógica solicitada) ---
+@st.cache_data
+def apply_advanced_risk_checks(df):
+    """
+    Calcula nuevos scores de riesgo avanzados (inconsistencias, semántica, vacíos) 
+    y los añade al score de riesgo existente para el análisis general.
+    """
+    df_copy = df.copy()
+    
+    # 1. Detección de Inconsistencia de Metadatos (Proxy: Riesgo alto A PESAR de ser reciente)
+    # Asume: Si un activo tiene un score de riesgo UNIVERSAL alto (> 5.0, el nuevo umbral) pero se actualizó 
+    # hace menos de 1 año (< 365 días), hay una posible inconsistencia entre su estado reportado 
+    # (reciente) y su calidad medida (pobre).
+    
+    df_copy['riesgo_inconsistencia_metadatos'] = np.where(
+        (df_copy['prioridad_riesgo_score'] > UMBRAL_RIESGO_ALTO) & (df_copy['antiguedad_datos_dias'] < 365), 
+        PENALIZACION_INCONSISTENCIA_METADATOS, 
+        0.0
+    )
+
+    # 2. Duplicidad Semántica/Cambios Abruptos (Proxy: Anomalía detectada pero baja popularidad)
+    # Asume: Una anomalía detectada por ML (-1 en 'anomalia_score') que nadie usa (baja 'popularidad_score') 
+    # podría ser un activo inestable, deprecado o con una colisión semántica silenciosa.
+    
+    df_copy['riesgo_semantico_actualizacion'] = np.where(
+        (df_copy['anomalia_score'] == -1) & (df_copy['popularidad_score'] < 0.1),
+        PENALIZACION_ANOMALIA_SILENCIOSA,
+        0.0
+    )
+
+    # 3. Activos Vacíos en Categorías Populares
+    # Asume: Un score de completitud muy bajo (< 20%) en una de las 5 categorías con más activos 
+    # (proxy para 'dominio clave') indica un 'activo vacío' en un área crítica.
+    
+    top_categories = df_copy['categoria'].value_counts().nlargest(5).index.tolist()
+    
+    df_copy['riesgo_activos_vacios'] = np.where(
+        (df_copy['completitud_score'] < 20.0) & (df_copy['categoria'].isin(top_categories)),
+        PENALIZACION_ACTIVO_VACIO,
+        0.0
+    )
+    
+    # Actualizar el score de riesgo principal con las nuevas penalizaciones
+    df_copy['prioridad_riesgo_score_v2'] = (
+        df_copy['prioridad_riesgo_score'] +
+        df_copy['riesgo_inconsistencia_metadatos'] +
+        df_copy['riesgo_semantico_actualizacion'] +
+        df_copy['riesgo_activos_vacios']
+    )
+    
+    # Sustituir el score principal
+    df_copy['prioridad_riesgo_score'] = df_copy['prioridad_riesgo_score_v2']
+    df_copy.drop(columns=['prioridad_riesgo_score_v2'], inplace=True, errors='ignore')
+    
+    return df_copy
+# --- FIN NUEVA FUNCIÓN ---
 
 def generate_specific_recommendation(risk_dimension):
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
@@ -256,6 +320,10 @@ try:
     if df_analisis_completo.empty:
         st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
     else:
+        # --- APLICAR CHEQUEOS DE RIESGO AVANZADOS (NUEVA LÓGICA) ---
+        df_analisis_completo = apply_advanced_risk_checks(df_analisis_completo) 
+        # --- FIN DE APLICACIÓN DE CHEQUEOS AVANZADOS ---
+        
         st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
 
         # --- Carga de la Base de Conocimiento (Inicialización) ---
@@ -374,7 +442,6 @@ try:
             # Determinar si se debe mostrar el detalle de activos individuales:
             # 1. Si se filtra por activos públicos (filtro_acceso_publico)
             # 2. O si se ha seleccionado una entidad específica (filtro_dueño)
-            # ESTE ES EL CAMBIO CLAVE SOLICITADO
             show_asset_detail = filtro_acceso_publico or (filtro_dueño != "Mostrar Análisis General")
 
             if show_asset_detail:
@@ -387,6 +454,8 @@ try:
                         **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** de la entidad **{filtro_dueño}**, ordenados por su Score de Riesgo (más alto primero).
                         * 🟢 **Verde:** Riesgo $\le {UMBRAL_RIESGO_ALTO:.1f}$
                         * 🔴 **Rojo:** Riesgo $> {UMBRAL_RIESGO_ALTO:.1f}$ (Prioridad Máxima)
+                        
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                     """
                 else:
                     st.subheader("Detalle por Activo Público (Priorización Individual)")
@@ -394,6 +463,8 @@ try:
                         **Vista Detallada:** Se muestran los **activos individuales públicos** filtrados, ordenados por su Score de Riesgo (más alto primero).
                         * 🟢 **Verde:** Riesgo $\le {UMBRAL_RIESGO_ALTO:.1f}$
                         * 🔴 **Rojo:** Riesgo $> {UMBRAL_RIESGO_ALTO:.1f}$ (Prioridad Máxima)
+                        
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                     """
 
                 # Definir las columnas a mostrar
@@ -470,6 +541,8 @@ try:
                     La columna **Riesgo Promedio** tiene un formato de color:
                     * 🟢 **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO:.1f}**. Intervención no urgente.
                     * 🔴 **Rojo:** El riesgo promedio es **mayor a {UMBRAL_RIESGO_ALTO:.1f}**. Se requiere **intervención/actualización prioritaria**.
+
+                    **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                 """)
 
                 resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
