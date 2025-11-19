@@ -11,3 +11,4 @@ google-genai
 langchain
 langchain-google-genai
 numexpr
+langchain-community
