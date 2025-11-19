@@ -331,20 +331,38 @@ try:
                             total_activos_subidos = len(df_diagnostico)
                             riesgo_promedio_general = df_diagnostico['prioridad_riesgo_score'].mean()
                             
-                            # Usamos la métrica universal
                             completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].mean()
                             
-                            if riesgo_promedio_general >= 1.0:
-                                estado = "🔴 RIESGO ALTO (REQUIERE INTERVENCIÓN)"
-                                color = "red"
-                            elif riesgo_promedio_general > 0.0:
-                                estado = "🟡 RIESGO MEDIO (ATENCIÓN REQUERIDA)"
-                                color = "orange"
-                            else:
+                            datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
+                            
+                            # === LÓGICA DE RECOMENDACIÓN PRÁCTICA ===
+                            avg_riesgo_datos_incompletos = df_diagnostico['riesgo_datos_incompletos'].mean()
+                            avg_riesgo_metadatos_nulo = df_diagnostico['riesgo_metadatos_nulo'].mean()
+                            
+                            recomendacion_lista = []
+                            
+                            # Umbral para recomendación de datos incompletos: si el promedio de riesgo es > 0.5 (25% de la penalización máx de 2.0)
+                            if avg_riesgo_datos_incompletos > 0.5: 
+                                recomendacion_lista.append("Muchas filas tienen **celdas vacías** (datos incompletos). Debe llenar los valores nulos.")
+
+                            # Umbral para recomendación de metadatos: si el promedio de riesgo es > 0.375 (25% de la penalización máx de 1.5)
+                            if avg_riesgo_metadatos_nulo > 0.375:
+                                recomendacion_lista.append("Faltan **metadatos básicos** (`titulo`, `descripcion`, `dueño`) para catalogar el archivo.")
+                            
+                            if not recomendacion_lista:
+                                recomendacion_final = "La calidad general es **Alta**. Los scores de riesgo indican que el archivo cumple con las expectativas básicas."
                                 estado = "🟢 RIESGO BAJO (CALIDAD ACEPTABLE)"
                                 color = "green"
-                            
-                            datos_fila_promedio = df_diagnostico['datos_por_fila_score'].mean()
+                            else:
+                                recomendacion_final = "Se requiere **atención prioritaria** en los siguientes aspectos: " + " ".join([f"* {r}" for r in recomendacion_lista])
+                                if riesgo_promedio_general >= 1.0:
+                                    estado = "🔴 RIESGO ALTO (REQUIERE INTERVENCIÓN)"
+                                    color = "red"
+                                else:
+                                    estado = "🟡 RIESGO MEDIO (ATENCIÓN REQUERIDA)"
+                                    color = "orange"
+
+                            # === FIN LÓGICA DE RECOMENDACIÓN ===
                             
                             st.subheader("Resultados del Diagnóstico Rápido")
                             
@@ -354,28 +372,36 @@ try:
                             col_info2.metric("Completitud de Metadatos", f"{completitud_universal_promedio:.2f}%") 
                             col_info3.metric("Riesgo Promedio Universal", f"{riesgo_promedio_general:.2f}")
 
+                            # Usamos la recomendación y forzamos el texto a negro para la visibilidad en modo oscuro
                             st.markdown(f"""
                                 <div style='border: 2px solid {color}; padding: 15px; border-radius: 5px; background-color: #f9f9f9;'>
                                     <h4 style='color: {color}; margin-top: 0;'>Diagnóstico General: {estado}</h4>
-                                    <p>El Score de Riesgo Universal de **{riesgo_promedio_general:.2f}** indica la prioridad de intervención. (Máximo teórico: 3.5)</p>
-                                    <p><b>Promedio de Datos por Fila:</b> {datos_fila_promedio:.2f}% (Indica cuántas celdas están llenas).</p>
+                                    <p style='color: black;'>El Score de Riesgo Universal de **{riesgo_promedio_general:.2f}** indica la prioridad de intervención. (Máximo teórico: 3.5)</p>
+                                    <p style='color: black;'><b>Promedio de Datos por Fila:</b> {datos_fila_promedio:.2f}% (Indica cuántas celdas están llenas).</p>
+                                    
+                                    <br>
+                                    <h5 style='color: black;'>✨ Recomendación de Mejora:</h5>
+                                    <p style='color: black; font-weight: bold;'>{recomendacion_final}</p>
                                 </div>
                             """, unsafe_allow_html=True)
 
                             st.markdown("---")
                             st.subheader("Desglose de Calidad de las Filas (Top 10 Riesgo)")
                             
-                            # Función de estilo para garantizar que el texto sea negro (Arreglo de Visibilidad)
-                            def make_text_black(s):
-                                return ['color: black' for v in s]
+                            # === CORRECCIÓN DE VISIBILIDAD REFORZADA ===
+                            # Aplicamos un estilo CSS que anula la configuración de color de texto para asegurar la visibilidad.
+                            def make_text_black_important(s):
+                                # Usamos !important para intentar forzar el color de texto a negro
+                                return ['color: black !important' for v in s]
 
                             cols_diagnostico = ['prioridad_riesgo_score', 'datos_por_fila_score', 'riesgo_datos_incompletos', 'riesgo_metadatos_nulo']
                             df_cols_disponibles = df_diagnostico[[col for col in cols_diagnostico if col in df_diagnostico.columns]]
                             
                             st.dataframe(
-                                df_cols_disponibles.sort_values(by='prioridad_riesgo_score', ascending=False).head(10).style.apply(make_text_black, axis=1), 
+                                df_cols_disponibles.sort_values(by='prioridad_riesgo_score', ascending=False).head(10).style.apply(make_text_black_important, axis=1), 
                                 use_container_width=True
                             )
+                            # ========================================
 
                         else:
                             st.error(f"❌ El archivo subido **{uploaded_filename}** no pudo ser procesado.")
