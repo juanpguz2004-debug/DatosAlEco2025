@@ -26,6 +26,7 @@ warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 # =================================================================
 
 ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
+KNOWLEDGE_FILE = "knowledge_base.txt" # Nuevo
 # CRITERIO DE RIESGO
 UMBRAL_RIESGO_ALTO = 3.0 
 
@@ -154,75 +155,72 @@ def generate_specific_recommendation(risk_dimension):
     else:
         return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
+
+def load_knowledge_base(file_path):
+    """Carga el contenido del archivo de texto como contexto del sistema."""
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        else:
+            st.warning(f"⚠️ El archivo de base de conocimiento '{file_path}' no se encontró.")
+            st.warning("El Asistente de IA no funcionará hasta que se genere este archivo.")
+            return None
+    except Exception as e:
+        st.error(f"Error al leer la base de conocimiento: {e}")
+        return None
+
 # =================================================================
-# NUEVA SECCIÓN 6: ASISTENTE DE CONSULTA DE DATOS (NLP)
+# 2. FUNCIÓN ROBUSTA DEL AGENTE DE IA (USANDO RAG)
 # =================================================================
 
-def setup_data_assistant(df):
+def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
     """
-    Configura el asistente de consulta de datos usando la API nativa de Gemini.
+    Función robusta que interactúa con la API de Gemini utilizando la Base de Conocimiento (RAG).
     """
     
-    st.markdown("---")
-    st.header("🧠 Asistente de Consulta de Datos (Análisis de Lenguaje Natural)")
-    st.markdown("#### ✅ Pregunta lo que sea sobre la estructura de tus datos (API nativa de Gemini)")
-    st.info("Ejemplos: '¿Qué columnas tenemos disponibles?', 'Describe los valores más comunes en la columna dueño'. Si la pregunta no se puede responder con la estructura de los datos, el modelo te lo dirá y te sugerirá una pregunta alternativa.")
-    
-    # --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
-    if GEMINI_API_SECRET_VALUE == "REEMPLAZA_ESTO_CON TU_CLAVE_SECRETA_AIza...":
-        st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
-        st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
-        st.markdown("---")
+    if knowledge_base_content is None:
+        error_msg = "No puedo responder. La base de conocimiento no ha sido cargada."
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with model_placeholder.chat_message("assistant"):
+            st.error(error_msg)
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
         return
 
-    # --- 2. INICIALIZAR EL CLIENTE GEMINI ---
+    # --- 1. CONFIGURACIÓN DEL CLIENTE GEMINI ---
     try:
         client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
-        
     except Exception as e:
-        st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}")
-        st.markdown("---")
+        error_msg = f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}"
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with model_placeholder.chat_message("assistant"):
+            st.error(error_msg)
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
         return
 
-    # --- 3. PREPARAR CONTEXTO DE DATOS (SCHEMA) ---
-    buffer = io.StringIO()
-    df.info(buf=buffer)
-    df_info_str = buffer.getvalue()
-    data_head = df.head(5).to_markdown(index=False)
-
-
-    # --- 4. INTERFAZ DE USUARIO ---
-    user_query = st.text_input(
-        "Tu pregunta sobre la ESTRUCTURA del Inventario de Activos:",
-        key="nlp_query_simple"
+    # --- 2. CONSTRUIR PROMPT ROBUSTO ---
+    system_prompt = (
+        "Eres un **Analista de Inventario de Datos experto**, especializado en el análisis de calidad y riesgo de activos. "
+        "Tu objetivo es responder a las preguntas del usuario basándote **ÚNICA Y EXCLUSIVAMENTE** en la 'BASE DE CONOCIMIENTO ROBUSTA' proporcionada. "
+        "Utiliza la información de las tablas (KPIs, Rankings, Desgloses) para hacer inferencias, diagnósticos y sugerencias. "
+        "NO uses datos brutos, solo las métricas pre-calculadas y los rankings.\n\n"
+        
+        "**BASE DE CONOCIMIENTO ROBUSTA (RAG CONTEXTO):**\n"
+        f"```txt\n{knowledge_base_content}\n```\n\n"
+        
+        "**REGLAS DE RESPUESTA:**\n"
+        "1. **Analiza, no solo cites:** Utiliza los datos de las tablas para dar respuestas completas y con valor. Por ejemplo, si te preguntan por el peor riesgo, cita el valor, la entidad y explícalo.\n"
+        "2. **Sé conciso y profesional:** Usa un tono de experto. Incluye los valores numéricos con dos decimales cuando sea apropiado (ej: 3.14). Cita el nombre de las entidades y activos directamente de las tablas.\n"
+        "3. **Si no está en el contexto:** Si la pregunta no se puede responder con la información del archivo, responde honestamente: 'La base de conocimiento no contiene la métrica o el ranking específico para responder a esa pregunta'."
     )
 
-    if st.button("Consultar Estructura (Gemini Simple)", use_container_width=True) and user_query:
-        if df.empty:
-            st.error("No hay datos cargados para realizar la consulta.")
-            return
+    # Añadir la pregunta del usuario al historial
+    st.session_state.messages.append({"role": "user", "content": user_query})
 
-        with st.spinner(f"El Asistente de Gemini está analizando la estructura de los datos para responder: '{user_query}'..."):
-            
-            # --- CONSTRUIR PROMPT ROBUSTO ---
-            system_prompt = (
-                "Eres un Asistente de Análisis de Datos experto. Tu objetivo es responder preguntas sobre la ESTRUCTURA y las MUESTRAS "
-                "de un DataFrame de Pandas. NO PUEDES EJECUTAR CÓDIGO de Python para cálculos complejos (sumas, promedios, filtrados extensos), "
-                "solo puedes analizar la información de la MUESTRA y el ESQUEMA que se te proporciona.\n"
-                
-                "CONTEXTO DEL DATAFRAME:\n"
-                f"Esquema (df.info()):\n{df_info_str}\n"
-                f"Muestra de Datos (df.head()):\n{data_head}\n"
-                
-                "REGLAS CRÍTICAS DE RESPUESTA:\n"
-                "1. Si la pregunta del usuario puede ser respondida directamente con la MUESTRA o el ESQUEMA (ej: '¿Cuáles son las columnas?', '¿De qué tipo es la columna dueño?', '¿Qué valores aparecen en la muestra para la columna X?'), responde de manera concisa y profesional.\n"
-                "2. Si la pregunta requiere CÁLCULOS O AGREGACIONES COMPLEJAS sobre todo el dataset (ej: 'Suma de activos', 'Promedio de riesgo', 'Cuántos hay en la categoría X'), DEBES responder ÚNICAMENTE con el siguiente texto exacto:\n"
-                "'No puedo responder esa pregunta basándome en los datos disponibles. Mi funcionalidad actual solo me permite analizar el esquema y una pequeña muestra de los datos. Te sugiero preguntar: [SUGERENCIA DE PREGUNTA ALTERNATIVA].'\n"
-                "3. La SUGESTIÓN DE PREGUNTA ALTERNATIVA debe ser una pregunta que SÍ se pueda responder con la muestra o el esquema (ej: '¿Qué columnas son de tipo object?', '¿Qué valores tiene la columna dueño en la muestra?', '¿Qué tan viejo es el activo de la primera fila?')."
-            )
-
+    # Generar la respuesta
+    with model_placeholder.chat_message("assistant"):
+        with st.spinner("Analizando la Base de Conocimiento Robustizada para generar un diagnóstico experto..."):
             try:
-                # LLAMADA A LA API DE GEMINI
                 response = client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=[
@@ -230,20 +228,21 @@ def setup_data_assistant(df):
                     ],
                     config=genai.types.GenerateContentConfig(
                         system_instruction=system_prompt,
-                        temperature=0.0
+                        temperature=0.1
                     )
                 )
                 
-                st.success("✅ Respuesta generada por el Asistente de IA:")
-                st.markdown(response.text)
+                ai_response = response.text
+                st.markdown(ai_response)
+                st.session_state.messages.append({"role": "assistant", "content": ai_response})
 
             except Exception as e:
-                st.error(f"❌ Error durante la llamada a la API de Gemini. Detalle: {e}")
-                st.warning("Verifica tu clave API y la conexión.")
-
+                error_msg = f"❌ Error en la API de Gemini: {e}"
+                st.error(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
 # =================================================================
-# 2. Ejecución Principal del Dashboard
+# 3. Ejecución Principal del Dashboard
 # =================================================================
 
 st.title("📊 Dashboard de Priorización de Activos de Datos (Análisis Completo)")
@@ -256,6 +255,42 @@ try:
         st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
     else:
         st.success(f'✅ Archivo pre-procesado cargado. Total de activos: **{len(df_analisis_completo)}**')
+
+        # --- SECCIÓN DE CHAT DE ANALISIS ROBUSTO (NUEVO) ---
+        st.markdown("<hr style='border: 4px solid #38c8f0;'>", unsafe_allow_html=True)
+        st.header("🧠 Asistente de Análisis Experto (RAG)")
+        st.info(
+            "Pregunta por los **KPIs, rankings o diagnósticos** basados en la Base de Conocimiento. "
+            "Ej: '¿Qué entidad tiene más activos?', 'Dime el Top 5 peores activos por riesgo', "
+            "'¿Cuál es el riesgo promedio en activos en incumplimiento?'"
+        )
+        
+        # --- Carga de la Base de Conocimiento ---
+        if "knowledge_content" not in st.session_state:
+            st.session_state.knowledge_content = load_knowledge_base(KNOWLEDGE_FILE)
+
+        knowledge_base_content = st.session_state.knowledge_content
+
+        # --- Mostrar Historial de Conversación ---
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+            
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        # --- Lógica de Interacción ---
+        if prompt := st.chat_input("Escribe aquí tu pregunta de análisis complejo:"):
+            
+            # Placeholder para la respuesta
+            model_response_placeholder = st.empty() 
+
+            # Llama a la función de generación de respuesta con el contexto
+            generate_ai_response(prompt, knowledge_base_content, model_response_placeholder)
+        
+        st.markdown("---")
+        
+        # --- FIN DE SECCIÓN CHAT ROBUSTO ---
 
         # --- SECCIÓN DE SELECCIÓN Y DESGLOSE DE ENTIDAD ---
         owners = df_analisis_completo['dueño'].dropna().unique().tolist()
@@ -668,17 +703,24 @@ try:
                     try:
                         uploaded_filename = uploaded_file.name
                         # Lógica de lectura robusta con detección de delimitadores
-                        uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False)
-                        if len(uploaded_df.columns) <= 1:
-                            uploaded_file.seek(0)
-                            uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False, sep=';')
-                            if len(uploaded_df.columns) <= 1:
-                                uploaded_file.seek(0)
-                                uploaded_df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")), low_memory=False, sep='\t')
-
-
+                        uploaded_file.seek(0)
+                        file_contents = uploaded_file.getvalue().decode("utf-8")
+                        
+                        # Intentos de lectura con diferentes separadores
+                        try:
+                            uploaded_df = pd.read_csv(io.StringIO(file_contents), low_memory=False)
+                        except Exception:
+                            try:
+                                uploaded_df = pd.read_csv(io.StringIO(file_contents), low_memory=False, sep=';')
+                            except Exception:
+                                try:
+                                    uploaded_df = pd.read_csv(io.StringIO(file_contents), low_memory=False, sep='\t')
+                                except Exception:
+                                    st.error("❌ No se pudo determinar el delimitador del archivo.")
+                                    uploaded_df = pd.DataFrame() # Vaciar si falla
+                                    
                         if uploaded_df.empty:
-                            st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío.")
+                            st.warning(f"⚠️ El archivo subido **{uploaded_filename}** está vacío o es ilegible.")
                         else:
                             df_diagnostico = process_external_data(uploaded_df.copy())
                             
@@ -777,10 +819,10 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
                         st.warning("Asegúrate de que el archivo es un CSV válido y tiene un formato consistente.")
             
             # ----------------------------------------------------------------------
-            # --- LLAMADA A LA NUEVA SECCIÓN: ASISTENTE DE DATOS (NLP) ---
+            # --- NOTA: LLAMADA A LA SECCIÓN DE NLP ELIMINADA (setup_data_assistant) ---
+            # --- El chat principal ahora es el Agente Experto y robusto. ---
             # ----------------------------------------------------------------------
-            setup_data_assistant(df_analisis_completo) 
+
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
-
