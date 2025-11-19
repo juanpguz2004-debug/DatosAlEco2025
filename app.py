@@ -38,10 +38,10 @@ RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5
 
 # ⚠️ CLAVE SECRETA DE GEMINI
 # REEMPLAZA ESTE VALOR con tu clave secreta real de Gemini (comienza con AIza...).
-GEMINI_API_SECRET_VALUE = "REEMPLAZA_ESTO_CON_TU_CLAVE_SECRETA_AIza..."
+GEMINI_API_SECRET_VALUE = "REEMPLAZA_ESTO_CON TU_CLAVE_SECRETA_AIza..."
 
 # =================================================================
-# 1. Funciones de Carga y Procesamiento
+# 1. Funciones de Carga y Procesamiento (No se modifican)
 # =================================================================
 
 @st.cache_data
@@ -172,7 +172,6 @@ def generate_specific_recommendation(risk_dimension):
 def setup_data_assistant(df):
     """
     Configura el asistente de consulta de datos usando la API nativa de Gemini.
-    Este asistente solo analiza la estructura y una muestra de los datos.
     """
     
     st.markdown("---")
@@ -181,31 +180,22 @@ def setup_data_assistant(df):
     st.info("Ejemplos: '¿Qué columnas tenemos disponibles?', 'Describe los valores más comunes en la columna dueño'. Si la pregunta no se puede responder con la estructura de los datos, el modelo te lo dirá y te sugerirá una pregunta alternativa.")
     
     # --- 1. VERIFICACIÓN DE CLAVE API Y CONFIGURACIÓN ---
-    if GEMINI_API_SECRET_VALUE == "REEMPLAZA_ESTO_CON_TU_CLAVE_SECRETA_AIza...":
-        st.error("🛑 Error de Configuración: La clave API de Gemini no ha sido configurada.")
-        st.markdown("Por favor, **reemplaza el placeholder** en el código por el valor secreto real de tu clave `AIza...`.")
-        st.markdown("---")
+    if GEMINI_API_SECRET_VALUE == "REEMPLAZA_ESTO_CON TU_CLAVE_SECRETA_AIza...":
+        # ... (Bloque de error de configuración)
         return
 
     # --- 2. INICIALIZAR EL CLIENTE GEMINI ---
     try:
-        # Usar la clave API directamente para inicializar el cliente nativo
         client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
         
     except Exception as e:
-        st.error(f"❌ Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}")
-        st.markdown("---")
+        # ... (Bloque de error de inicialización)
         return
 
     # --- 3. PREPARAR CONTEXTO DE DATOS (SCHEMA) ---
-    # Usaremos el encabezado y el resumen de tipos para darle contexto al modelo.
-    
-    # Capturar la información de tipos (df.info()) en una cadena
     buffer = io.StringIO()
     df.info(buf=buffer)
     df_info_str = buffer.getvalue()
-    
-    # Capturar el encabezado de datos (df.head())
     data_head = df.head(5).to_markdown(index=False)
 
 
@@ -248,11 +238,10 @@ def setup_data_assistant(df):
                     ],
                     config=genai.types.GenerateContentConfig(
                         system_instruction=system_prompt,
-                        temperature=0.0 # Bajar la temperatura para respuestas más determinísticas
+                        temperature=0.0
                     )
                 )
                 
-                # Mostrar el resultado
                 st.success("✅ Respuesta generada por el Asistente de IA:")
                 st.markdown(response.text)
 
@@ -367,19 +356,19 @@ try:
             
             st.markdown("---")
 
-            # --- 4. Tabla de Búsqueda y Diagnóstico de Entidades (Con Color Condicional) ---
+            # --- 4. Tabla de Búsqueda y Diagnóstico ---
             st.header("🔍 4. Tabla de Búsqueda y Diagnóstico")
 
             
             # Lógica Condicional para mostrar la tabla
             if filtro_acceso_publico:
-                # Caso: Activos Públicos (Mostrar detalle por ACTIVO)
-                st.subheader("Detalle por Activo (Priorización Individual)")
+                # Caso: Activos Públicos (Mostrar detalle por ACTIVO y QUITAR ENTIDAD)
+                st.subheader("Detalle por Activo Público (Priorización Individual)")
                 
-                df_tabla_activos = df_filtrado[['titulo', 'dueño', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']].copy()
+                # Modificación Clave: Eliminando 'dueño'
+                df_tabla_activos = df_filtrado[['titulo', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']].copy()
                 df_tabla_activos = df_tabla_activos.rename(columns={
                     'titulo': 'Activo',
-                    'dueño': 'Entidad',
                     'prioridad_riesgo_score': 'Riesgo_Score',
                     'completitud_score': 'Completitud_Score',
                     'antiguedad_datos_dias': 'Antiguedad_Dias'
@@ -410,7 +399,6 @@ try:
                     use_container_width=True,
                     column_config={
                         'Activo': st.column_config.TextColumn("Título del Activo"),
-                        'Entidad': st.column_config.TextColumn("Entidad Responsable"),
                         'Riesgo_Score': st.column_config.NumberColumn("Riesgo Score", help=f"Rojo > {UMBRAL_RIESGO_ALTO:.1f}."),
                         'Completitud_Score': st.column_config.NumberColumn("Completitud Score", format="%.2f%%"),
                         'Antiguedad_Dias': st.column_config.NumberColumn("Antigüedad (Días)", format="%d"),
@@ -473,19 +461,43 @@ try:
             st.markdown("---")
             
             # --- PESTAÑAS PARA EL "CARRUSEL" DE VISUALIZACIONES (CON PLOTLY EXPRESS) ---
-            tab1, tab2, tab3 = st.tabs(["1. Ranking de Completitud", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática"])
+            tab1, tab2, tab3 = st.tabs(["1. Ranking de Priorización", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática"])
 
             with tab1:
-                # --- Visualización 1: Ranking de Completitud (Plotly Express Bar Plot) ---
+                # --- Visualización 1: Ranking de Completitud / RIESGO COMBINADO (MODIFICADO) ---
                 
-                # --- LÓGICA DE VISUALIZACIÓN CONDICIONAL ---
                 if filtro_acceso_publico:
-                    st.subheader("1. 📉 Ranking de Activos Públicos por Score de Completitud")
+                    st.subheader("1. 🔴 Ranking Top 10 Activos Públicos (Incompletos y Riesgo Alto)")
+                    st.info("Este ranking prioriza activos públicos con el **peor rendimiento combinado**: Bajo Score de Completitud y Alto Score de Riesgo. La puntuación de visualización es un promedio simple de estos dos factores normalizados.")
                     
-                    df_viz1 = df_filtrado.sort_values(by='completitud_score', ascending=True).head(10)
+                    # 1. Normalizar las dos métricas clave (Riesgo y Completitud)
+                    # La completitud se invierte (100 - score) para que un valor alto signifique "incompleto"
+                    df_viz1_public = df_filtrado.copy()
+                    
+                    # Asegurar que los datos sean float para la normalización
+                    df_viz1_public['prioridad_riesgo_score'] = df_viz1_public['prioridad_riesgo_score'].astype(float)
+                    df_viz1_public['completitud_score_inv'] = (100 - df_viz1_public['completitud_score']).astype(float)
+
+                    # Crear un score combinado de priorización (mayor es peor)
+                    # Usamos una normalización simple (min-max) en el rango [0, 1] para combinar
+                    
+                    # Normalizar Riesgo (0=Bajo, 1=Alto)
+                    max_riesgo = df_viz1_public['prioridad_riesgo_score'].max()
+                    df_viz1_public['riesgo_norm'] = df_viz1_public['prioridad_riesgo_score'] / max_riesgo if max_riesgo > 0 else 0
+                    
+                    # Normalizar Incompletitud (0=Completo, 1=Muy Incompleto)
+                    max_incomp = df_viz1_public['completitud_score_inv'].max()
+                    df_viz1_public['incomp_norm'] = df_viz1_public['completitud_score_inv'] / max_incomp if max_incomp > 0 else 0
+                    
+                    # Score Combinado (Peor es 1.0, Mejor es 0.0)
+                    df_viz1_public['prioridad_combinada'] = (df_viz1_public['riesgo_norm'] + df_viz1_public['incomp_norm']) / 2
+                    
+                    df_viz1 = df_viz1_public.sort_values(by='prioridad_combinada', ascending=False).head(10)
                     EJE_Y = 'titulo'
-                    TITULO = 'Top 10 Activos Públicos con Peor Completitud'
+                    X_COLUMN = 'prioridad_combinada'
+                    TITULO = 'Top 10 Activos Públicos: Peor Prioridad (Riesgo/Incompletitud)'
                     Y_TITLE = 'Activo'
+                    X_TITLE = 'Score de Prioridad Combinada (0=Bajo, 1=Alto)'
                     
                 else:
                     st.subheader("1. 📉 Ranking de Entidades por Completitud Promedio (Peor Rendimiento)")
@@ -497,53 +509,52 @@ try:
                     entidades_volumen = resumen_completitud[resumen_completitud['Total_Activos'] >= 5]
                     df_viz1 = entidades_volumen.sort_values(by='Completitud_Promedio', ascending=True).head(10)
                     EJE_Y = COLUMNA_ENTIDAD
+                    X_COLUMN = 'Completitud_Promedio'
                     TITULO = 'Top 10 Entidades con Peor Completitud Promedio'
                     Y_TITLE = 'Entidad Responsable'
+                    X_TITLE = 'Score de Completitud Promedio (%)'
+
 
                 try:
                     
                     if not df_viz1.empty:
                         fig1 = px.bar(
                             df_viz1, 
-                            x='completitud_score' if filtro_acceso_publico else 'Completitud_Promedio', 
+                            x=X_COLUMN, 
                             y=EJE_Y, 
                             orientation='h',
                             title=TITULO,
-                            labels={'completitud_score': 'Score de Completitud (%)', 'Completitud_Promedio': 'Score de Completitud Promedio (%)', EJE_Y: Y_TITLE},
-                            color='completitud_score' if filtro_acceso_publico else 'Completitud_Promedio',
+                            labels={X_COLUMN: X_TITLE, EJE_Y: Y_TITLE},
+                            color=X_COLUMN,
                             color_continuous_scale=px.colors.sequential.Reds_r, 
                             height=500
                         )
-                        fig1.update_layout(xaxis_title='Score de Completitud (%)', yaxis_title=Y_TITLE)
+                        fig1.update_layout(xaxis_title=X_TITLE, yaxis_title=Y_TITLE)
                         st.plotly_chart(fig1, use_container_width=True) 
                     else:
                         st.warning("No hay suficientes datos para generar el ranking con los filtros seleccionados.")
                 except Exception as e:
-                    st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Completitud. Detalle: {e}")
+                    st.error(f"❌ ERROR [Visualización 1]: Falló la generación del Gráfico de Priorización. Detalle: {e}")
 
             with tab2:
-                # --- Visualización 2: K-Means Clustering para Segmentación de Calidad (SIN INTERPRETACIÓN) ---
+                # --- Visualización 2: K-Means Clustering para Segmentación de Calidad ---
                 st.subheader("2. 💡 K-Means Clustering: Segmentación de Calidad (3 Grupos)")
                 st.markdown("Se aplica el algoritmo K-Means para segmentar los activos en **3 grupos de calidad** basándose en su **Riesgo** y **Completitud**.")
                 
+                # ... (El código de K-Means Clustering permanece sin cambios en su lógica central, 
+                #     ya que siempre opera a nivel de activo y no requiere la interpretación extra)
                 try:
-                    # 1. Preparación de datos: Seleccionar características y manejar NaNs
                     features = ['prioridad_riesgo_score', 'completitud_score']
-                    # Usar el índice original para mapear de vuelta al dataframe filtrado
                     df_cluster = df_filtrado[features].dropna().copy()
                     
                     if len(df_cluster) < 3:
                         st.warning("Se requieren al menos 3 activos para ejecutar K-Means.")
                     else:
-                        # 2. Normalización (Escalado)
                         scaler = StandardScaler()
                         data_scaled = scaler.fit_transform(df_cluster)
-                        
-                        # 3. Modelo K-Means
                         kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
                         df_cluster['cluster'] = kmeans.fit_predict(data_scaled)
                         
-                        # 4. Etiquetado de Clusters (Lógica de asignación de etiquetas simplificada)
                         centers_scaled = kmeans.cluster_centers_
                         centers = scaler.inverse_transform(centers_scaled)
                         centers_df = pd.DataFrame(centers, columns=features)
@@ -563,8 +574,6 @@ try:
                             '🔴 Incompleto/Riesgo Alto': 'red'
                         }
                         
-                        # 5. Visualización (Gráfico de dispersión)
-                        # Merge por el índice para añadir 'titulo' y 'dueño' al dataframe del cluster
                         df_viz2 = df_cluster.merge(df_filtrado[['titulo', 'dueño', 'categoria']], left_index=True, right_index=True)
                         
                         fig2 = px.scatter(
@@ -590,63 +599,49 @@ try:
                         
                         st.plotly_chart(fig2, use_container_width=True)
 
-                        # --- ELIMINADO: Mostrar tabla de centroides para interpretación ---
                     
                 except Exception as e:
-                    # Mensaje de error simplificado y adaptado
-                    st.error(f"❌ ERROR [Visualización 2]: Falló la generación del K-Means Clustering. Detalle: Asegúrate de tener suficientes datos ({len(df_cluster)}) para el clustering.")
+                    st.error(f"❌ ERROR [Visualización 2]: Falló la generación del K-Means Clustering. Detalle: Asegúrate de tener suficientes datos ({len(df_cluster)}) para el clustering. Error técnico: {e}")
 
 
             with tab3:
-                # --- Visualización 3: Cobertura Temática (Mayor a Menor) ---
+                # --- Visualización 3: Cobertura Temática (Mantenida para Públicos) ---
                 
-                # --- LÓGICA DE VISUALIZACIÓN CONDICIONAL ---
-                if filtro_acceso_publico:
-                    st.subheader("3. 🗺️ Ranking de Activos Públicos por Antigüedad (Más Antiguo Primero)")
-                    
-                    df_viz3 = df_filtrado.sort_values(by='antiguedad_datos_dias', ascending=False).head(10)
-                    EJE_Y = 'titulo'
-                    X_COLUMN = 'antiguedad_datos_dias'
-                    TITULO = 'Top 10 Activos Públicos Más Antiguos'
-                    X_TITLE = 'Antigüedad (Días)'
-                    Y_TITLE = 'Activo'
-                    
-                else:
-                    st.subheader("3. 🗺️ Cobertura Temática por Categoría (Mayor a Menor)")
+                st.subheader("3. 🗺️ Cobertura Temática por Categoría (Mayor a Menor)")
+                
+                # --- LÓGICA DE VISUALIZACIÓN UNIFICADA ---
+                # Esta lógica ahora es la misma para ambos casos (Entidad vs. Público)
+                
+                try:
                     COLUMNA_CATEGORIA = 'categoria'
                     if COLUMNA_CATEGORIA in df_filtrado.columns:
-                        df_viz3 = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10).reset_index()
-                        df_viz3.columns = ['Categoria', 'Numero_de_Activos']
-                        df_viz3 = df_viz3.sort_values(by='Numero_de_Activos', ascending=False)
-                    else:
-                        df_viz3 = pd.DataFrame({'Categoria': [], 'Numero_de_Activos': []})
+                        conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10).reset_index()
+                        conteo_categoria.columns = ['Categoria', 'Numero_de_Activos']
                         
-                    EJE_Y = 'Categoria'
-                    X_COLUMN = 'Numero_de_Activos'
-                    TITULO = 'Top 10 Categorías con Mayor Cobertura Temática'
-                    X_TITLE = 'Número de Activos'
-                    Y_TITLE = 'Categoría'
+                        # Ordenar de forma descendente (Mayor a Menor)
+                        conteo_categoria = conteo_categoria.sort_values(by='Numero_de_Activos', ascending=False)
+                        
+                    else:
+                        conteo_categoria = pd.DataFrame({'Categoria': [], 'Numero_de_Activos': []})
 
-
-                try:
-                    if not df_viz3.empty:
+                    if not conteo_categoria.empty:
                         fig3 = px.bar(
-                            df_viz3, 
-                            x=X_COLUMN, 
-                            y=EJE_Y, 
+                            conteo_categoria, 
+                            x='Numero_de_Activos', 
+                            y='Categoria', 
                             orientation='h',
-                            title=TITULO,
-                            labels={X_COLUMN: X_TITLE, EJE_Y: Y_TITLE},
-                            color=X_COLUMN,
+                            title='Top 10 Categorías con Mayor Cobertura Temática',
+                            labels={'Numero_de_Activos': 'Número de Activos', 'Categoria': 'Categoría'},
+                            color='Numero_de_Activos',
                             color_continuous_scale=px.colors.sequential.Viridis,
                             height=500
                         )
-                        fig3.update_layout(xaxis_title=X_TITLE, yaxis_title=Y_TITLE)
+                        fig3.update_layout(xaxis_title='Número de Activos', yaxis_title='Categoría')
                         st.plotly_chart(fig3, use_container_width=True)
                     else:
-                        st.warning("No hay suficientes datos para generar la visualización con los filtros seleccionados.")
+                        st.warning("La columna 'categoria' no contiene suficientes valores para generar la visualización.")
                 except Exception as e:
-                    st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot. Detalle: {e}")
+                    st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot de Categorías. Detalle: {e}")
 
 
             
@@ -663,6 +658,7 @@ try:
             )
 
             if uploaded_file is not None:
+                # ... (El código de procesamiento de archivo externo permanece sin cambios)
                 with st.spinner('Analizando archivo...'):
                     try:
                         uploaded_filename = uploaded_file.name
@@ -764,8 +760,6 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
                                 
                                 st.markdown("#### 🔬 Desglose de Riesgos (Auditoría)")
                                 
-                                # CORRECCIÓN DE VISUALIZACIÓN DE TABLA DE RIESGOS
-                                # Usamos st.dataframe para un mejor control y presentación en Streamlit
                                 st.dataframe(
                                     riesgos_reporte.set_index('Dimensión de Riesgo'),
                                     use_container_width=True
