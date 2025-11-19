@@ -1089,10 +1089,34 @@ try:
 
                 except Exception as e:
                     st.error(f"❌ ERROR [Visualización 4]: Falló la generación del Treemap. Detalle: {e}")
+           
             # 🚀 FIN DE ADICIÓN DEL BLOQUE DE CÓDIGO PARA EL TREEMAP (tab4)
-
-
+            # 🟢 NUEVA FUNCIÓN: CHEQUEO DINÁMICO DE INCUMPLIMIENTO
+            @st.cache_data
+            def apply_dynamic_compliance_check(df):
+                """
+                Dynamically checks for non-compliance (Incumplimiento de Actualización) 
+                based on data age (antiguedad_datos_dias).
+                Threshold: > 365 days old (1 año) = Non-Compliance.
+                """
+                df_copy = df.copy()
+                
+                # Aseguramos que la columna antiguedad_datos_dias exista
+                if 'antiguedad_datos_dias' in df_copy.columns:
+                    # La columna estado_actualizacion es ahora dinámica
+                    df_copy['estado_actualizacion'] = np.where(
+                        df_copy['antiguedad_datos_dias'] > 365,
+                        '🔴 INCUMPLIMIENTO',
+                        '🟢 CUMPLE'
+                    )
+                else:
+                    # Si la columna clave no existe, no se puede realizar el chequeo
+                    st.warning("Columna 'antiguedad_datos_dias' no encontrada para el chequeo de cumplimiento dinámico. Se usa el estado original si existe.")
+                    
+                return df_copy
+            # 🟢 FIN NUEVA FUNCIÓN
             
+        
             # ----------------------------------------------------------------------
             # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
             # ----------------------------------------------------------------------
@@ -1267,3 +1291,4 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
