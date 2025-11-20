@@ -10,12 +10,20 @@ from datetime import datetime
 import re 
 import warnings
 import os 
+# --- ADICIÓN: Importación para la descarga de archivos ---
 import base64
+# --- FIN ADICIÓN ---
+
+# --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
+# --- FIN DE IMPORTACIÓN DE GEMINI ---
+
+# --- NUEVAS IMPORTACIONES PARA CLUSTERING NO SUPERVISADO (K-MEANS) ---
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+# 🚀 ADICIÓN: Importación para Detección de Anomalías con ML
 from sklearn.ensemble import IsolationForest
-
+# --- FIN DE NUEVAS IMPORTACIONES ---
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
@@ -43,9 +51,13 @@ PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías popula
 # RIESGO MÁXIMO TEÓRICO AVANZADO (3.5 + 1.5 + 1.0 + 2.0 = 8.0)
 RIESGO_MAXIMO_TEORICO_AVANZADO = RIESGO_MAXIMO_TEORICO_UNIVERSAL + PENALIZACION_INCONSISTENCIA_METADATOS + PENALIZACION_ANOMALIA_SILENCIOSA + PENALIZACION_ACTIVO_VACIO
 
-# Código ya existente para cargar el secreto
-GEMINI_API_SECRET_VALUE = "AIzaSyCeogooO7WrirP7ESGwR93wWH-XofYzkK8Q"
+# ⚠️ CLAVE SECRETA DE GEMINI
+# REEMPLAZA ESTE VALOR con tu clave secreta real de Gemini (comienza con AIza...).
+GEMINI_API_SECRET_VALUE = "AIzaSyDvuJPAAK8AVIS-VQIe39pPgVNb8xlJw3g"
 
+# =================================================================
+# 1. Funciones de Carga y Procesamiento (Se mantienen igual)
+# =================================================================
 
 @st.cache_data
 def load_processed_data(file_path):
@@ -1348,8 +1360,3 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
-
-
-
-
-
