@@ -593,12 +593,15 @@ try:
             
             filtro_acceso_publico = False 
             
+            # --- MODIFICACIÓN INICIO: Cambiar columna de filtro de acceso público ---
             if 'publico' in df_analisis_completo.columns:
                 filtro_acceso_publico = st.checkbox(
                     "Mostrar Solo Activos 'public'",
                     value=False,
-                    help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public'."
+                    # Se actualiza el help text para reflejar el cambio de columna
+                    help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public' (columna 'publico')."
                 )
+            # --- MODIFICACIÓN FIN ---
             
             filtro_categoria = "Mostrar Todos"
             if 'categoria' in df_analisis_completo.columns:
@@ -671,7 +674,9 @@ try:
 
         # --- LÓGICA DE FILTRO CLAVE ---
         if filtro_acceso_publico:
-             df_filtrado = df_filtrado[df_filtrado['common_core_public_access_level'] == 'public']
+             # --- MODIFICACIÓN INICIO: Aplicar filtro por la columna 'publico' ---
+             df_filtrado = df_filtrado[df_filtrado['publico'] == 'public']
+             # --- MODIFICACIÓN FIN ---
         
         if filtro_categoria != "Mostrar Todos":
             df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
@@ -1267,4 +1272,3 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
-
