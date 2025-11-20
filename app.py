@@ -593,7 +593,7 @@ try:
             
             filtro_acceso_publico = False 
             
-            if 'common_core_public_access_level' in df_analisis_completo.columns:
+            if 'publico' in df_analisis_completo.columns:
                 filtro_acceso_publico = st.checkbox(
                     "Mostrar Solo Activos 'public'",
                     value=False,
@@ -1267,3 +1267,4 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
