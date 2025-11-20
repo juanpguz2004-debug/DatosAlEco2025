@@ -1,518 +1,545 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt 
+import seaborn as sns 
 import plotly.express as px
+from matplotlib.ticker import PercentFormatter
+import io 
+from datetime import datetime
+import re 
+import warnings
+import os 
+import base64
+import requests # NECESARIO para la API
+from google import genai 
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
-import requests
-import io
-from datetime import datetime, timedelta
-import re
-import warnings
-import os
-import base64
-import math
-from google import genai
+
+# Ocultar advertencias de Pandas/Streamlit
+warnings.filterwarnings('ignore') 
 
 # =================================================================
-# 0. CONFIGURACIÓN Y VARIABLES GLOBALES
+# 0. VARIABLES GLOBALES Y CONFIGURACIÓN
 # =================================================================
 
-# Ocultar advertencias
-warnings.filterwarnings('ignore')
+# --- NUEVA FUENTE DE DATOS: API Socrata ---
+API_URL = "https://www.datos.gov.co/resource/uzcf-b9dh.json"
+API_LIMIT = 100000 # Límite para obtener un conjunto grande de datos
 
-# URL API Socrata (Datos.gov.co) - Inventario de Activos
-API_URL = "https://www.datos.gov.co/resource/uzcf-b9dh.json?$limit=100000"
+# CRITERIO DE RIESGO
+UMBRAL_RIESGO_ALTO = 3.5 
+RIESGO_MAXIMO_TEORICO_AVANZADO = 10.0 # Se mantiene para consistencia en la UI
 
-# CLAVE SECRETA DE GEMINI (Asegúrate de protegerla en producción)
+# CLAVE SECRETA DE GEMINI (Asegúrate de configurar esto como secreto en Streamlit)
 GEMINI_API_SECRET_VALUE = "AIzaSyDvuJPAAK8AVIS-VQIe39pPgVNb8xlJw3g"
 
-# Configuración de la Guía 2025
-UMBRAL_CALIDAD_MINIMA = 7.0  # Para Sello de Calidad 1
-PESO_COMPLETITUD = 0.25
-PESO_CONFORMIDAD = 0.25
-PESO_PORTABILIDAD = 0.50
-
-# Listas de Referencia para Confidencialidad (Guía Sec 3.3)
-RIESGO_ALTO_KEYWORDS = ['tarjeta de identidad', 'cedula', 'historial medico', 'diagnostico', 'cuenta bancaria', 'ingresos']
-RIESGO_MEDIO_KEYWORDS = ['direccion domicilio', 'telefono personal', 'celular']
-RIESGO_BAJO_KEYWORDS = ['fecha nacimiento', 'edad']
-
-st.set_page_config(page_title="Evaluador Calidad Guía 2025", layout="wide")
+# Columnas esperadas de la API y columnas críticas para la evaluación
+# 'dueño' es la columna de la entidad responsable
+COLUMNAS_CLAVE = ['uid', 'dueño', 'tema', 't_tulo', 'descripci_n', 'fecha_actualizaci_n', 'formato', 'vistas', 'descargas'] 
 
 # =================================================================
-# 1. MOTOR DE INGESTA Y PREPROCESAMIENTO (API LIVE)
+# 1. Funciones de Carga de Datos (Desde API)
 # =================================================================
 
-@st.cache_data(ttl=3600)  # Cache de 1 hora para no saturar la API
-def fetch_data_from_api():
+@st.cache_data(ttl=3600) # Caching por 1 hora
+def load_data_from_api(url, limit):
     """
-    Consume los datos directamente de la API de Datos Abiertos.
-    Realiza la normalización de columnas para cumplir con la Guía.
+    Carga los datos directamente desde la API de Socrata y los cachea.
     """
+    st.info(f"Cargando datos de la API: {url}?$limit={limit}. Esto puede tardar unos segundos...")
     try:
-        with st.spinner('Conectando con API de Datos Abiertos (Socrata)...'):
-            response = requests.get(API_URL)
-            if response.status_code != 200:
-                st.error(f"Error API: {response.status_code}")
-                return pd.DataFrame()
-            
-            data = response.json()
-            df = pd.DataFrame(data)
-            
-            # Normalización de Nombres de Columnas para el Motor de Evaluación
-            # Mapeo basado en la estructura común de Socrata
-            column_mapping = {
-                'nombre': 'titulo',
-                'descripcion': 'descripcion',
-                'entidad': 'dueno',
-                'fecha_emision': 'fecha_creacion',
-                'fecha_actualizacion': 'fecha_actualizacion',
-                'categoria': 'categoria',
-                'palabras_clave': 'etiquetas',
-                'url': 'enlace',
-                'correo_electronico': 'contacto_email',
-                'frecuencia_actualizacion': 'frecuencia'
-            }
-            
-            # Renombrar si existen, si no, crear vacías
-            for api_col, int_col in column_mapping.items():
-                if api_col in df.columns:
-                    df.rename(columns={api_col: int_col}, inplace=True)
-                elif int_col not in df.columns:
-                    df[int_col] = np.nan
+        # Petición a la API con el límite
+        response = requests.get(f"{url}?$limit={limit}")
+        response.raise_for_status() # Lanza una excepción para errores 4xx/5xx
+        
+        data = response.json()
+        df = pd.DataFrame(data)
+        
+        if df.empty:
+            st.error("La API devolvió un conjunto de datos vacío.")
+            return pd.DataFrame()
 
-            # Conversión de Tipos
-            date_cols = ['fecha_creacion', 'fecha_actualizacion']
-            for col in date_cols:
-                if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], errors='coerce')
-            
-            # Asegurar columnas de texto
-            text_cols = ['titulo', 'descripcion', 'dueno', 'categoria', 'etiquetas', 'frecuencia']
-            for col in text_cols:
-                if col in df.columns:
-                    df[col] = df[col].fillna('').astype(str)
-            
-            return df
-            
+        # Renombrar columnas para facilitar el análisis (si es necesario)
+        df.rename(columns={'t_tulo': 'titulo', 'descripci_n': 'descripcion', 'fecha_actualizaci_n': 'fecha_actualizacion'}, inplace=True)
+        
+        # Filtrar para conservar solo las columnas clave (y las que ya existan)
+        df = df[[col for col in COLUMNAS_CLAVE if col in df.columns]]
+        
+        return df
+    
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error al conectar o recibir datos de la API: {e}")
+        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Fallo crítico en la ingesta de datos: {e}")
+        st.error(f"Error inesperado durante la carga o procesamiento: {e}")
         return pd.DataFrame()
 
 # =================================================================
-# 2. MOTOR DE EVALUACIÓN (GUÍA 2025 ESTRICTA)
+# 2. Funciones de Evaluación de Calidad (Guía y ML)
 # =================================================================
 
-def calcular_confidencialidad(row):
+def calculate_quality_metrics(df_base):
     """
-    Sec 3.3.2: Cálculo de Confidencialidad basado en riesgo.
-    Formula: 10 - (riesgo_total / (num_col_conf * 3)) * factor
-    Nota: Al evaluar metadatos (inventario), buscamos palabras clave en titulo/descripcion
-    ya que no tenemos acceso a las columnas internas del dataset en esta vista.
+    Calcula las métricas de calidad fundamentales basadas en la Guía 2025 (Completitud, Unicidad, Actualidad, Popularidad).
     """
-    texto_analisis = (str(row['titulo']) + " " + str(row['descripcion'])).lower()
-    
-    riesgo_total = 0
-    hallazgos = 0
-    
-    # Riesgo Alto (Peso 3)
-    for kw in RIESGO_ALTO_KEYWORDS:
-        if kw in texto_analisis:
-            riesgo_total += 3
-            hallazgos += 1
-            
-    # Riesgo Medio (Peso 2)
-    for kw in RIESGO_MEDIO_KEYWORDS:
-        if kw in texto_analisis:
-            riesgo_total += 2
-            hallazgos += 1
-            
-    if hallazgos == 0:
-        return 10.0
-    
-    # Aplicación simplificada de la fórmula de la guía para metadatos
-    penalizacion = (riesgo_total / (hallazgos * 3)) * 10
-    return max(0.0, 10.0 - penalizacion)
+    df = df_base.copy()
+    n_cols = df.shape[1]
+    today = datetime.now(df.fecha_actualizacion.dt.tz)
 
-def calcular_comprensibilidad(row):
-    """
-    Sec 3.14.1: Criterio de Comprensibilidad.
-    Usa funciones logarítmicas y exponenciales sobre la longitud de descripción y etiquetas.
-    """
-    desc = str(row['descripcion'])
-    length = len(desc)
-    
-    # Fórmula Guía: 10 * (1 - exp(-0.05 * length))
-    puntaje_desc = 10 * (1 - math.exp(-0.05 * length))
-    
-    # Etiquetas (Tags)
-    tags = str(row['etiquetas'])
-    tag_len = len(tags)
-    max_len_esperado = 100 # Umbral referencia
-    
-    # Fórmula Logarítmica Guía (aprox): 10 * log(1 + len) / log(1 + max)
-    if tag_len < 2:
-        puntaje_tags = 0
-    else:
-        val = math.log(1 + (tag_len - 2))
-        denom = math.log(1 + (max_len_esperado - 2))
-        puntaje_tags = 10 * (val / denom) if denom > 0 else 0
-        
-    return min(10.0, (puntaje_desc * 0.6 + puntaje_tags * 0.4))
+    # 1. CRITERIO DE COMPLETITUD (3.8) - Por fila (Densidad de datos)
+    # Puntuación de 0 a 100
+    df['completitud_score'] = (df.notna().sum(axis=1) / n_cols) * 100
 
-def calcular_actualidad(row):
-    """
-    Sec 3.5.1: Criterio de Actualidad.
-    Formula: 0 si (FechaActual - FechaAct) > Frecuencia, sino 10.
-    """
-    if pd.isnull(row['fecha_actualizacion']):
-        return 0.0
-    
-    frecuencia_txt = str(row['frecuencia']).lower()
-    dias_limite = 365 # Default Anual
-    
-    if 'mensual' in frecuencia_txt:
-        dias_limite = 30
-    elif 'semestral' in frecuencia_txt:
-        dias_limite = 180
-    elif 'trimestral' in frecuencia_txt:
-        dias_limite = 90
-    elif 'diaria' in frecuencia_txt:
-        dias_limite = 1
-        
-    delta = datetime.now() - row['fecha_actualizacion']
-    
-    if delta.days > dias_limite:
-        return 0.0
-    else:
-        return 10.0
+    # 2. CRITERIO DE UNICIDAD (3.15) - Detección de duplicados
+    # Se detectan duplicados en las columnas 'titulo' y 'dueño'
+    df['es_duplicado_semantico'] = df.duplicated(subset=['titulo', 'dueño'], keep='first')
+    df['unicidad_score'] = np.where(df['es_duplicado_semantico'], 0, 100) # 0 si es duplicado, 100 si es único
 
-def calcular_trazabilidad(row, total_columns_expected=10):
-    """
-    Sec 3.6.1: Criterio de Trazabilidad.
-    Evalúa metadatos diligenciados con penalización cuadrática.
-    """
-    # Campos críticos de metadatos según Guía
-    campos_revisar = ['titulo', 'descripcion', 'dueno', 'categoria', 'enlace', 'fecha_creacion', 'contacto_email']
-    vacios = 0
-    for c in campos_revisar:
-        if c not in row or pd.isnull(row[c]) or str(row[c]).strip() == '':
-            vacios += 1
-            
-    missing_prop = vacios / len(campos_revisar)
-    
-    # Penalización cuadrática: penalty = missing_prop^2
-    # Score = 10 * (1 - penalty) (Simplificado de la guia compleja)
-    # La guia usa ponderados: 75% metadatos, 20% acceso auditado, 5% titulo fecha
-    
-    puntaje_meta = 10 * (1 - (missing_prop ** 2))
-    
-    # Chequeo Título Sin Fecha (5%)
-    tiene_fecha_titulo = bool(re.search(r'\d{4}', str(row['titulo'])))
-    puntaje_titulo = 0 if tiene_fecha_titulo else 10 # Penaliza si NO tiene fecha según interpretación o al revés (Guia: Penaliza si HAY referencias temporales que limiten) -> Guia dice: "Identifica si en el título se encuentran referencias a fechas... y aplica penalización". Entonces si tiene fecha, penaliza.
-    
-    final_score = (puntaje_meta * 0.95) + (puntaje_titulo * 0.05) # Simplificación auditado
-    return max(0.0, final_score)
+    # 3. CRITERIO DE ACTUALIDAD (3.4) - Días desde la última actualización
+    # Puntuación basada en la antigüedad (Antigüedad máxima aceptable = 365 días)
+    df['fecha_actualizacion'] = pd.to_datetime(df['fecha_actualizacion'], errors='coerce')
+    df['dias_antiguedad'] = (today - df['fecha_actualizacion']).dt.days
+    df['actualidad_score'] = np.clip(100 - (df['dias_antiguedad'] / 365 * 100), 0, 100)
 
-def calcular_credibilidad(row):
-    """
-    Sec 3.13.1: Criterio de Credibilidad.
-    Valida publicador, email y enlaces.
-    """
-    # 1. Publicador Válido
-    tiene_dueno = 1 if len(str(row['dueno'])) > 3 else 0
-    tiene_email = 1 if '@' in str(row.get('contacto_email', '')) else 0
+    # 4. CRITERIO DE RELEVANCIA/POTENCIAL DE USO (3.3 / 5.1.3)
+    # Se simula el CTR (Click-Through Rate) con la fórmula de la guía (vistas y descargas)
+    df['vistas'] = pd.to_numeric(df['vistas'], errors='coerce').fillna(0)
+    df['descargas'] = pd.to_numeric(df['descargas'], errors='coerce').fillna(0)
     
-    score_publicador = 10 if (tiene_dueno and tiene_email) else 0
+    # CTR = Descargas / Vistas (ajustado para evitar división por cero y capping en 1)
+    df['ctr'] = np.where(df['vistas'] > 0, df['descargas'] / df['vistas'], 0)
+    df['ctr'] = np.clip(df['ctr'], 0, 1) # Capping en 1, como indica la guía [cite: 1794]
+    df['relevancia_score'] = df['ctr'] * 10 # Calificación de 0 a 10 
     
-    # 2. Metadatos Completos (reutiliza lógica parcial)
-    tiene_url = 1 if str(row['enlace']).startswith('http') else 0
-    
-    # Ponderación Guía: 70% Meta, 5% Publicador, 25% Descripciones validas
-    # Como no podemos validar columnas internas, ajustamos al metadato
-    return (score_publicador * 0.3) + (tiene_url * 10 * 0.7)
-
-def calcular_accesibilidad(row):
-    """
-    Sec 3.15.1: Criterio de Accesibilidad.
-    Suma de puntajes por tags y links.
-    """
-    tiene_tags = 1 if len(str(row['etiquetas'])) > 2 else 0
-    tiene_link = 1 if str(row['enlace']).startswith('http') else 0
-    
-    score = (5 * tiene_tags) + (5 * tiene_link)
-    return float(score)
-
-def evaluar_cumplimiento_guia_2025(df):
-    """
-    Aplica todas las funciones de evaluación fila por fila.
-    """
-    if df.empty:
-        return df
-    
-    st.toast("Iniciando evaluación estricta Guía 2025...", icon="🚀")
-    
-    # 1. Evaluaciones Individuales
-    df['Score_Confidencialidad'] = df.apply(calcular_confidencialidad, axis=1)
-    df['Score_Comprensibilidad'] = df.apply(calcular_comprensibilidad, axis=1)
-    df['Score_Actualidad'] = df.apply(calcular_actualidad, axis=1)
-    df['Score_Trazabilidad'] = df.apply(calcular_trazabilidad, axis=1)
-    df['Score_Credibilidad'] = df.apply(calcular_credibilidad, axis=1)
-    df['Score_Accesibilidad'] = df.apply(calcular_accesibilidad, axis=1)
-    
-    # 2. Disponibilidad (Promedio Accesibilidad + Actualidad) - Sec 3.19
-    df['Score_Disponibilidad'] = (df['Score_Accesibilidad'] + df['Score_Actualidad']) / 2
-    
-    # 3. Recuperabilidad (Promedio Accesibilidad + Trazabilidad) - Sec 3.18 (Aprox)
-    df['Score_Recuperabilidad'] = (df['Score_Accesibilidad'] + df['Score_Trazabilidad']) / 2
-    
-    # 4. CALIFICACIÓN FINAL PONDERADA
-    # Promedio de los criterios críticos
-    columnas_score = [
-        'Score_Confidencialidad', 'Score_Comprensibilidad', 'Score_Actualidad',
-        'Score_Trazabilidad', 'Score_Credibilidad', 'Score_Accesibilidad'
-    ]
-    
-    df['Calidad_Global_2025'] = df[columnas_score].mean(axis=1)
-    
-    # 5. ASIGNACIÓN DE SELLOS DE CALIDAD (Sec 4)
-    def asignar_sello(row):
-        # Sello 0: No cumple mínimos
-        if row['Score_Actualidad'] < 10 or row['Score_Trazabilidad'] < 7 or row['Score_Credibilidad'] < 7:
-            return "Sello 0 (Sin Calidad)"
-        
-        # Sello 1: Cumple mínimos básicos
-        if row['Calidad_Global_2025'] >= 7.0:
-            # Sello 2: Sello 1 + Conformidad alta (simulado aqui como > 8.5 global)
-            if row['Calidad_Global_2025'] >= 8.5:
-                 return "Sello 2 (Plata)"
-            return "Sello 1 (Bronce)"
-        
-        return "Sello 0 (Sin Calidad)"
-
-    df['Sello_Calidad'] = df.apply(asignar_sello, axis=1)
+    # Rellenar cualquier NaN que haya podido quedar en scores (debería ser 0)
+    df['actualidad_score'].fillna(0, inplace=True)
+    df['relevancia_score'].fillna(0, inplace=True)
     
     return df
 
-# =================================================================
-# 3. DETECCIÓN DE ANOMALÍAS (IA)
-# =================================================================
+def apply_ml_evaluation(df_metrics):
+    """
+    Aplica Detección de Anomalías (IsolationForest) y Clustering de Calidad (KMeans).
+    """
+    df = df_metrics.copy()
+    
+    # --- 1. PREPARACIÓN DE CARACTERÍSTICAS PARA ML ---
+    # Usar métricas de calidad y popularidad como features
+    features = ['completitud_score', 'unicidad_score', 'actualidad_score', 'relevancia_score', 'descargas', 'vistas']
+    df_ml = df[features].copy()
+    
+    # Estandarización para que todas las características tengan peso similar
+    scaler = StandardScaler()
+    df_scaled = scaler.fit_transform(df_ml)
+    
+    # --- 2. DETECCIÓN DE ANOMALÍAS (ML - IsolationForest) ---
+    # Se ajusta el contamination al 5% de los datos como anomalías
+    # Esto cumple con el uso de ML para identificar fallas de calidad o Credibilidad/Consistencia [cite: 1883, 1884, 1895]
+    if len(df_scaled) > 10:
+        iso_forest = IsolationForest(contamination=0.05, random_state=42)
+        df['anomaly_score'] = iso_forest.fit_predict(df_scaled)
+        # anomaly_score: -1 (anomalía/outlier), 1 (normal)
+        df['penalizacion_anomalia'] = np.where(df['anomaly_score'] == -1, 2.0, 0.0)
+    else:
+        df['penalizacion_anomalia'] = 0.0
+    
+    # --- 3. CLUSTERING DE CALIDAD (ML - KMeans) ---
+    # Features de Clustering: Invertimos scores para que un valor ALTO en el cluster
+    # represente una calidad ALTA (menos riesgo/anomalía).
+    # Completitud: 100 (Completo) a 0 (Incompleto)
+    # Anomaly_Penalty_Invertida: 2.0 (Normal) a 0.0 (Anómalo)
+    df['completo_inverso'] = df['completitud_score']
+    df['anomalia_inverso'] = np.where(df['anomaly_score'] == 1, 10, 0) # 10 para normal, 0 para anomalía
+    
+    clustering_features = ['completo_inverso', 'anomalia_inverso', 'unicidad_score']
+    df_cluster_data = df[clustering_features].copy()
+    df_cluster_scaled = StandardScaler().fit_transform(df_cluster_data)
+    
+    # 3 Clusters para Completo, Aceptable, Incompleto (Alineado con Sellos 3, 2/1, 0)
+    K = 3
+    if len(df_cluster_scaled) >= K:
+        kmeans = KMeans(n_clusters=K, random_state=42, n_init='auto')
+        df['cluster_label'] = kmeans.fit_predict(df_cluster_scaled)
+
+        # Asignar etiquetas semánticas a los clusters basándose en el score de completitud promedio
+        cluster_map = df.groupby('cluster_label')['completitud_score'].mean().sort_values(ascending=False)
+        
+        # Etiquetado: El de mayor score es 'Completo', el menor es 'Incompleto'
+        cluster_to_label = {
+            cluster_map.index[0]: 'Completo',
+            cluster_map.index[1]: 'Aceptable',
+            cluster_map.index[2]: 'Incompleto'
+        }
+        
+        df['estado_calidad_ml'] = df['cluster_label'].map(cluster_to_label)
+    else:
+        df['estado_calidad_ml'] = 'No Evaluado (Pocos Datos)'
+
+    return df
+
+def calculate_final_risk(df_ml):
+    """
+    Calcula el score de riesgo final.
+    """
+    df = df_ml.copy()
+    
+    # 1. Score de Penalización (RIESGO)
+    # La penalización se acumula. Se usa una escala de 0 a 10.
+    
+    # a. Penalización por Completitud (Inverso del score de 0 a 10)
+    df['p_completitud'] = (100 - df['completitud_score']) / 10 # 0-10
+    
+    # b. Penalización por Unicidad (Duplicados)
+    df['p_unicidad'] = np.where(df['es_duplicado_semantico'], 2.0, 0.0)
+    
+    # c. Penalización por Antigüedad (Inverso del score de Actualidad de 0 a 10)
+    df['p_antiguedad'] = (100 - df['actualidad_score']) / 10
+    
+    # d. Penalización por Baja Relevancia (Inverso del score de Relevancia de 0 a 10)
+    df['p_relevancia'] = 10 - df['relevancia_score']
+    
+    # e. Penalización por Anomalía (ML)
+    df['p_anomalia'] = df['penalizacion_anomalia']
+    
+    # Score de Riesgo (Suma de Penalizaciones)
+    df['prioridad_riesgo_score'] = (
+        df['p_completitud'] + 
+        df['p_unicidad'] + 
+        df['p_antiguedad'] + 
+        df['p_relevancia'] +
+        df['p_anomalia']
+    )
+    
+    # Normalizar el riesgo de 0 a RIESGO_MAXIMO_TEORICO_AVANZADO (10.0) para la UI
+    max_theoretical_risk = df[['p_completitud', 'p_unicidad', 'p_antiguedad', 'p_relevancia', 'p_anomalia']].sum(axis=1).max()
+    if max_theoretical_risk > 0:
+        df['prioridad_riesgo_score'] = (df['prioridad_riesgo_score'] / max_theoretical_risk) * RIESGO_MAXIMO_TEORICO_AVANZADO
+    
+    # Asignación del estado de incumplimiento (Crítico si supera el umbral)
+    df['estado_incumplimiento'] = np.where(
+        df['prioridad_riesgo_score'] >= UMBRAL_RIESGO_ALTO, 
+        'CRÍTICO', 
+        'Bajo/Medio'
+    )
+    
+    return df
 
 @st.cache_data
-def apply_anomaly_detection(df):
-    """
-    Usa Isolation Forest sobre los puntajes calculados.
-    """
-    if df.empty or len(df) < 50:
-        df['anomalia_score'] = 1
-        return df
-        
-    features = ['Calidad_Global_2025', 'Score_Actualidad', 'Score_Comprensibilidad']
-    df_model = df[features].fillna(0)
+def process_full_evaluation(df_loaded):
+    """Función maestra para la evaluación completa, incluyendo ML."""
+    if df_loaded.empty:
+        return pd.DataFrame()
     
-    iso_forest = IsolationForest(contamination=0.05, random_state=42)
-    df['anomalia_score'] = iso_forest.fit_predict(df_model)
+    # 1. Calcular métricas básicas
+    df_metrics = calculate_quality_metrics(df_loaded)
     
-    return df
+    # 2. Aplicar evaluación de ML (Anomalías y Clustering)
+    df_ml = apply_ml_evaluation(df_metrics)
+    
+    # 3. Calcular score de riesgo final
+    df_final = calculate_final_risk(df_ml)
+    
+    return df_final.sort_values(by='prioridad_riesgo_score', ascending=False)
 
 # =================================================================
-# 4. GENERACIÓN DE REPORTES CON LLM (RAG)
+# 3. Diagnóstico Rápido Universal (Independiente)
 # =================================================================
 
-def get_dataset_context_string(df):
-    """Genera un resumen estadístico para el LLM."""
-    stats = df.describe().to_string()
-    top_errors = df[df['Calidad_Global_2025'] < 5].head(5)[['titulo', 'dueno', 'Calidad_Global_2025']].to_string()
-    sellos = df['Sello_Calidad'].value_counts().to_string()
-    
-    context = f"""
-    RESUMEN ESTADÍSTICO (GUÍA 2025):
-    {stats}
-    
-    DISTRIBUCIÓN DE SELLOS:
-    {sellos}
-    
-    EJEMPLOS DE BAJA CALIDAD:
-    {top_errors}
+def check_universals_external(df):
     """
-    return context
+    Calcula métricas de calidad universal (Completitud, Unicidad)
+    para el diagnóstico rápido, de forma independiente del resto del código.
+    """
+    df_copy = df.copy() 
+    n_cols = df_copy.shape[1]
+    
+    # 1. COMPLETITUD: Datos por Fila (Densidad)
+    df_copy['datos_por_fila_score'] = (df_copy.notna().sum(axis=1) / n_cols) * 100
+    
+    # 2. UNICIDAD: Detección de duplicados
+    df_copy['es_duplicado_semantico'] = df_copy.duplicated(subset=['titulo', 'dueño'], keep='first')
+    
+    # 3. RIESGO TOTAL (Universal Básico)
+    PENALIZACION_DATOS_INCOMPLETOS = 2.0  
+    PENALIZACION_DUPLICADO = 1.0 
+    
+    df_copy['riesgo_datos_incompletos'] = np.where(
+        df_copy['datos_por_fila_score'] < 70, PENALIZACION_DATOS_INCOMPLETOS, 0.0
+    )
+    df_copy['riesgo_duplicado'] = np.where(
+        df_copy['es_duplicado_semantico'], PENALIZACION_DUPLICADO, 0.0
+    )
+    
+    df_copy['riesgo_total_universal'] = df_copy['riesgo_datos_incompletos'] + df_copy['riesgo_duplicado']
+    
+    return df_copy.sort_values(by='riesgo_total_universal', ascending=False)
 
-def generate_ai_response(user_query, df_context, model_placeholder):
+# =================================================================
+# 4. Funciones de Inteligencia Artificial (Métricas en Tiempo Real)
+# =================================================================
+
+def get_knowledge_base_content(df_analisis_completo):
     """
-    Analista experto usando Gemini.
+    Genera la base de conocimiento con métricas en tiempo real a partir del DataFrame analizado.
+    Esta función es CRÍTICA para la consulta de métricas en tiempo real.
     """
+    if df_analisis_completo.empty:
+        return "No hay datos disponibles para el análisis."
+
+    # Métricas Clave
+    total_activos = len(df_analisis_completo)
+    riesgo_promedio = df_analisis_completo['prioridad_riesgo_score'].mean()
+    criticos = (df_analisis_completo['estado_incumplimiento'] == 'CRÍTICO').sum()
+    
+    # Estadísticas por Calidad ML (Clustering)
+    conteo_calidad = df_analisis_completo['estado_calidad_ml'].value_counts().to_dict()
+    
+    # Ranking de Entidades (Top 5 peor riesgo promedio)
+    ranking_riesgo_entidad = df_analisis_completo.groupby('dueño')['prioridad_riesgo_score'].mean().sort_values(ascending=False).head(5)
+    
+    # Ranking de Activos (Top 5 peor riesgo individual)
+    ranking_riesgo_activo = df_analisis_completo[['titulo', 'dueño', 'prioridad_riesgo_score']].head(5)
+
+    knowledge_content = f"""
+    --- MÉTRICAS GLOBALES DEL INVENTARIO DE DATOS (Tiempo Real) ---
+    - Total de Activos Analizados: {total_activos}
+    - Riesgo de Calidad Promedio Global (Escala 0-10): {riesgo_promedio:.2f}
+    - Activos en Estado CRÍTICO (Riesgo >= {UMBRAL_RIESGO_ALTO}): {criticos}
+    
+    --- CLASIFICACIÓN DE CALIDAD POR ML (K-Means - Sellos) ---
+    - Activos Completos: {conteo_calidad.get('Completo', 0)}
+    - Activos Aceptables: {conteo_calidad.get('Aceptable', 0)}
+    - Activos Incompletos: {conteo_calidad.get('Incompleto', 0)}
+    
+    --- TOP 5 ENTIDADES CON MAYOR RIESGO PROMEDIO ---
+    {ranking_riesgo_entidad.to_string(float_format='%.2f')}
+    
+    --- TOP 5 ACTIVOS INDIVIDUALES CON MAYOR RIESGO ---
+    {ranking_riesgo_activo.to_string(index=False, float_format=lambda x: f'{x:.2f}')}
+    
+    --- DEFINICIONES DE MÉTRICAS (Basado en la Guía de Calidad) ---
+    - El 'Riesgo de Calidad' es un score acumulativo basado en penalizaciones por Baja Completitud (Datos faltantes), Duplicidad Semántica (Unicidad), Desactualización (Actualidad), Baja Popularidad (Relevancia/CTR) y Detección de Anomalías (ML).
+    - 'Estado Crítico' indica que el activo supera el umbral de riesgo de {UMBRAL_RIESGO_ALTO}.
+    - La 'Clasificación de Calidad ML' diferencia los activos Incompletos, Aceptables y Completos, asimilando a los Sellos de Calidad de la Guía, basada en el clustering de las métricas de Completitud, Unicidad y Penalización por Anomalías.
+    """
+    return knowledge_content
+
+# --- (El resto de las funciones de Chat (generate_ai_response) permanecen similares, 
+# pero usan la salida de get_knowledge_base_content directamente) ---
+
+# ... (Insertar aquí la función generate_ai_response y la lógica de inicialización de Gemini)
+
+def generate_ai_response(prompt, knowledge_base_content, placeholder):
+    # Inicialización del cliente (asumiendo que está en st.secrets o configuración)
     try:
+        # Reemplazar la línea de inicialización con tu método preferido
+        # client = genai.Client(api_key=st.secrets.get("GEMINI_API_SECRET_VALUE", GEMINI_API_SECRET_VALUE))
         client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
-        
-        context_str = get_dataset_context_string(df_context)
-        
-        system_prompt = (
-            "Eres un Auditor Senior de Datos Abiertos del gobierno colombiano. "
-            "Tu trabajo es analizar el cumplimiento estricto de la Guía de Calidad e Interoperabilidad 2025. "
-            "Usa el siguiente contexto estadístico de los datos evaluados para responder. "
-            "Sé crítico, profesional y cita los criterios (Actualidad, Trazabilidad, etc.).\n\n"
-            f"CONTEXTO DATOS:\n{context_str}"
-        )
-
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=[user_query],
-            config=genai.types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.2
-            )
-        )
-        model_placeholder.markdown(response.text)
-        st.session_state.messages.append({"role": "assistant", "content": response.text})
-
     except Exception as e:
-        model_placeholder.error(f"Error AI: {str(e)}")
-
-# =================================================================
-# 5. INTERFAZ DE USUARIO (STREAMLIT)
-# =================================================================
-
-def main():
-    st.title("🇨🇴 Auditoría de Calidad de Datos Abiertos 2025")
-    st.markdown("### Sistema de Evaluación Automática basado en la Guía Oficial")
-    
-    # Carga de Datos
-    df_raw = fetch_data_from_api()
-    
-    if df_raw.empty:
-        st.warning("No se pudieron cargar datos. Verifique la conexión a la API.")
+        placeholder.error(f"Error al inicializar el cliente de la IA: {e}")
         return
 
-    # Procesamiento
-    df_evaluated = evaluar_cumplimiento_guia_2025(df_raw)
-    df_final = apply_anomaly_detection(df_evaluated)
-    
-    # --- SIDEBAR ---
-    with st.sidebar:
-        st.image("https://www.datos.gov.co/assets/images/logo-datos-abiertos.png", width=200)
-        st.header("Filtros de Auditoría")
+    # Construcción del prompt de sistema
+    system_prompt = (
+        "Eres un Asistente de Análisis de Calidad de Datos basado en la 'Guía de Calidad e Interoperabilidad 2025'. "
+        "Tu tarea es responder preguntas sobre las métricas de calidad de los activos analizados. "
+        "Tu respuesta debe ser concisa, profesional y **estar basada estrictamente en la 'Base de Conocimiento' proporcionada, que contiene métricas en tiempo real.** "
+        "Si la información no está en la base de conocimiento, indica que no puedes responder la pregunta específica sobre las métricas. "
+        f"\n\nBASE DE CONOCIMIENTO (Métricas de Datos en Tiempo Real):\n{knowledge_base_content}"
+    )
+
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[
+                {"role": "user", "parts": [{"text": prompt}]},
+            ],
+            config={"system_instruction": system_prompt}
+        )
         
-        # Filtro Entidad
-        entidades = ['Todas'] + sorted(df_final['dueno'].unique().tolist())
-        filtro_entidad = st.selectbox("Entidad:", entidades)
+        # Muestra la respuesta en el placeholder y la guarda en la sesión
+        placeholder.markdown(response.text)
+        st.session_state.messages.append({"role": "assistant", "content": response.text})
         
-        # Filtro Sello
-        sellos = ['Todos'] + sorted(df_final['Sello_Calidad'].unique().tolist())
-        filtro_sello = st.selectbox("Sello de Calidad:", sellos)
+    except Exception as e:
+        placeholder.error(f"Error al generar la respuesta de la IA: {e}")
+        st.session_state.messages.append({"role": "assistant", "content": f"Lo siento, ocurrió un error al procesar tu solicitud: {e}"})
+
+# =================================================================
+# 5. Función de Generación de Reporte (Actualizada con nuevas métricas)
+# =================================================================
+
+def generate_report(df_analisis_completo):
+    """
+    Genera un informe HTML profesional con las nuevas métricas de calidad y ML.
+    """
+    if df_analisis_completo.empty:
+        return "<h1>No hay datos para generar el informe.</h1>"
         
-        st.divider()
-        st.info(f"Total Activos Analizados: {len(df_final)}")
-        st.info(f"Fecha Auditoría: {datetime.now().strftime('%Y-%m-%d')}")
-
-    # --- FILTRADO ---
-    df_view = df_final.copy()
-    if filtro_entidad != 'Todas':
-        df_view = df_view[df_view['dueno'] == filtro_entidad]
-    if filtro_sello != 'Todos':
-        df_view = df_view[df_view['Sello_Calidad'] == filtro_sello]
-
-    # --- DASHBOARD PRINCIPAL ---
+    # Agregación de nuevas métricas de ML
+    conteo_calidad = df_analisis_completo['estado_calidad_ml'].value_counts().to_frame().reset_index()
+    conteo_calidad.columns = ['Estado de Calidad (ML)', 'Conteo']
     
-    # KPIs
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    total_activos = len(df_analisis_completo)
+    riesgo_promedio = df_analisis_completo['prioridad_riesgo_score'].mean()
     
-    avg_score = df_view['Calidad_Global_2025'].mean()
-    criticos = len(df_view[df_view['Calidad_Global_2025'] < 6.0])
-    cumplimiento = (len(df_view[df_view['Sello_Calidad'] != 'Sello 0 (Sin Calidad)']) / len(df_view) * 100) if len(df_view) > 0 else 0
-    
-    kpi1.metric("Índice de Calidad Global (IQA)", f"{avg_score:.2f}/10", delta_color="normal" if avg_score > 7 else "inverse")
-    kpi2.metric("Activos Críticos (<6.0)", criticos, delta_color="inverse")
-    kpi3.metric("% Cumplimiento Estándar", f"{cumplimiento:.1f}%")
-    kpi4.metric("Anomalías Detectadas", len(df_view[df_view['anomalia_score'] == -1]), help="Detección IA Isolation Forest")
+    # Treemap (Gráfico de Conteo por Calidad ML)
+    fig_treemap = px.treemap(
+        conteo_calidad,
+        path=['Estado de Calidad (ML)'],
+        values='Conteo',
+        title='Distribución de Activos por Estado de Calidad (ML Clustering)',
+        color='Conteo',
+        color_continuous_scale='RdYlGn_r'
+    )
+    treemap_html = fig_treemap.to_html(full_html=False, include_plotlyjs='cdn')
 
-    st.divider()
+    # Tabla de Activos Prioritarios (CRÍTICOS)
+    df_activos_prioritarios = df_analisis_completo[df_analisis_completo['estado_incumplimiento'] == 'CRÍTICO']
+    df_activos_prioritarios = df_activos_prioritarios[['titulo', 'dueño', 'estado_calidad_ml', 'prioridad_riesgo_score', 'p_anomalia', 'dias_antiguedad']].head(20)
 
-    # PESTAÑAS
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Ranking & Diagnóstico", "🔍 Explorador de Datos", "🤖 Auditoría IA", "📈 Clusters Calidad"])
+    # Construcción del HTML Profesional (Asegurar que los datos sean visibles y coherentes)
+    html_content = f""" 
+    <!DOCTYPE html> 
+    <html> 
+    <head> 
+        <title>Reporte de Análisis de Inventario de Datos Abiertos</title>
+        <style>...</style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Reporte de Calidad y Riesgo de Datos Abiertos (API)</h1>
+            <p>Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        </div>
+
+        <div class="section-box">
+            <h2>Métricas Clave de la Guía de Calidad 2025</h2>
+            <p>Evaluación basada en criterios de la Guía (Completitud, Actualidad, Unicidad, Relevancia/CTR) y Machine Learning.</p>
+            <ul>
+                <li><strong>Total de Activos Analizados:</strong> {total_activos}</li>
+                <li><strong>Riesgo Promedio (0-{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}):</strong> {riesgo_promedio:.2f}</li>
+                <li><strong>Activos Críticos ({UMBRAL_RIESGO_ALTO:.1f}+):</strong> {len(df_activos_prioritarios)}</li>
+            </ul>
+        </div>
+        
+        <div class="section-box">
+            <h2>Clasificación de Calidad por Machine Learning (K-Means)</h2>
+            <p>Clasificación automática en tres estados de calidad para alineación con los Sellos de la Guía.</p>
+            {treemap_html}
+        </div>
+
+        <div class="section-box">
+            <h2>Top 20 Activos con Riesgo CRÍTICO (Prioridad Inmediata)</h2>
+            <p>Estos activos superan el umbral de riesgo de {UMBRAL_RIESGO_ALTO} y requieren atención inmediata. La columna <code>p_anomalia</code> indica si ML detectó una anomalía.</p>
+            {df_activos_prioritarios.to_html(index=False, float_format=lambda x: f'{x:.2f}') if not df_activos_prioritarios.empty else "<p>¡Excelente! No se detectaron activos en riesgo crítico.</p>"}
+        </div>
+        
+    </body>
+    </html>
+    """
+    return html_content
+
+# =================================================================
+# 6. Lógica Principal de la Aplicación (Streamlit)
+# =================================================================
+
+def main_app_logic():
+    st.set_page_config(layout="wide", page_title="Evaluador de Calidad de Datos Abiertos (API)")
+
+    st.title("Sistema de Evaluación de Calidad y Riesgo (API) 📊")
+    st.markdown("---")
+
+    # 1. Carga de Datos desde la API
+    df_loaded = load_data_from_api(API_URL, API_LIMIT)
+
+    if df_loaded.empty:
+        st.error("No se pudo cargar la data de la API. El sistema no puede continuar.")
+        return
+
+    # 2. Evaluación Completa (Automática y con Caching)
+    df_analisis_completo = process_full_evaluation(df_loaded)
+
+    if df_analisis_completo.empty:
+        st.error("La evaluación completa de los datos falló.")
+        return
+        
+    # --- Pestañas de la Aplicación ---
+    tab1, tab2, tab3, tab4 = st.tabs(["Evaluación Avanzada (ML)", "Diagnóstico Rápido Universal", "Asistente IA (Métricas en Tiempo Real)", "Informe y Descarga"])
 
     with tab1:
-        col_chart1, col_chart2 = st.columns(2)
+        st.header("Evaluación Avanzada y Clustering de Calidad (ML)")
+        st.info(f"Mostrando {len(df_analisis_completo)} activos. El clustering de calidad se realiza con **KMeans (3 clusters)** y la penalización de anomalías con **IsolationForest**.")
+
+        # Visualización de la Clasificación de Calidad ML
+        conteo_calidad = df_analisis_completo['estado_calidad_ml'].value_counts().reset_index()
+        conteo_calidad.columns = ['Estado de Calidad ML', 'Conteo']
         
-        with col_chart1:
-            st.subheader("Distribución de Sellos de Calidad")
-            fig_pie = px.pie(df_view, names='Sello_Calidad', title='Porcentaje por Nivel de Certificación', hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
-            st.plotly_chart(fig_pie, use_container_width=True)
-            
-        with col_chart2:
-            st.subheader("Puntajes Promedio por Criterio (Guía 2025)")
-            cols_radar = ['Score_Confidencialidad', 'Score_Comprensibilidad', 'Score_Actualidad', 'Score_Trazabilidad', 'Score_Credibilidad', 'Score_Accesibilidad']
-            radar_data = pd.DataFrame(dict(
-                r=df_view[cols_radar].mean().values,
-                theta=[c.replace('Score_', '') for c in cols_radar]
-            ))
-            fig_radar = px.line_polar(radar_data, r='r', theta='theta', line_close=True, range_r=[0,10], title="Perfil de Calidad Promedio")
-            fig_radar.update_traces(fill='toself')
-            st.plotly_chart(fig_radar, use_container_width=True)
-            
-        st.subheader("🚨 Top 10 Activos con Peor Calidad (Requieren Acción Inmediata)")
-        worst_assets = df_view.sort_values('Calidad_Global_2025').head(10)[['titulo', 'dueno', 'Calidad_Global_2025', 'Score_Actualidad', 'Score_Trazabilidad', 'Sello_Calidad']]
-        st.dataframe(worst_assets.style.background_gradient(cmap='Reds_r', subset=['Calidad_Global_2025']), use_container_width=True)
+        fig_calidad = px.bar(
+            conteo_calidad, 
+            x='Estado de Calidad ML', 
+            y='Conteo', 
+            color='Estado de Calidad ML',
+            title='Distribución de Activos por Calidad (ML Clustering)',
+            color_discrete_map={'Completo': 'green', 'Aceptable': 'orange', 'Incompleto': 'red'}
+        )
+        st.plotly_chart(fig_calidad, use_container_width=True) # 
+        st.subheader("Tabla de Resultados de la Evaluación (Ordenado por Riesgo)")
+        st.dataframe(df_analisis_completo[['titulo', 'dueño', 'prioridad_riesgo_score', 'estado_incumplimiento', 'estado_calidad_ml', 'p_anomalia', 'completitud_score', 'unicidad_score']].head(50), use_container_width=True)
 
     with tab2:
-        st.subheader("Explorador Detallado de Evaluación")
+        st.header("Diagnóstico Rápido Universal (No dependiente)")
+        st.markdown("Esta sección utiliza la función independiente `check_universals_external` para evaluar métricas básicas y universales de forma rápida.")
         
-        # Buscador
-        search = st.text_input("Buscar por palabra clave en Título o Descripción:", "")
-        if search:
-            df_view = df_view[df_view['titulo'].str.contains(search, case=False) | df_view['descripcion'].str.contains(search, case=False)]
-            
-        cols_show = ['titulo', 'dueno', 'Calidad_Global_2025', 'Sello_Calidad', 'Score_Actualidad', 'Score_Confidencialidad', 'anomalia_score']
+        df_quick_check = check_universals_external(df_loaded)
         
-        def highlight_row(row):
-            if row.Calidad_Global_2025 < 5:
-                return ['background-color: #ffcccc'] * len(row)
-            return [''] * len(row)
-
-        st.dataframe(
-            df_view[cols_show].style.format({'Calidad_Global_2025': "{:.2f}"}),
-            use_container_width=True,
-            height=600
-        )
+        st.subheader("Activos con Mayor Riesgo Básico Universal")
+        st.dataframe(df_quick_check[['titulo', 'dueño', 'riesgo_total_universal', 'datos_por_fila_score', 'es_duplicado_semantico']].head(20), use_container_width=True)
 
     with tab3:
-        st.subheader("🤖 Asistente de Auditoría (Powered by Gemini)")
-        st.markdown("Pregunta sobre el estado de cumplimiento, entidades rezagadas o detalles técnicos de la Guía.")
+        st.header("Asistente IA (Consulta de Métricas en Tiempo Real) 🧠")
+        st.markdown("Pregunta por los **KPIs, rankings o diagnósticos** basados en las **métricas procesadas directamente de la API**.")
         
+        knowledge_base_content = get_knowledge_base_content(df_analisis_completo)
+        
+        # Inicialización de historial de chat
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
-        for msg in st.session_state.messages:
-            st.chat_message(msg["role"]).write(msg["content"])
+        chat_history_container = st.container()
+        
+        with chat_history_container:
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
 
-        if prompt := st.chat_input("Ej: ¿Cuáles son las entidades con peor puntaje de actualidad?"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.chat_message("user").write(prompt)
+        if prompt := st.chat_input("Escribe aquí tu pregunta de análisis complejo sobre las métricas:", key="main_chat_input_key"):
             
-            placeholder = st.empty()
-            generate_ai_response(prompt, df_view, placeholder)
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            
+            with chat_history_container:
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                model_response_placeholder = st.empty() 
+                
+                generate_ai_response(prompt, knowledge_base_content, model_response_placeholder)
 
     with tab4:
-        st.subheader("Segmentación de Activos (K-Means)")
-        st.markdown("Agrupación automática basada en comportamiento de métricas.")
+        st.header("Generación y Descarga del Informe")
         
-        if len(df_view) > 10:
-            features_cluster = ['Score_Actualidad', 'Score_Trazabilidad', 'Score_Comprensibilidad']
-            scaler = StandardScaler()
-            data_scaled = scaler.fit_transform(df_view[features_cluster].fillna(0))
-            
-            kmeans = KMeans(n_clusters=3, random_state=42)
-            df_view['Cluster'] = kmeans.fit_predict(data_scaled)
-            
-            fig_cluster = px.scatter_3d(
-                df_view, x='Score_Actualidad', y='Score_Trazabilidad', z='Score_Comprensibilidad',
-                color='Cluster', hover_data=['titulo', 'dueno'],
-                title="Clusters de Calidad (3D)", opacity=0.7
-            )
-            st.plotly_chart(fig_cluster, use_container_width=True)
-        else:
-            st.info("Datos insuficientes para clustering (min 10 registros).")
+        # Generar el reporte HTML con las nuevas métricas
+        reporte_html = generate_report(df_analisis_completo)
+        
+        st.subheader("Vista Previa del Informe")
+        st.components.v1.html(reporte_html, height=500, scrolling=True)
 
+        # Función de descarga del reporte
+        b64 = base64.b64encode(reporte_html.encode()).decode()
+        href = f'<a href="data:text/html;base64,{b64}" download="Reporte_Calidad_{datetime.now().strftime("%Y%m%d")}.html">Descargar Reporte HTML</a>'
+        st.markdown(href, unsafe_allow_html=True)
+        
+# Ejecución
 if __name__ == "__main__":
-    main()
+    main_app_logic()
