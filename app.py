@@ -335,20 +335,31 @@ def generate_report_html(df_filtrado, umbral_riesgo):
         
     # 3. Generar Treemap (para incrustar)
     treemap_html = "No se pudo generar el Treemap (datos insuficientes)."
-    if 'categoria' in df_filtrado.columns and len(df_filtrado) > 0 and not df_filtrado['categoria'].isnull().all():
-        df_treemap = df_filtrado.groupby('categoria').agg(
+    
+    # ⚠️ LOGICA MODIFICADA PARA EL REPORTE: Usar 'common_core_theme' si existe y hay un filtro activo
+    COLUMNA_TREEMAP = 'categoria'
+    if 'common_core_theme' in df_filtrado.columns:
+        # Se asume que si hay un filtro de tema, el reporte debe reflejar la estructura por tema
+        if 'filtro_tema' in st.session_state and st.session_state.filtro_tema != "Mostrar Todos":
+            COLUMNA_TREEMAP = 'common_core_theme'
+        # Si no hay filtro de tema, se usa categoria por defecto (como estaba)
+
+    if COLUMNA_TREEMAP in df_filtrado.columns and len(df_filtrado) > 0 and not df_filtrado[COLUMNA_TREEMAP].isnull().all():
+        df_treemap = df_filtrado.groupby(COLUMNA_TREEMAP).agg(
             Num_Activos=('uid', 'count'),
             Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
         ).reset_index()
         fig_treemap = px.treemap(
             df_treemap,
-            path=['categoria'],
+            path=[COLUMNA_TREEMAP], # Usa la columna dinámica
             values='Num_Activos',
             color='Riesgo_Promedio', 
             color_continuous_scale=px.colors.sequential.Reds, 
-            title='Matriz Treemap: Cobertura Temática vs. Riesgo Promedio'
+            title=f'Matriz Treemap: Cobertura por {COLUMNA_TREEMAP.capitalize()} vs. Riesgo Promedio'
         )
         treemap_html = fig_treemap.to_html(full_html=False, include_plotlyjs='cdn')
+    # ⚠️ FIN LOGICA MODIFICADA
+        
 
     # 4. Construcción del HTML
     
@@ -616,6 +627,8 @@ try:
                 themes.insert(0, "Mostrar Todos")
                 # Etiqueta solicitada: "Tema"
                 filtro_tema = st.selectbox("Tema:", themes)
+                # Almacenar en session_state para acceso en funciones sin cache_data
+                st.session_state.filtro_tema = filtro_tema
             # --- FIN NUEVA ADICIÓN ---
                 
             # 🚀 Botón de Descarga del Reporte en el Sidebar
@@ -724,11 +737,11 @@ try:
             # Determinar si se debe mostrar el detalle de activos individuales:
             # 1. Si se filtra por activos públicos (filtro_acceso_publico)
             # 2. O si se ha seleccionado una entidad específica (filtro_dueño)
-            # 3. O si se ha seleccionado un tema específico (filtro_tema) <<<<<<< MODIFICACIÓN APLICADA AQUÍ
+            # 3. O si se ha seleccionado un tema específico (filtro_tema) <--- ¡MODIFICACIÓN CLAVE!
             show_asset_detail = filtro_acceso_publico or (filtro_dueño != "Mostrar Análisis General") or (filtro_tema != "Mostrar Todos")
 
             if show_asset_detail:
-                # Caso: Activos Públicos O Entidad Específica O Tema Seleccionado (Mostrar detalle por ACTIVO)
+                # Caso: Activos Públicos O Entidad Específica O Tema Específico (Mostrar detalle por ACTIVO)
                 
                 # Lógica para personalizar el encabezado
                 if filtro_dueño != "Mostrar Análisis General":
@@ -740,8 +753,8 @@ try:
                         
                         **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                     """
-                elif filtro_tema != "Mostrar Todos":
-                    st.subheader(f"Detalle de Activos Individuales para el Tema: **{filtro_tema}**")
+                elif filtro_tema != "Mostrar Todos": # <--- NUEVA CONDICIÓN
+                    st.subheader(f"Detalle por Activo Individual para el Tema: **{filtro_tema}**")
                     info_text = f"""
                         **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** del tema **{filtro_tema}**, ordenados por su Score de Riesgo (más alto primero).
                         * 🟢 **Verde:** Riesgo $\le {UMBRAL_RIESGO_ALTO:.1f}$
@@ -762,7 +775,7 @@ try:
                 # Definir las columnas a mostrar
                 cols_common = ['titulo', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']
                 
-                # Mostrar el dueño si se están viendo activos de múltiples dueños (i.e., NO se filtró por dueño, pero SÍ por público o tema)
+                # Mostrar el dueño si el análisis no es de una sola entidad
                 if filtro_dueño == "Mostrar Análisis General":
                     cols_to_show = ['dueño'] + cols_common
                     column_config_map = {
@@ -825,7 +838,7 @@ try:
                 )
                 
             else:
-                # Caso: Activos No Públicos o Todos Y Análisis General Y Tema "Mostrar Todos" (Mostrar resumen AGRUPADO por ENTIDAD)
+                # Caso: Activos No Públicos o Todos Y Análisis General Y Tema General (Mostrar resumen AGRUPADO por ENTIDAD)
                 st.subheader("Resumen Agrupado por Entidad Responsable")
                 
                 st.info(f"""
@@ -891,6 +904,7 @@ try:
                 tab1, tab2, tab3, tab4 = st.tabs(["1. Ranking de Priorización (Riesgo/Incompletitud)", "2. K-Means Clustering", "3. Activos Menos Actualizados (Antigüedad)", "4. Treemap de Cobertura y Calidad"])
             else:
                 # 📌 CASO: Vista General (Completitud/Riesgo)
+                # Mantener las pestañas igual
                 tab1, tab2, tab3, tab4 = st.tabs(["1. Ranking de Completitud", "2. K-Means Clustering (Priorización)", "3. Cobertura Temática", "4. Treemap de Cobertura y Calidad"])
 
             with tab1:
@@ -1041,22 +1055,30 @@ try:
 
                 else:
                     # 📌 GRÁFICO EXISTENTE: Cobertura Temática (General)
-                    st.subheader("3. 🗺️ Cobertura Temática por Categoría (Mayor a Menor)")
                     
-                    COLUMNA_CATEGORIA = 'categoria'
-                    if COLUMNA_CATEGORIA in df_filtrado.columns:
-                        conteo_categoria = df_filtrado[COLUMNA_CATEGORIA].value_counts().head(10).reset_index()
-                        conteo_categoria.columns = ['Categoria', 'Numero_de_Activos']
-                        conteo_categoria = conteo_categoria.sort_values(by='Numero_de_Activos', ascending=False)
-                    else:
-                        conteo_categoria = pd.DataFrame({'Categoria': [], 'Numero_de_Activos': []})
+                    # --- MODIFICACIÓN CLAVE: Usar common_core_theme si hay filtro de tema ---
+                    COLUMNA_AGRUPACION = 'categoria'
+                    TITULO_AGRUPACION = 'Categoría'
+                    if filtro_tema != "Mostrar Todos" and 'common_core_theme' in df_filtrado.columns:
+                        COLUMNA_AGRUPACION = 'common_core_theme'
+                        TITULO_AGRUPACION = 'Tema'
+                    # --- FIN MODIFICACIÓN CLAVE ---
                         
-                    df_viz3 = conteo_categoria
-                    EJE_Y = 'Categoria'
+                    st.subheader(f"3. 🗺️ Cobertura Temática por {TITULO_AGRUPACION} (Mayor a Menor)")
+                    
+                    if COLUMNA_AGRUPACION in df_filtrado.columns:
+                        conteo_agrupacion = df_filtrado[COLUMNA_AGRUPACION].value_counts().head(10).reset_index()
+                        conteo_agrupacion.columns = [TITULO_AGRUPACION, 'Numero_de_Activos']
+                        conteo_agrupacion = conteo_agrupacion.sort_values(by='Numero_de_Activos', ascending=False)
+                    else:
+                        conteo_agrupacion = pd.DataFrame({TITULO_AGRUPACION: [], 'Numero_de_Activos': []})
+                        
+                    df_viz3 = conteo_agrupacion
+                    EJE_Y = TITULO_AGRUPACION
                     X_COLUMN = 'Numero_de_Activos'
-                    TITULO = 'Top 10 Categorías con Mayor Cobertura Temática'
+                    TITULO = f'Top 10 {TITULO_AGRUPACION} con Mayor Cobertura Temática'
                     X_TITLE = 'Número de Activos'
-                    Y_TITLE = 'Categoría'
+                    Y_TITLE = TITULO_AGRUPACION
                     COLOR_SCALE = px.colors.sequential.Viridis
                     
 
@@ -1076,23 +1098,31 @@ try:
                         fig3.update_layout(xaxis_title=X_TITLE, yaxis_title=Y_TITLE)
                         st.plotly_chart(fig3, use_container_width=True)
                     else:
-                        st.warning("La columna 'antiguedad_datos_dias' o 'categoria' no contiene suficientes valores para generar la visualización.")
+                        st.warning(f"La columna '{COLUMNA_AGRUPACION}' o 'antiguedad_datos_dias' no contiene suficientes valores para generar la visualización.")
                 except Exception as e:
                     st.error(f"❌ ERROR [Visualización 3]: Falló la generación del Bar Plot. Detalle: {e}")
 
             # 🚀 ADICIÓN DEL BLOQUE DE CÓDIGO PARA EL TREEMAP (tab4)
             with tab4:
                 # --- Visualización 4: Treemap de Cobertura y Calidad ---
-                st.subheader("4. 🌳 Matriz Treemap: Cobertura Temática vs. Riesgo Promedio")
-                st.info("El tamaño de cada bloque representa el **Número de Activos** en esa Categoría, y el color indica el **Riesgo Promedio** (más rojo = Riesgo Alto).")
+                
+                # --- MODIFICACIÓN CLAVE: Usar common_core_theme si hay filtro de tema ---
+                COLUMNA_TREEMAP = 'categoria'
+                TITULO_TREEMAP = 'Categoría'
+                if filtro_tema != "Mostrar Todos" and 'common_core_theme' in df_filtrado.columns:
+                    COLUMNA_TREEMAP = 'common_core_theme'
+                    TITULO_TREEMAP = 'Tema'
+                # --- FIN MODIFICACIÓN CLAVE ---
+                    
+                st.subheader(f"4. 🌳 Matriz Treemap: Cobertura por {TITULO_TREEMAP} vs. Riesgo Promedio")
+                st.info(f"El tamaño de cada bloque representa el **Número de Activos** en ese {TITULO_TREEMAP}, y el color indica el **Riesgo Promedio** (más rojo = Riesgo Alto).")
                 
                 try:
-                    # 1. Agrupación por categoría para el Treemap
-                    COLUMNA_CATEGORIA = 'categoria'
+                    # 1. Agrupación para el Treemap
                     
-                    # Se necesita al menos una fila y la columna de categoría
-                    if COLUMNA_CATEGORIA in df_filtrado.columns and len(df_filtrado) > 0 and not df_filtrado[COLUMNA_CATEGORIA].isnull().all():
-                        df_treemap = df_filtrado.groupby(COLUMNA_CATEGORIA).agg(
+                    # Se necesita al menos una fila y la columna de agrupación
+                    if COLUMNA_TREEMAP in df_filtrado.columns and len(df_filtrado) > 0 and not df_filtrado[COLUMNA_TREEMAP].isnull().all():
+                        df_treemap = df_filtrado.groupby(COLUMNA_TREEMAP).agg(
                             Num_Activos=('uid', 'count'),
                             Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
                             Completitud_Promedio=('completitud_score', 'mean')
@@ -1101,19 +1131,19 @@ try:
                         # 2. Crear el Treemap
                         fig_treemap = px.treemap(
                             df_treemap,
-                            path=[COLUMNA_CATEGORIA],
+                            path=[COLUMNA_TREEMAP], # Usa la columna dinámica
                             values='Num_Activos',
                             color='Riesgo_Promedio',  # Color por Riesgo Promedio (indicador de Calidad)
                             color_continuous_scale=px.colors.sequential.Reds, # Escala de color: Rojo = Riesgo Alto
                             hover_data=['Riesgo_Promedio', 'Completitud_Promedio', 'Num_Activos'],
-                            title='Matriz Treemap: Cobertura Temática vs. Riesgo Promedio'
+                            title=f'Matriz Treemap: Cobertura por {TITULO_TREEMAP} vs. Riesgo Promedio'
                         )
                         
                         fig_treemap.update_layout(margin=dict(t=50, l=25, r=25, b=25))
                         st.plotly_chart(fig_treemap, use_container_width=True)
                     
                     else:
-                        st.warning("No hay suficientes datos o la columna 'categoria' no está disponible para generar el Treemap.")
+                        st.warning(f"No hay suficientes datos o la columna '{COLUMNA_TREEMAP}' no está disponible para generar el Treemap.")
 
                 except Exception as e:
                     st.error(f"❌ ERROR [Visualización 4]: Falló la generación del Treemap. Detalle: {e}")
