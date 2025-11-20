@@ -593,15 +593,13 @@ try:
             
             filtro_acceso_publico = False 
             
-            # --- MODIFICACIÓN INICIO: Cambiar columna de filtro de acceso público ---
+            # --- Filtro de Acceso Público (ya modificado a 'publico') ---
             if 'publico' in df_analisis_completo.columns:
                 filtro_acceso_publico = st.checkbox(
                     "Mostrar Solo Activos 'public'",
                     value=False,
-                    # Se actualiza el help text para reflejar el cambio de columna
                     help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public' (columna 'publico')."
                 )
-            # --- MODIFICACIÓN FIN ---
             
             filtro_categoria = "Mostrar Todos"
             if 'categoria' in df_analisis_completo.columns:
@@ -609,6 +607,16 @@ try:
                 categories.sort()
                 categories.insert(0, "Mostrar Todos")
                 filtro_categoria = st.selectbox("Filtrar por Categoría:", categories)
+                
+            # --- NUEVA ADICIÓN: Filtro por 'common_core_theme' (Tema) ---
+            filtro_tema = "Mostrar Todos" # Inicialización
+            if 'common_core_theme' in df_analisis_completo.columns:
+                themes = df_analisis_completo['common_core_theme'].dropna().unique().tolist()
+                themes.sort()
+                themes.insert(0, "Mostrar Todos")
+                # Etiqueta solicitada: "Tema"
+                filtro_tema = st.selectbox("Tema:", themes)
+            # --- FIN NUEVA ADICIÓN ---
                 
             # 🚀 Botón de Descarga del Reporte en el Sidebar
             st.markdown("---")
@@ -672,21 +680,26 @@ try:
         if filtro_dueño != "Mostrar Análisis General":
              df_filtrado = df_filtrado[df_filtrado['dueño'] == filtro_dueño]
 
-        # --- LÓGICA DE FILTRO CLAVE ---
+        # --- LÓGICA DE FILTRO CLAVE (Acceso Público) ---
         if filtro_acceso_publico:
-             # --- MODIFICACIÓN INICIO: Aplicar filtro por la columna 'publico' ---
              df_filtrado = df_filtrado[df_filtrado['publico'] == 'public']
-             # --- MODIFICACIÓN FIN ---
         
+        # --- LÓGICA DE FILTRO CLAVE (Categoría) ---
         if filtro_categoria != "Mostrar Todos":
             df_filtrado = df_filtrado[df_filtrado['categoria'] == filtro_categoria]
 
+        # --- NUEVA ADICIÓN: Aplicar filtro por 'common_core_theme' (Tema) ---
+        if 'common_core_theme' in df_analisis_completo.columns and filtro_tema != "Mostrar Todos":
+            df_filtrado = df_filtrado[df_filtrado['common_core_theme'] == filtro_tema]
+        # --- FIN NUEVA ADICIÓN ---
             
         st.header("📊 Visualizaciones y Rankings")
         
         # Actualizar el texto informativo
         info_acceso = "solo Activos Públicos" if filtro_acceso_publico else "Todos los Niveles de Acceso"
-        st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {info_acceso}; Categoría: {filtro_categoria})")
+        # Usar la variable filtro_tema, que está garantizada a existir (inicializada o definida en sidebar)
+        info_tema = filtro_tema if 'filtro_tema' in locals() and filtro_tema != "Mostrar Todos" else "Todos los Temas"
+        st.info(f"Vista actual de gráficos: **{len(df_filtrado)} activos** (Filtro de Entidad: {filtro_dueño}; Acceso: {info_acceso}; Categoría: {filtro_categoria}; Tema: {info_tema})")
 
         if df_filtrado.empty:
             st.warning("⚠️ No hay datos para mostrar en los gráficos con los filtros seleccionados.")
