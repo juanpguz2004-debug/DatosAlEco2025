@@ -724,16 +724,26 @@ try:
             # Determinar si se debe mostrar el detalle de activos individuales:
             # 1. Si se filtra por activos públicos (filtro_acceso_publico)
             # 2. O si se ha seleccionado una entidad específica (filtro_dueño)
-            show_asset_detail = filtro_acceso_publico or (filtro_dueño != "Mostrar Análisis General")
+            # 3. O si se ha seleccionado un tema específico (filtro_tema) <<<<<<< MODIFICACIÓN APLICADA AQUÍ
+            show_asset_detail = filtro_acceso_publico or (filtro_dueño != "Mostrar Análisis General") or (filtro_tema != "Mostrar Todos")
 
             if show_asset_detail:
-                # Caso: Activos Públicos O Entidad Específica (Mostrar detalle por ACTIVO)
+                # Caso: Activos Públicos O Entidad Específica O Tema Seleccionado (Mostrar detalle por ACTIVO)
                 
                 # Lógica para personalizar el encabezado
                 if filtro_dueño != "Mostrar Análisis General":
                     st.subheader(f"Detalle de Activos Individuales para la Entidad: **{filtro_dueño}**")
                     info_text = f"""
                         **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** de la entidad **{filtro_dueño}**, ordenados por su Score de Riesgo (más alto primero).
+                        * 🟢 **Verde:** Riesgo $\le {UMBRAL_RIESGO_ALTO:.1f}$
+                        * 🔴 **Rojo:** Riesgo $> {UMBRAL_RIESGO_ALTO:.1f}$ (Prioridad Máxima)
+                        
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
+                    """
+                elif filtro_tema != "Mostrar Todos":
+                    st.subheader(f"Detalle de Activos Individuales para el Tema: **{filtro_tema}**")
+                    info_text = f"""
+                        **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** del tema **{filtro_tema}**, ordenados por su Score de Riesgo (más alto primero).
                         * 🟢 **Verde:** Riesgo $\le {UMBRAL_RIESGO_ALTO:.1f}$
                         * 🔴 **Rojo:** Riesgo $> {UMBRAL_RIESGO_ALTO:.1f}$ (Prioridad Máxima)
                         
@@ -752,8 +762,8 @@ try:
                 # Definir las columnas a mostrar
                 cols_common = ['titulo', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']
                 
+                # Mostrar el dueño si se están viendo activos de múltiples dueños (i.e., NO se filtró por dueño, pero SÍ por público o tema)
                 if filtro_dueño == "Mostrar Análisis General":
-                    # Activos Públicos de Múltiples Dueños: Mostrar el dueño.
                     cols_to_show = ['dueño'] + cols_common
                     column_config_map = {
                         'dueño': st.column_config.TextColumn("Entidad Responsable"),
@@ -815,7 +825,7 @@ try:
                 )
                 
             else:
-                # Caso: Activos No Públicos o Todos Y Análisis General (Mostrar resumen AGRUPADO por ENTIDAD)
+                # Caso: Activos No Públicos o Todos Y Análisis General Y Tema "Mostrar Todos" (Mostrar resumen AGRUPADO por ENTIDAD)
                 st.subheader("Resumen Agrupado por Entidad Responsable")
                 
                 st.info(f"""
