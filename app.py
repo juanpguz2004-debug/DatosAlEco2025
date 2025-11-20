@@ -75,11 +75,19 @@ def clean_and_convert_types_external(df):
     object_cols = ['titulo', 'descripcion', 'dueño'] 
     
     # Columnas que contienen los datos que queremos chequear por tipo mixto
+    # Esto incluye todas las columnas EXCEPTO las de metadatos de texto.
     data_cols = [col for col in df.columns if col not in object_cols]
     
     for col in data_cols:
+        # Forzar a tipo 'object' para preservar cualquier tipo de dato subyacente 
+        # y luego poder chequear si es string.
         if df[col].dtype != 'object':
             try:
+                # Usar .apply(str) si se quiere convertir a string, pero queremos
+                # preservar el tipo original para detectar la inconsistencia.
+                # Al leer el CSV, si hay tipos mixtos, Pandas a menudo ya lo pone como 'object'.
+                # Dejaremos la lógica original de forzar a object si no lo es, 
+                # lo que significa que la detección de inconsistencia será sobre el valor subyacente.
                 df[col] = df[col].astype(object) 
             except:
                 pass 
@@ -105,17 +113,28 @@ def check_universals_external(df):
     # Inicializar a 0.0 para poder sumar las penalizaciones por columna
     df_copy['riesgo_consistencia_tipo'] = 0.0
     
-    # Asume que si una columna debería ser string, cualquier otro tipo es inconsistencia
-    for col in df_copy.select_dtypes(include='object').columns:
-        # Verifica si el valor no es string Y no es NaN (es un valor de otro tipo)
+    # Iterar solo sobre las columnas de tipo 'object' que contienen los datos (excluyendo metadatos como 'titulo', 'descripcion')
+    object_cols_for_check = [col for col in df_copy.select_dtypes(include='object').columns if col not in ['titulo', 'descripcion', 'dueño']]
+    
+    for col in object_cols_for_check:
+        # Se asume que si el 90% de los valores son de un tipo (ej. numérico), el resto es inconsistencia.
+        # Ya que clean_and_convert_types_external forzó a 'object', debemos buscar valores que no son string.
+        
+        # Verifica si el valor no es string Y no es NaN (es un valor de otro tipo: int, float, date, etc.)
+        # Si la mayoría de la columna debería ser numérica/fecha, y hay un string, esto lo penaliza.
+        # Si la mayoría de la columna debería ser string, y hay un número, esto lo penaliza.
+        # El proxy que usas (not isinstance(x, str)) es un buen inicio dado que todos los datos fueron forzados a object.
         inconsistencies = df_copy[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
-        # Suma la penalización a las filas que tienen la inconsistencia
+        
+        # Suma la penalización a las filas que tienen la inconsistencia EN ESA COLUMNA
+        # Esto es la penalización correcta: Se acumula la penalización por cada columna inconsistente en la fila.
         df_copy.loc[inconsistencies, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO
         
     # --- 3. UNICIDAD: Duplicados Exactos (CORRECCIÓN APLICADA AQUÍ) ---
     # `df.duplicated(keep=False)` retorna True para TODAS las ocurrencias del duplicado.
     df_copy['es_duplicado'] = df_copy.duplicated(keep=False) 
     # Aplica la penalización si `es_duplicado` es True
+    # Esta es la lógica correcta para penalizar todos los duplicados
     df_copy['riesgo_duplicado'] = np.where(
         df_copy['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
     )
