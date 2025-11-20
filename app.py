@@ -574,7 +574,7 @@ try:
             
             if 'publico' in df_analisis_completo.columns:
                 filtro_acceso_publico = st.checkbox(
-                    "Mostrar Solo Activos 'public'",
+                    "Mostrar Solo Activos públicos",
                     value=False,
                     help="Si está marcado, solo se mostrarán los activos cuyo nivel de acceso sea 'public' (columna 'publico')."
                 )
@@ -684,7 +684,7 @@ try:
             st.markdown("---")
 
             # --- 4. Tabla de Búsqueda y Diagnóstico ---
-            st.header("4. Tabla de Búsqueda y Diagnóstico")
+            st.header("Tabla de Búsqueda y Diagnóstico")
 
             show_asset_detail = filtro_acceso_publico or (filtro_dueño != "Mostrar Análisis General") or (filtro_tema != "Mostrar Todos")
 
@@ -1231,3 +1231,4 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
