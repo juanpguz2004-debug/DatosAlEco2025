@@ -57,7 +57,7 @@ GEMINI_API_SECRET_VALUE = None # Inicializar a None
 
 try:
     # st.secrets["GEMINI_API_KEY"] accede a la clave definida directamente
-    GEMINI_API_SECRET_VALUE = st.secrets["GEMINI_API_KEY"] 
+    GEMINI_API_SECRET_VALUE = st.secrets["GEMINI_API_KEY"].strip() 
 except KeyError:
     # Si la clave no se encuentra, la variable se mantiene en None y se muestra un error
     # st.error() no funciona en el inicio, pero la función generate_ai_response lo manejará.
@@ -1364,5 +1364,6 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
 
 
