@@ -27,7 +27,7 @@ ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv"
 KNOWLEDGE_FILE = "knowledge_base.txt" 
 
 # CRITERIO DE RIESGO
-# Umbral de Riesgo Alto (Crítico)
+# Umbral de Riesgo Alto (Crítico) - SE MANTIENE EN 3.5 COMO PEDISTE
 UMBRAL_RIESGO_ALTO = 3.5 
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
@@ -43,6 +43,7 @@ PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías popula
 
 # RIESGO MÁXIMO TEÓRICO AVANZADO 
 # Ajustado a 10.0 para tener margen dado que la inconsistencia de tipo es acumulativa por columna
+# ESTO ACTUALIZA AUTOMÁTICAMENTE TODOS LOS MENSAJES DE TEXTO EN LA APP
 RIESGO_MAXIMO_TEORICO_AVANZADO = 10.0
 
 # CLAVE SECRETA DE GEMINI
