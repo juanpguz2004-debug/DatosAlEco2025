@@ -56,7 +56,7 @@ RIESGO_MAXIMO_TEORICO_AVANZADO = RIESGO_MAXIMO_TEORICO_UNIVERSAL + PENALIZACION_
 GEMINI_API_SECRET_VALUE = "AIzaSyDvuJPAAK8AVIS-VQIe39pPgVNb8xlJw3g"
 
 # =================================================================
-# 1. Funciones de Carga y Procesamiento (Se mantienen igual)
+# 1. Funciones de Carga y Procesamiento
 # =================================================================
 
 @st.cache_data
@@ -68,7 +68,8 @@ def load_processed_data(file_path):
     except FileNotFoundError:
         return pd.DataFrame()
 
-def clean_and_convert_types_external(df):
+# ⚠️ RENOMBRADO Y REUTILIZADO: Función para forzar tipos de datos
+def clean_and_convert_types(df):
     """Fuerza a las columnas a ser tipo string para asegurar la detección de inconsistencias."""
     
     # Columnas que suelen ser de tipo 'object' (string)
@@ -80,74 +81,80 @@ def clean_and_convert_types_external(df):
     for col in data_cols:
         if df[col].dtype != 'object':
             try:
+                # La conversión a 'object' (string) nos permite detectar si hay tipos mixtos
                 df[col] = df[col].astype(object) 
             except:
                 pass 
 
     return df
 
-def check_universals_external(df):
+# 🚀 CORRECCIÓN CLAVE: Lógica de chequeo universal refinada y unificada
+# Se renombra para uso general, ya que será usada tanto en el archivo principal como en el externo.
+def check_universals(df):
     """
     Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad 
     para el diagnóstico rápido.
     """
-    n_cols = df.shape[1]
+    df_copy = df.copy()
+    n_cols = df_copy.shape[1]
     
     # --- 1. COMPLETITUD: Datos por Fila (Densidad) ---
-    df['datos_por_fila_score'] = (df.notna().sum(axis=1) / n_cols) * 100
-    df['riesgo_datos_incompletos'] = np.where(
-        df['datos_por_fila_score'] < 70, PENALIZACION_DATOS_INCOMPLETOS, 0.0
+    df_copy['datos_por_fila_score'] = (df_copy.notna().sum(axis=1) / n_cols) * 100
+    df_copy['riesgo_datos_incompletos'] = np.where(
+        df_copy['datos_por_fila_score'] < 70, PENALIZACION_DATOS_INCOMPLETOS, 0.0
     )
 
-    # --- 2. CONSISTENCIA: Mezcla de Tipos (Corrección) ---
-    # Se inicializa a 0.0
-    df['riesgo_consistencia_tipo'] = 0.0
+    # --- 2. CONSISTENCIA: Mezcla de Tipos (CORRECCIÓN APLICADA AQUÍ) ---
+    # Inicializar la columna a 0.0 antes del bucle
+    df_copy['riesgo_consistencia_tipo'] = 0.0
     
-    # Se identifican las columnas que son 'object' (string) después de la conversión
-    object_cols = df.select_dtypes(include='object').columns
-    
-    # Se detecta si hay valores NO-STRING (pero no NaN) en una fila dentro de las columnas object
-    # El riesgo se penaliza por FILA si encuentra alguna inconsistencia en las columnas de interés
-    for col in object_cols:
-        # Crea una serie booleana que es True si el valor no es string y no es NaN
-        inconsistencies = df[col].apply(lambda x: pd.notna(x) and not isinstance(x, str))
-        # Aplica la penalización a las filas donde haya inconsistencias en *esa* columna
-        df.loc[inconsistencies, 'riesgo_consistencia_tipo'] = PENALIZACION_INCONSISTENCIA_TIPO
+    # Iterar solo sobre columnas 'object' (strings, que pueden tener tipos mezclados)
+    for col in df_copy.select_dtypes(include='object').columns:
+        # La lógica original era correcta para identificar inconsistencias de tipo en una columna 'object'.
+        # Aseguramos que la penalización se aplique a TODAS las filas que contengan inconsistencia.
+        inconsistencies = df_copy[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
+        # Usamos .loc[] para asignar la penalización en las filas donde la inconsistencia es True
+        df_copy.loc[inconsistencies, 'riesgo_consistencia_tipo'] = PENALIZACION_INCONSISTENCIA_TIPO
         
-    # NOTA: Esto penalizará PENALIZACION_INCONSISTENCIA_TIPO por fila si se encuentra AL MENOS
-    # una inconsistencia en CUALQUIERA de las columnas object.
+    # El riesgo debe ser la suma de penalizaciones por fila, lo cual .loc() ya maneja.
+    # NOTA: Para este riesgo, se penaliza si AL MENOS UNA COLUMNA en esa fila tiene un tipo inconsistente.
+    # La penalización debe ser acumulativa si hubiese varias, pero por ahora se mantiene la penalización única.
+    # El código actual aplica la penalización a la fila si *alguna* columna viola la condición, lo cual es suficiente.
 
-    # --- 3. UNICIDAD: Duplicados Exactos (Corrección) ---
-    # df.duplicated(keep=False) marca TODAS las ocurrencias de un duplicado (original y copias).
-    df['es_duplicado'] = df.duplicated(keep=False) 
-    df['riesgo_duplicado'] = np.where(
-        df['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
+    # --- 3. UNICIDAD: Duplicados Exactos (CORRECCIÓN APLICADA AQUÍ) ---
+    # `df.duplicated(keep=False)` marca *todas* las ocurrencias del duplicado como True.
+    df_copy['es_duplicado'] = df_copy.duplicated(keep=False) 
+    df_copy['riesgo_duplicado'] = np.where(
+        df_copy['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
     )
     
-    return df
+    return df_copy
 
+# ⚠️ MODIFICACIÓN DE NOMBRE: process_external_data
 def process_external_data(df):
     """
     Lógica de riesgo universal para el archivo externo subido.
     """
+    # 1. Aplicar limpieza/conversión y chequeos universales
+    df = clean_and_convert_types(df) # Usar la función unificada
+    df = check_universals(df)       # Usar la función unificada
     
-    df = clean_and_convert_types_external(df)
-    df = check_universals_external(df)
-    
-    # --- ⚠️ Lógica de completitud de metadatos (SE MANTIENE, pero se OCULTARÁ EN EL DISPLAY) ---
+    # 2. Cálculo de la completitud de metadatos (Se mantiene para el cálculo del score final)
     campos_clave_universal = ['titulo', 'descripcion', 'dueño'] 
     campos_existentes_y_llenos = 0
     num_campos_totales_base = len(campos_clave_universal)
 
+    # Solo chequear la primera fila para la existencia de los metadatos clave
     for campo in campos_clave_universal:
-        if campo in df.columns and pd.notna(df[campo].iloc[0]):
+        # Se asume que si el campo existe, no está vacío en la primera fila.
+        if campo in df.columns and pd.notna(df[campo].iloc[0]): 
             campos_existentes_y_llenos += 1
             
     completitud_metadatos_universal = (campos_existentes_y_llenos / num_campos_totales_base) * 100
-    # Se mantiene la columna para poder usar su valor en la siguiente sección si fuera necesario
-    df['completitud_metadatos_universal'] = completitud_metadatos_universal
-    # -----------------------------------------------------------------------------------------
+    # ⚠️ SE MANTIENE LA COLUMNA A NIVEL INTERNO
+    df['completitud_metadatos_universal'] = completitud_metadatos_universal 
     
+    # 3. Calcular el score de riesgo universal
     df['prioridad_riesgo_score'] = (
         df['riesgo_datos_incompletos'] + 
         df['riesgo_consistencia_tipo'] +
@@ -164,7 +171,7 @@ def process_external_data(df):
 # 🚀 ADICIÓN: FUNCIÓN PARA DETECCIÓN DE ANOMALÍAS CON ISOLATION FOREST
 @st.cache_data
 def apply_anomaly_detection(df):
-# ... (El cuerpo de apply_anomaly_detection se mantiene igual)
+# ... (Se mantiene el contenido de apply_anomaly_detection sin cambios)
     """
     Detecta anomalías en los activos de datos utilizando Isolation Forest
     basado en métricas clave (Riesgo, Completitud, Antigüedad, Popularidad).
@@ -212,7 +219,7 @@ def apply_anomaly_detection(df):
 # --- FUNCIÓN PARA CHEQUEOS AVANZADOS (Implementa la lógica solicitada) ---
 @st.cache_data
 def apply_advanced_risk_checks(df):
-# ... (El cuerpo de apply_advanced_risk_checks se mantiene igual)
+# ... (Se mantiene el contenido de apply_advanced_risk_checks sin cambios)
     """
     Calcula nuevos scores de riesgo avanzados (inconsistencias, semántica, vacíos) 
     y los añade al score de riesgo existente para el análisis general.
@@ -267,7 +274,7 @@ def apply_advanced_risk_checks(df):
 
 # 🚀 Función de Generación de Reporte HTML (Se mantiene igual)
 def generate_report_html(df_filtrado, umbral_riesgo):
-# ... (El cuerpo de generate_report_html se mantiene igual)
+# ... (Contenido de generate_report_html se mantiene sin cambios)
     """
     Genera el contenido HTML del reporte final que compila insights, tablas y visualizaciones.
     """
@@ -462,14 +469,14 @@ def generate_report_html(df_filtrado, umbral_riesgo):
     return html_content
 
 def get_table_download_link(html_content, filename, text):
-# ... (El cuerpo de get_table_download_link se mantiene igual)
+# ... (Se mantiene el contenido de get_table_download_link sin cambios)
     """Genera el link de descarga para el contenido HTML/PDF"""
     b64 = base64.b64encode(html_content.encode()).decode()
     href = f'<a href="data:text/html;base64,{b64}" download="{filename}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px;">{text}</a>'
     return href
 
 def generate_specific_recommendation(risk_dimension):
-# ... (El cuerpo de generate_specific_recommendation se mantiene igual)
+# ... (Se mantiene el contenido de generate_specific_recommendation sin cambios)
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
     
     if 'Datos Incompletos' in risk_dimension:
@@ -495,7 +502,7 @@ def generate_specific_recommendation(risk_dimension):
 
 
 def load_knowledge_base(file_path):
-# ... (El cuerpo de load_knowledge_base se mantiene igual)
+# ... (Se mantiene el contenido de load_knowledge_base sin cambios)
     """Carga el contenido del archivo de texto como contexto del sistema."""
     try:
         if os.path.exists(file_path):
@@ -513,7 +520,7 @@ def load_knowledge_base(file_path):
 # =================================================================
 
 def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
-# ... (El cuerpo de generate_ai_response se mantiene igual)
+# ... (Se mantiene el contenido de generate_ai_response sin cambios)
     """
     Función robusta que interactúa con la API de Gemini utilizando la Base de Conocimiento (RAG).
     """
@@ -596,12 +603,19 @@ try:
     if df_analisis_completo.empty:
         st.error(f"🛑 Error: No se pudo cargar el archivo **{ARCHIVO_PROCESADO}**. Asegúrate de que existe y se ejecutó `preprocess.py`.")
     else:
+        
+        # 🚀 ADICIÓN CLAVE 1: Aplicar Chequeos Universales al archivo principal
+        # Esto asegura que las columnas de riesgo universal existan y estén calculadas
+        df_analisis_completo = clean_and_convert_types(df_analisis_completo)
+        df_analisis_completo = check_universals(df_analisis_completo)
+        # FIN ADICIÓN CLAVE 1
+        
         # 🚀 ADICIÓN: APLICAR DETECCIÓN DE ANOMALÍAS CON ML (Isolation Forest)
         df_analisis_completo = apply_anomaly_detection(df_analisis_completo)
         # 🚀 FIN ADICIÓN: DETECCIÓN DE ANOMALÍAS
         
         # --- APLICAR CHEQUEOS DE RIESGO AVANZADOS (NUEVA LÓGICA) ---
-        # Ahora apply_advanced_risk_checks usa el resultado de anomalia_score
+        # apply_advanced_risk_checks usará ahora los scores de riesgo universal que acabamos de calcular.
         df_analisis_completo = apply_advanced_risk_checks(df_analisis_completo) 
         # --- FIN DE APLICACIÓN DE CHEQUEOS AVANZADOS ---
         
@@ -759,7 +773,7 @@ try:
             # Determinar si se debe mostrar el detalle de activos individuales:
             # 1. Si se filtra por activos públicos (filtro_acceso_publico)
             # 2. O si se ha seleccionado una entidad específica (filtro_dueño)
-            # 3. O si se ha seleccionado un tema específico (filtro_tema) <--- ¡MODIFICACIÓN CLAVE!
+            # 3. O si se ha seleccionado un tema específico (filtro_tema)
             show_asset_detail = filtro_acceso_publico or (filtro_dueño != "Mostrar Análisis General") or (filtro_tema != "Mostrar Todos")
 
             if show_asset_detail:
@@ -1215,7 +1229,7 @@ try:
                                 
                                 # Métricas consolidadas
                                 calidad_total_final = df_diagnostico['calidad_total_score'].iloc[0] 
-                                # ⚠️ SE ELIMINA DE AQUÍ: completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
+                                # ⚠️ ELIMINADO: completitud_universal_promedio = df_diagnostico['completitud_metadatos_universal'].iloc[0] 
                                 riesgo_promedio_total = df_diagnostico['prioridad_riesgo_score'].mean()
 
                                 # Desglose de Riesgos Promedio
@@ -1274,12 +1288,14 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
                                 
                                 st.subheader("Resultados del Diagnóstico Rápido")
                                 
-                                # --- DESPLIEGUE DE MÉTRICAS SIMPLIFICADO (Corrección: col_meta eliminada) ---
-                                col_calidad, col_riesgo = st.columns([1, 1]) # Se reduce a dos columnas principales
+                                # --- DESPLIEGUE DE MÉTRICAS SIMPLIFICADO ---
+                                col_calidad, col_meta, col_riesgo = st.columns(3)
                                 
                                 col_calidad.metric("⭐ Calidad Total del Archivo", f"{calidad_total_final:.1f}%")
-                                # ⚠️ COLUMNA DE METADATOS ELIMINADA (col_meta)
-                                col_riesgo.metric("Riesgo Promedio Total", f"{riesgo_promedio_total:.2f}")
+                                # ⚠️ REMOVIDO: col_meta.metric("Completitud Metadatos (Avg)", f"{completitud_universal_promedio:.2f}%") 
+                                col_meta.metric("Riesgo Promedio Total", f"{riesgo_promedio_total:.2f}")
+                                col_riesgo.metric("Riesgo Máximo Teórico", f"{RIESGO_MAXIMO_TEORICO_UNIVERSAL:.1f}")
+
 
                                 # Despliegue de la Recomendación
                                 st.markdown(f"""
