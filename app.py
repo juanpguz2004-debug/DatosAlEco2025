@@ -34,15 +34,16 @@ UMBRAL_RIESGO_ALTO = 3.5
 PENALIZACION_DATOS_INCOMPLETOS = 2.0  
 PENALIZACION_INCONSISTENCIA_TIPO = 0.5    
 PENALIZACION_DUPLICADO = 1.0          
-# RIESGO MÁXIMO TEÓRICO UNIVERSAL: 3.5
-RIESGO_MAXIMO_TEORICO_UNIVERSAL = 3.5 
+# RIESGO MÁXIMO TEÓRICO UNIVERSAL BASE: 3.5 (Variable según columnas afectadas)
 
 # --- CONFIGURACIÓN DE RIESGOS AVANZADOS ---
 PENALIZACION_INCONSISTENCIA_METADATOS = 1.5 # Inconsistencia de metadatos (ej. frecuencia vs. antigüedad)
 PENALIZACION_ANOMALIA_SILENCIOSA = 1.0     # Duplicidad semántica/Cambios abruptos (Anomalía + Baja Popularidad)
 PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías populares
-# RIESGO MÁXIMO TEÓRICO AVANZADO (3.5 + 1.5 + 1.0 + 2.0 = 8.0)
-RIESGO_MAXIMO_TEORICO_AVANZADO = RIESGO_MAXIMO_TEORICO_UNIVERSAL + PENALIZACION_INCONSISTENCIA_METADATOS + PENALIZACION_ANOMALIA_SILENCIOSA + PENALIZACION_ACTIVO_VACIO
+
+# RIESGO MÁXIMO TEÓRICO AVANZADO 
+# Ajustado a 10.0 para tener margen dado que la inconsistencia de tipo es acumulativa por columna
+RIESGO_MAXIMO_TEORICO_AVANZADO = 10.0
 
 # CLAVE SECRETA DE GEMINI
 GEMINI_API_SECRET_VALUE = "AIzaSyDvuJPAAK8AVIS-VQIe39pPgVNb8xlJw3g"
@@ -92,6 +93,7 @@ def check_universals_external(df):
     )
 
     # --- 2. CONSISTENCIA: Mezcla de Tipos ---
+    # Nota: Esta penalización se acumula por columna, pudiendo superar el 0.5 base total
     df_copy['riesgo_consistencia_tipo'] = 0.0
     
     object_cols_for_check = [col for col in df_copy.select_dtypes(include='object').columns if col not in ['titulo', 'descripcion', 'dueño']]
@@ -122,8 +124,9 @@ def process_external_data(df):
         df['riesgo_duplicado']
     )
     
+    # Usamos 10.0 como denominador seguro para evitar porcentajes negativos si el riesgo sube mucho
     avg_file_risk = df['prioridad_riesgo_score'].mean()
-    quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_UNIVERSAL * 100)
+    quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_AVANZADO * 100)
     
     df['calidad_total_score'] = np.clip(quality_score, 0, 100)
 
@@ -693,7 +696,7 @@ try:
                         **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** de la entidad **{filtro_dueño}**, ordenados por su Score de Riesgo (más alto primero).
                         * **Color Rojo:** Riesgo > {UMBRAL_RIESGO_ALTO:.1f} (Prioridad Máxima)
                         
-                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}** (para permitir múltiples inconsistencias por columna).
                     """
                 elif filtro_tema != "Mostrar Todos": 
                     st.subheader(f"Detalle por Activo Individual para el Tema: {filtro_tema}")
@@ -701,7 +704,7 @@ try:
                         **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** del tema **{filtro_tema}**, ordenados por su Score de Riesgo (más alto primero).
                         * **Color Rojo:** Riesgo > {UMBRAL_RIESGO_ALTO:.1f} (Prioridad Máxima)
                         
-                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}** (para permitir múltiples inconsistencias por columna).
                     """
                 else:
                     st.subheader("Detalle por Activo Público (Priorización Individual)")
@@ -709,7 +712,7 @@ try:
                         **Vista Detallada:** Se muestran los **activos individuales públicos** filtrados, ordenados por su Score de Riesgo (más alto primero).
                         * **Color Rojo:** Riesgo > {UMBRAL_RIESGO_ALTO:.1f} (Prioridad Máxima)
                         
-                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}** (para permitir múltiples inconsistencias por columna).
                     """
 
                 cols_common = ['titulo', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']
@@ -779,7 +782,7 @@ try:
                     * **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO:.1f}**. Intervención no urgente.
                     * **Rojo:** El riesgo promedio es **mayor a {UMBRAL_RIESGO_ALTO:.1f}**. Se requiere **intervención/actualización prioritaria**.
 
-                    **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
+                    **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                 """)
 
                 resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
@@ -1072,7 +1075,7 @@ try:
             # ----------------------------------------------------------------------
             st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
             st.header("Diagnóstico de Archivo CSV Externo (Calidad Universal)")
-            st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a 3 dimensiones universales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_UNIVERSAL:.1f}**).")
+            st.markdown(f"Sube un archivo CSV. La **Calidad Total** se calcula en base a 3 dimensiones universales (Riesgo Máximo: **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**).")
 
             uploaded_file = st.file_uploader(
                 "Selecciona el Archivo CSV", 
