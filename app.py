@@ -10,20 +10,12 @@ from datetime import datetime
 import re 
 import warnings
 import os 
-# --- ADICIÓN: Importación para la descarga de archivos ---
 import base64
-# --- FIN ADICIÓN ---
-
-# --- Importaciones para el Agente de IA (Usando API nativa de Gemini) ---
 from google import genai 
-# --- FIN DE IMPORTACIÓN DE GEMINI ---
-
-# --- NUEVAS IMPORTACIONES PARA CLUSTERING NO SUPERVISADO (K-MEANS) ---
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-# 🚀 ADICIÓN: Importación para Detección de Anomalías con ML
 from sklearn.ensemble import IsolationForest
-# --- FIN DE NUEVAS IMPORTACIONES ---
+
 
 warnings.filterwarnings('ignore') # Ocultar advertencias de Pandas/Streamlit
 
@@ -51,18 +43,29 @@ PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías popula
 # RIESGO MÁXIMO TEÓRICO AVANZADO (3.5 + 1.5 + 1.0 + 2.0 = 8.0)
 RIESGO_MAXIMO_TEORICO_AVANZADO = RIESGO_MAXIMO_TEORICO_UNIVERSAL + PENALIZACION_INCONSISTENCIA_METADATOS + PENALIZACION_ANOMALIA_SILENCIOSA + PENALIZACION_ACTIVO_VACIO
 
-# ⚠️ CLAVE SECRETA DE GEMINI
-# REEMPLAZA ESTE VALOR con tu clave secreta real de Gemini (comienza con AIza...).
-GEMINI_API_SECRET_VALUE = None # Inicializar a None
-
+# Código ya existente para cargar el secreto
+GEMINI_API_SECRET_VALUE = None 
 try:
-    # st.secrets["GEMINI_API_KEY"] accede a la clave definida directamente
-    GEMINI_API_SECRET_VALUE = st.secrets["GEMINI_API_KEY"].strip() 
+    raw_key = st.secrets["GEMINI_API_KEY"] 
+    GEMINI_API_SECRET_VALUE = raw_key.strip()
 except KeyError:
-    # Si la clave no se encuentra, la variable se mantiene en None y se muestra un error
-    # st.error() no funciona en el inicio, pero la función generate_ai_response lo manejará.
-    pass # Permite que la app cargue y muestre el error de clave en la interfaz.
-    
+    pass 
+
+# 🚨 BLOQUE TEMPORAL DE DIAGNÓSTICO 🚨
+# --------------------------------------------------------------------------
+# ESTE ES EL VALOR QUE SABEMOS QUE FUNCIONA (hardcodeado, pero solo para comparación)
+CLAVE_DE_PRUEBA_EXITOSA = "AIzaSyCeogooO7WrirP7ESGwR93wWH-XofYzkK8Q"
+
+if GEMINI_API_SECRET_VALUE and GEMINI_API_SECRET_VALUE != CLAVE_DE_PRUEBA_EXITOSA:
+    st.sidebar.error("🚨 ¡DISCREPANCIA EN EL SECRETO DETECTADA! 🚨")
+    st.sidebar.code(f"Longitud de Secreto (st.secrets): {len(GEMINI_API_SECRET_VALUE)}")
+    st.sidebar.code(f"Longitud de Clave (Hardcoded): {len(CLAVE_DE_PRUEBA_EXITOSA)}")
+    # Esto muestra si hay caracteres invisibles o de control.
+    st.sidebar.code(f"Secreto Cargado: {repr(GEMINI_API_SECRET_VALUE)}") 
+    st.sidebar.code(f"Clave Esperada: {repr(CLAVE_DE_PRUEBA_EXITOSA)}") 
+# --------------------------------------------------------------------------
+
+
 @st.cache_data
 def load_processed_data(file_path):
     """Carga el archivo CSV YA PROCESADO y lo cachea."""
@@ -1364,6 +1367,7 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
 
 
 
