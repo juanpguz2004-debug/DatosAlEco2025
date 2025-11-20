@@ -53,7 +53,7 @@ RIESGO_MAXIMO_TEORICO_AVANZADO = RIESGO_MAXIMO_TEORICO_UNIVERSAL + PENALIZACION_
 
 # ⚠️ CLAVE SECRETA DE GEMINI
 # REEMPLAZA ESTE VALOR con tu clave secreta real de Gemini (comienza con AIza...).
-GEMINI_API_SECRET_VALUE = "AIzaSyDvuJPAAK8AVIS-VQIe39pPgVNb8xlJw3g"
+GEMINI_API_SECRET_VALUE = st.secrets["GEMINI_API_KEY"]
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento (Se mantienen igual)
@@ -1360,3 +1360,4 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
