@@ -44,26 +44,7 @@ PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías popula
 RIESGO_MAXIMO_TEORICO_AVANZADO = RIESGO_MAXIMO_TEORICO_UNIVERSAL + PENALIZACION_INCONSISTENCIA_METADATOS + PENALIZACION_ANOMALIA_SILENCIOSA + PENALIZACION_ACTIVO_VACIO
 
 # Código ya existente para cargar el secreto
-GEMINI_API_SECRET_VALUE = None 
-try:
-    raw_key = st.secrets["GEMINI_API_KEY"] 
-    GEMINI_API_SECRET_VALUE = raw_key.strip()
-except KeyError:
-    pass 
-
-# 🚨 BLOQUE TEMPORAL DE DIAGNÓSTICO 🚨
-# --------------------------------------------------------------------------
-# ESTE ES EL VALOR QUE SABEMOS QUE FUNCIONA (hardcodeado, pero solo para comparación)
-CLAVE_DE_PRUEBA_EXITOSA = "AIzaSyCeogooO7WrirP7ESGwR93wWH-XofYzkK8Q"
-
-if GEMINI_API_SECRET_VALUE and GEMINI_API_SECRET_VALUE != CLAVE_DE_PRUEBA_EXITOSA:
-    st.sidebar.error("🚨 ¡DISCREPANCIA EN EL SECRETO DETECTADA! 🚨")
-    st.sidebar.code(f"Longitud de Secreto (st.secrets): {len(GEMINI_API_SECRET_VALUE)}")
-    st.sidebar.code(f"Longitud de Clave (Hardcoded): {len(CLAVE_DE_PRUEBA_EXITOSA)}")
-    # Esto muestra si hay caracteres invisibles o de control.
-    st.sidebar.code(f"Secreto Cargado: {repr(GEMINI_API_SECRET_VALUE)}") 
-    st.sidebar.code(f"Clave Esperada: {repr(CLAVE_DE_PRUEBA_EXITOSA)}") 
-# --------------------------------------------------------------------------
+GEMINI_API_SECRET_VALUE = "AIzaSyCeogooO7WrirP7ESGwR93wWH-XofYzkK8Q"
 
 
 @st.cache_data
@@ -1367,6 +1348,7 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"❌ ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
 
 
 
