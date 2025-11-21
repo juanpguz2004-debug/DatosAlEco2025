@@ -54,43 +54,14 @@ def fetch_resource_data(dataset_id: str) -> pd.DataFrame:
 
 
 # ===============================================================
-# AUTODETECCIÓN DEL VIEW ID (para metadatos correctos)
-# ===============================================================
-
-def autodetect_view_id(resource_id: str) -> Optional[str]:
-    """
-    Busca el view ID real a partir del resource ID usando el buscador:
-    /api/search/views?q={id}
-    """
-
-    url = f"https://www.datos.gov.co/api/search/views?q={resource_id}"
-
-    headers = {}
-    if "APP_TOKEN" in st.secrets:
-        headers["X-App-Token"] = st.secrets["APP_TOKEN"]
-
-    r = safe_get(url, headers)
-    if r is None:
-        return None
-
-    data = r.json()
-    if "results" not in data:
-        return None
-
-    # Buscar coincidencia exacta dentro del campo "resource.id"
-    for view in data["results"]:
-        resource = view.get("resource", {})
-        if resource.get("id", "").lower() == resource_id.lower():
-            return view.get("id")  # ESTE es el View ID real
-
-    return None
-
-
-# ===============================================================
-# DESCARGA DE METADATOS COMPLETOS
+# DESCARGA DIRECTA DE METADATOS (SIN AUTODETECCIÓN)
 # ===============================================================
 
 def fetch_metadata_from_view(view_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Descarga metadatos usando /api/v3/views/{id}
+    En datos.gov.co el resourceID == viewID, por lo que NO se usa autodetección.
+    """
     url = f"https://www.datos.gov.co/api/v3/views/{view_id}"
 
     headers = {}
@@ -312,16 +283,22 @@ def evaluar(df, meta):
 # ===============================================================
 
 def main():
-    st.title("Evaluación de Calidad – Guía MinTIC 2025 (0–10 → visual 0–100%)")
+    st.title("Evaluación de Calidad – Guía MinTIC 2025 (0–10 → % visual)")
 
     dataset_id = st.sidebar.text_input("Dataset ID (resource)", "uzcf-b9dh")
 
     if st.sidebar.button("Cargar"):
-        st.write("Buscando View ID real del recurso…")
-        view_id = autodetect_view_id(dataset_id)
 
-        if not view_id:
-            st.error("No se encontró View ID para este recurso. No se pudieron cargar metadatos.")
+        # ===============================
+        # USO DIRECTO: view_id = dataset_id
+        # ===============================
+        view_id = dataset_id
+        st.success(f"Usando View ID directamente: {view_id}")
+
+        # --- Cargar metadatos ---
+        meta = fetch_metadata_from_view(view_id)
+        if meta is None:
+            st.error("No se pudieron cargar metadatos.")
             meta = {
                 "categoria": "",
                 "tags": [],
@@ -331,20 +308,16 @@ def main():
                 "licencia": "",
                 "publisher": "",
             }
-        else:
-            st.success(f"View ID detectado: {view_id}")
-            meta = fetch_metadata_from_view(view_id)
-            if meta is None:
-                st.error("No se pudieron cargar metadatos.")
 
+        # --- Cargar datos ---
         df = fetch_resource_data(dataset_id)
-
         if df.empty:
             st.error("No se pudo cargar datos del dataset.")
             return
 
         st.write(f"Filas: {len(df)} — Columnas: {len(df.columns)}")
 
+        # --- Evaluación ---
         resultados = evaluar(df, meta)
 
         st.subheader("Criterios (en %)")
