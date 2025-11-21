@@ -1,474 +1,515 @@
+# streamlit_app_corrected.py
 import streamlit as st
 import pandas as pd
-import requests
 import numpy as np
+import requests
 import re
+from typing import Dict, Any
+
+# --- RUTA DEL PDF DE REFERENCIA SUBIDO (SE DEJÓ PARA DESCARGA/REFERENCIA) ---
+GUIDE_PDF_PATH = "/mnt/data/Guía de Calidad e Interoperabilidad 2025 (1).pdf"
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
-    page_title="Dashboard de Calidad de Datos Abiertos (Fórmulas Oficiales)",
+    page_title="Dashboard Calidad Datos Abiertos (Guía 2025 - Corregido)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CONSTANTES Y VALORES ASUMIDOS (SEGÚN GUÍA) ---
-API_URL = "https://www.datos.gov.co/resource/uzcf-b9dh.json?$limit=100000"
-# Variables para cálculos complejos (Necesitan validación de negocio)
-RIESGO_ALTO = 3
-RIESGO_MEDIO = 2
-RIESGO_BAJO = 1
+# --- CONSTANTES / PARÁMETROS ---
 MIN_FILAS_RELEVANCIA = 50
+PENAL_EXP_COMPLETITUD = 1.5  # según la guía para completitud de datos
+PENAL_QUAD_COMPLETITUD_COL = 2  # exponente 2 para completitud por columnas (según guía)
+# Umbrales para consistencia/varianza (ajustables)
+VARIANCE_THRESHOLD = 0.1
+MIN_UNIQUE_VALUES = 2
 
+# PII keywords y riesgo por keyword (alto=3, medio=2, bajo=1) -- ajustar según política
+PII_KEYWORDS_HIGH = ['identificacion', 'documento', 'nro_documento', 'numero_identificacion', 'numero_documento', 'tarjeta', 'pasaporte']
+PII_KEYWORDS_MEDIUM = ['telefono', 'celular', 'direccion', 'email', 'correo']
+PII_KEYWORDS_LOW = ['fecha_nacimiento', 'edad', 'sexo', 'genero']
 
-# --- FUNCIONES DE INGESTA DE DATOS (SIN CAMBIOS) ---
+# --- UTILIDADES ---
+def safe_div(a, b):
+    return a / b if b else 0.0
 
-@st.cache_data(show_spinner="Conectando a la API y cargando datos...")
+def to_percent(score_0_10: float) -> float:
+    """Convierte escala 0-10 a porcentaje 0-100 redondeado."""
+    return float(np.clip(score_0_10 * 10, 0, 100))
+
+# --- INGESTA DE DATOS ---
+@st.cache_data(show_spinner="Cargando datos...")
 def fetch_api_data(url: str) -> pd.DataFrame:
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        data = r.json()
         df = pd.DataFrame(data)
-        st.success(f"Datos cargados exitosamente desde la API. Filas: {len(df)}")
+        # normalizar columnas vacías a NaN
+        df.replace("", np.nan, inplace=True)
         return df
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error al conectar con la API: {e}")
-        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error al procesar los datos de la API: {e}")
+        st.error(f"Error al obtener datos desde API: {e}")
         return pd.DataFrame()
 
 def handle_csv_upload(uploaded_file) -> pd.DataFrame:
     try:
         df = pd.read_csv(uploaded_file)
-        st.success(f"CSV cargado exitosamente. Filas: {len(df)}")
+        df.replace("", np.nan, inplace=True)
         return df
     except Exception as e:
-        st.error(f"Error al leer el archivo CSV: {e}")
+        st.error(f"Error leyendo CSV: {e}")
         return pd.DataFrame()
 
-# --- FUNCIONES AUXILIARES DE LA GUÍA (VARIABLES DE ENTRADA) ---
-
-def calculate_df_stats(df: pd.DataFrame):
-    """Calcula las variables fundamentales para las fórmulas."""
-    if df.empty:
-        return 0, 0, 0, 0, 0
-
-    df_columnas = len(df.columns)
-    total_filas = len(df)
-    total_celdas = df.size
-    total_nulos = df.isnull().sum().sum()
-    
-    # numColPorcNulos: Número de columnas con más de 1% de nulos.
-    numColPorcNulos = (df.isnull().sum() / total_filas > 0.01).sum()
-    
-    return df_columnas, total_filas, total_celdas, total_nulos, numColPorcNulos
-
-def calculate_placeholder_measures(df: pd.DataFrame):
-    """
-    Simula variables complejas que dependen de metadatos o reglas de negocio
-    que deben ser extraídas del Asset Inventory (ej. 'metadatos_completos').
-    """
-    df_columnas, total_filas, total_celdas, total_nulos, numColPorcNulos = calculate_df_stats(df)
-    
-    # 1. Variables para Confidencialidad
-    # **NOTA DE IMPLEMENTACIÓN:** Debes identificar columnas PII aquí.
-    # Usaremos el proxy de la advertencia si se encontraron columnas sensibles en la ejecución anterior.
-    numColConfidencial = 1 if any(col in df.columns for col in ['nombre_completo', 'identificacion']) else 0
-    riesgo_total = RIESGO_ALTO if numColConfidencial > 0 else 0
-    
-    # 2. medidaMetadatosCompletos (Para Credibilidad y Recuperabilidad)
-    # **NOTA DE IMPLEMENTACIÓN:** Se basa en cuántos campos obligatorios de metadatos (título, descripción, etc.) están llenos. Asumimos 5/10.
-    medidaMetadatosCompletos = 5.0 
-    
-    # 3. medidaPublicadorValido (Para Credibilidad)
-    # **NOTA DE IMPLEMENTACIÓN:** 10 si la columna 'department' está presente y tiene un valor válido.
-    medidaPublicadorValido = 10.0 if 'department' in df.columns and df['department'].notna().sum() > 0 else 0.0
-    
-    # 4. medidaColDescValida (Para Credibilidad)
-    # **NOTA DE IMPLEMENTACIÓN:** 10 si las columnas tienen descripciones/glosarios asociados (lo cual no está en el JSON plano, pero se asume si tiene buena Comprensibilidad).
-    medidaColDescValida = 5.0
-    
-    # 5. medidaFilas (Para Relevancia)
-    # **NOTA DE IMPLEMENTACIÓN:** Válida tamaño mínimo y pocos nulos.
-    medidaFilas = 10.0 if total_filas >= MIN_FILAS_RELEVANCIA and (total_nulos / total_celdas) < 0.2 else 0.0
-    
-    # 6. Variables Exactitud (Sintáctica y Semántica)
-    # **NOTA DE IMPLEMENTACIÓN:** Muy difícil de automatizar sin reglas. Asumimos 5/10 columnas son correctas.
-    numColValoresUnicosSimilares = df_columnas * 0.5 
-    numColNoSimSemantica = df_columnas * 0.5
-
-    # 7. metadatosAuditados (Para Recuperabilidad)
-    # **NOTA DE IMPLEMENTACIÓN:** Se asume que los metadatos de auditoría (fechas de creación/actualización) están presentes y son válidos.
-    metadatosAuditados = 10.0 if 'updated_at' in df.columns else 0.0
-    
+# --- CÁLCULOS BASE (variables auxiliares) ---
+def df_basic_stats(df: pd.DataFrame):
+    df_cols = len(df.columns)
+    total_rows = len(df)
+    total_cells = df.size
+    total_nulls = int(df.isnull().sum().sum())
+    # columnas con más de 1% nulos
+    num_col_porcent_null = int(((df.isnull().sum() / total_rows) > 0.01).sum()) if total_rows>0 else 0
     return {
-        'df_columnas': df_columnas,
-        'total_filas': total_filas,
-        'total_celdas': total_celdas,
-        'total_nulos': total_nulos,
-        'numColPorcNulos': numColPorcNulos,
-        'numColConfidencial': numColConfidencial,
-        'riesgo_total': riesgo_total,
-        'medidaMetadatosCompletos': medidaMetadatosCompletos,
-        'medidaPublicadorValido': medidaPublicadorValido,
-        'medidaColDescValida': medidaColDescValida,
-        'medidaFilas': medidaFilas,
-        'numColValoresUnicosSimilares': numColValoresUnicosSimilares,
-        'numColNoSimSemantica': numColNoSimSemantica,
-        'metadatosAuditados': metadatosAuditados
+        'df_columns': df_cols,
+        'total_rows': total_rows,
+        'total_cells': total_cells,
+        'total_nulls': total_nulls,
+        'num_col_porcent_null': num_col_porcent_null
     }
 
-# --- FUNCIONES DE CÁLCULO DE LOS 17 CRITERIOS (FÓRMULAS OFICIALES) ---
-
-# Criterio 15. Relevancia (Depende de medidas internas)
-def calculate_relevance(df: pd.DataFrame, measures: dict) -> float:
-    """FÓRMULA: (medidaCategoria + medidaFilas) / 2"""
-    # **NOTA DE IMPLEMENTACIÓN:** medidaCategoria (coincidencia con temas oficiales) no se puede calcular
-    # desde el JSON plano. Asumimos un valor base si tiene etiquetas ('tags').
-    medidaCategoria = 10.0 if 'tags' in df.columns else 5.0
-    medidaFilas = measures['medidaFilas']
-    return (medidaCategoria + medidaFilas) / 2
-
-# Criterio 6. Confidencialidad (Fórmula condicional)
-def calculate_confidentiality(df: pd.DataFrame, measures: dict) -> float:
-    """FÓRMULA CONDICIONAL: Aplica penalización por columnas sensibles."""
-    numColConfidencial = measures['numColConfidencial']
-    riesgo_total = measures['riesgo_total']
-    df_columnas = measures['df_columnas']
-    
-    if numColConfidencial == 0:
-        return 10.0
-    else:
-        # 10 - (riesgo_total / dfColumnas * numColConfidencial * 3)
-        # Se normaliza la penalización por 10 para que esté en escala de 0 a 100.
-        penalty_factor = (riesgo_total / df_columnas) * numColConfidencial * 3
-        # Máximo 100
-        return max(0.0, 100.0 - (penalty_factor * 10))
-
-# Criterio 4. Completitud (Fórmula compuesta)
-def calculate_completeness(df: pd.DataFrame, measures: dict) -> float:
-    """FÓRMULA: (medidaCompletitudDatos + medidaCompletitudCol + medidaColNoVacias) / 3"""
-    total_nulos = measures['total_nulos']
-    total_celdas = measures['total_celdas']
-    df_columnas = measures['df_columnas']
-    numColPorcNulos = measures['numColPorcNulos']
-
-    if total_celdas == 0 or df_columnas == 0:
-        return 0.0
-
-    # a) Completitud de datos (Penalización exponencial por Nulos)
-    # 10 * (1 - (totalNulos / totalCeldas)^1.5)
-    medidaCompletitudDatos = 10 * (1 - (total_nulos / total_celdas)**1.5)
-    
-    # b) Completitud por columnas (Penalización cuadrática por Columnas con >1% Nulos)
-    # 10 * (1 - (numColPorcNulos / dfColumnas)^2)
-    medidaCompletitudCol = 10 * (1 - (numColPorcNulos / df_columnas)**2)
-    
-    # c) Columnas no vacías (Promedio proporcional de columnas sin nulos)
-    # **NOTA DE IMPLEMENTACIÓN:** La guía dice "Promedio proporcional de columnas sin nulos".
-    num_cols_no_null = (df.isnull().sum() == 0).sum()
-    medidaColNoVacias = 10 * (num_cols_no_null / df_columnas)
-
-    # El score final se escala de 0-100
-    score_10_scale = (medidaCompletitudDatos + medidaCompletitudCol + medidaColNoVacias) / 3
-    return score_10_scale * 10
-
-# Criterio 7. Consistencia (Basada en varianza y unicidad de columnas)
-def calculate_consistency(df: pd.DataFrame, measures: dict) -> float:
-    """FÓRMULA: (columnas_cumplen_criterios / dfColumnas)"""
-    df_columnas = measures['df_columnas']
-    if df_columnas == 0: return 0.0
-    
-    columnas_cumplen = 0
-    
+def detect_pii_columns(df: pd.DataFrame) -> Dict[str,int]:
+    """
+    Detecta columnas con posible PII usando keywords y devuelve:
+    { 'num_confidencial': int, 'sum_risk': int, 'per_column_risk': {col: risk} }
+    """
+    per_column_risk = {}
+    sum_risk = 0
     for col in df.columns:
-        # Se requiere que una columna cumpla: 1) Varianza >= 0.1 y 2) Valores únicos >= 2
-        cumple_var = False
-        cumple_unique = False
-        
-        # 2) Valores únicos >= 2
-        if df[col].nunique() >= 2:
-            cumple_unique = True
-            
-        # 1) Varianza >= 0.1 (Solo aplica a tipos numéricos)
-        if pd.api.types.is_numeric_dtype(df[col]):
-            if df[col].var() >= 0.1:
-                cumple_var = True
-        else:
-            # Para columnas no numéricas (texto), asumimos cumplimiento de varianza
-            # si los únicos son >= 2 (se consideran las dos condiciones en una)
-            cumple_var = True 
+        col_l = col.lower()
+        risk = 0
+        if any(k in col_l for k in PII_KEYWORDS_HIGH):
+            risk = 3
+        elif any(k in col_l for k in PII_KEYWORDS_MEDIUM):
+            risk = 2
+        elif any(k in col_l for k in PII_KEYWORDS_LOW):
+            risk = 1
+        if risk > 0:
+            per_column_risk[col] = risk
+            sum_risk += risk
+    return {
+        'num_confidencial': len(per_column_risk),
+        'sum_risk': sum_risk,
+        'per_column_risk': per_column_risk
+    }
 
-        if cumple_var and cumple_unique:
-            columnas_cumplen += 1
-            
-    # El score final se escala de 0-100
-    return (columnas_cumplen / df_columnas) * 100
+# --- MEDIDAS QUE REQUIEREN METADATOS ---
+def read_metadata_from_df(df: pd.DataFrame) -> Dict[str,Any]:
+    """
+    Intenta inferir metadatos comunes del DataFrame cargado (cuando la ingestión
+    trae datos tipo Socrata donde algunas columnas son metadata).
+    Si no encuentra, deja None para indicar que la medida debe pedirse al Asset Inventory.
+    """
+    # Campos que podrían venir en un export plano de la API (intentar leerlos)
+    meta = {}
+    # ejemplos comunes: 'title', 'description', 'updated_at', 'frequency', 'publisher', 'license'
+    for k in ['title', 'description', 'updated_at', 'frequency', 'publisher', 'license', 'tags']:
+        meta[k] = None
+        if k in df.columns:
+            # tomar el primer no-nulo
+            val = df[k].dropna().astype(str).iloc[0] if df[k].dropna().shape[0] > 0 else None
+            meta[k] = val
+    return meta
 
-# Criterio 8. Credibilidad (Fórmula ponderada)
-def calculate_credibility(df: pd.DataFrame, measures: dict) -> float:
-    """FÓRMULA: 0.70 * medMetadatosCompletos + 0.05 * medPublicadorValido + 0.25 * medColDescValida"""
-    mMC = measures['medidaMetadatosCompletos'] # Max 10.0
-    mPV = measures['medidaPublicadorValido']   # Max 10.0
-    mCDV = measures['medidaColDescValida']     # Max 10.0
+# --- CÁLCULOS DE CRITERIOS (escala 0..10 según guía) ---
 
-    # Los scores internos se escalan a 100.
-    cred_score_10_scale = (0.70 * mMC) + (0.05 * mPV) + (0.25 * mCDV)
-    return cred_score_10_scale * 10
+# 1. Accesibilidad (restringido: necesita metadatos de publicación). Aquí: proxy razonable
+def calc_accessibility(df: pd.DataFrame, metadata: Dict[str,Any]) -> float:
+    """
+    Devuelve 0..10. La guía evalúa: metadatos claros, formatos abiertos, enlace operativo.
+    Implementación:
+    - 10 si detecta al menos: title, description, license y formato en {csv,json}
+    - 5 si tiene parte de metadatos
+    - 0 si nada
+    """
+    score = 0.0
+    has_title = bool(metadata.get('title'))
+    has_description = bool(metadata.get('description'))
+    has_license = bool(metadata.get('license'))
+    # formato inference: si df came from JSON or CSV can't be 100% but infer from presence of keys
+    # as proxy: if len(columns)>0 assume formato abierto
+    has_format = df.shape[1] > 0
+    if has_title and has_description and has_license and has_format:
+        score = 10.0
+    elif any([has_title, has_description, has_license, has_format]):
+        score = 5.0
+    else:
+        score = 0.0
+    return float(score)
 
-# Criterio 11. Exactitud Sintáctica (Penalización por valores similares)
-def calculate_exactitud_sintactica(measures: dict) -> float:
-    """FÓRMULA: 10 * (1 - (numColValoresUnicosSimilares / dfColumnas)^2)"""
-    df_columnas = measures['df_columnas']
-    nCVS = measures['numColValoresUnicosSimilares']
-    
-    if df_columnas == 0: return 0.0
-
-    # 10 * (1 - (nCVS / dfColumnas)^2)
-    score_10_scale = 10 * (1 - (nCVS / df_columnas)**2)
-    return score_10_scale * 10
-
-# Criterio 11. Exactitud Semántica (Penalización por no similares semánticamente)
-def calculate_exactitud_semantica(measures: dict) -> float:
-    """FÓRMULA: 10 - (1 - (numColNoSimSemantica / dfColumnas)^2)"""
-    df_columnas = measures['df_columnas']
-    nCNS = measures['numColNoSimSemantica']
-
-    if df_columnas == 0: return 0.0
-
-    # 10 - (1 - (nCNS / dfColumnas)^2)
-    score_10_scale = 10 - (1 - (nCNS / df_columnas)**2)
-    return score_10_scale * 10
-
-# Criterio 11. Exactitud (Combinación Sintáctica y Semántica)
-def calculate_accuracy(df: pd.DataFrame, measures: dict) -> float:
-    """Criterio 11: Exactitud = Promedio simple de Sintáctica y Semántica."""
-    sintact_score = calculate_exactitud_sintactica(measures)
-    semant_score = calculate_exactitud_semantica(measures)
-    return (sintact_score + semant_score) / 2
-
-# Criterio 14. Recuperabilidad (Fórmula compuesta)
-def calculate_recoverability(accessibility_score: float, measures: dict) -> float:
-    """FÓRMULA: (accesibilidad + medidaMetadatosCompletos*10 + metadatosAuditados*10) / 3"""
-    # Escalar medidas internas a 100 para un promedio simple
-    mMC = measures['medidaMetadatosCompletos'] * 10 
-    mA = measures['metadatosAuditados'] * 10
-    
-    return (accessibility_score + mMC + mA) / 3
-
-# Criterios que no tienen fórmula explícita, se implementa lógica proxy:
-
-# Criterio 1. Accesibilidad
-def calculate_accessibility(df: pd.DataFrame) -> float:
-    """Evalúa si: hay metadatos, archivo es descargable, está en formato abierto."""
-    # Si la carga API es exitosa (descargable, formato abierto JSON/CSV), es 100%
-    return 100.0 if not df.empty else 0.0
-
-# Criterio 2. Actualidad (Lógica proxy de 90 días)
-def calculate_actuality(df: pd.DataFrame) -> float:
-    """Depende de Fecha de última actualización y Frecuencia declarada."""
-    date_column = 'updated_at' # Asunción común en Socrata
-    if df.empty or date_column not in df.columns: return 0.0
-
+# 2. Actualidad (0..10) - requiere metadata.updated_at y frequency
+def calc_actuality(df: pd.DataFrame, metadata: Dict[str,Any]) -> float:
+    """
+    Implementación simplificada fiel a la guía:
+    - Si no hay metadata['updated_at'] -> 0
+    - Si updated_at dentro de 3 meses -> 10
+    - Si actualizado entre 3 y 12 meses -> 5
+    - Si > 12 meses -> 0
+    """
+    updated = metadata.get('updated_at')
+    if not updated:
+        return 0.0
     try:
-        df_copy = df.copy()
-        df_copy[date_column] = pd.to_datetime(df_copy.get(date_column), errors='coerce', utc=True)
-        df_copy.dropna(subset=[date_column], inplace=True)
-
-        three_months_ago = pd.Timestamp.now(tz='UTC') - pd.DateOffset(months=3)
-        recent_count = df_copy[df_copy[date_column] >= three_months_ago].shape[0]
-        
-        # Ponderación basada en la proporción reciente
-        return min(100.0, (recent_count / len(df)) * 100) 
+        updated_ts = pd.to_datetime(updated, errors='coerce', utc=True)
+        if pd.isna(updated_ts):
+            return 0.0
+        now = pd.Timestamp.now(tz='UTC')
+        months_diff = (now.year - updated_ts.year) * 12 + (now.month - updated_ts.month)
+        if months_diff <= 3:
+            return 10.0
+        elif months_diff <= 12:
+            return 5.0
+        else:
+            return 0.0
     except Exception:
         return 0.0
 
-# Criterio 17. Unicidad (Lógica proxy de detección de duplicados)
-def calculate_uniqueness(df: pd.DataFrame) -> float:
-    """Menciona: se agregan niveles de riesgo y penalización por duplicados."""
-    if df.empty: return 0.0
-    total_rows = len(df)
+# 3. Completitud (0..10) - fórmula oficial
+def calc_completeness(df: pd.DataFrame, stats: Dict[str,int]) -> float:
+    df_columns = stats['df_columns']
+    total_nulls = stats['total_nulls']
+    total_cells = stats['total_cells']
+    num_col_porcent_null = stats['num_col_porcent_null']
+
+    if total_cells == 0 or df_columns == 0:
+        return 0.0
+
+    # a) medidaCompletitudDatos = 10 * (1 - (totalNulos/totalCeldas)^{penalizacionFactor})
+    medidaCompletitudDatos = 10.0 * (1.0 - (safe_div(total_nulls, total_cells) ** PENAL_EXP_COMPLETITUD))
+
+    # b) medidaCompletitudCol = 10 * (1 - (numColPorcNulos/dfColumnas)^{penalizacionFactor})  (penalizacionFactor=2 en la guía)
+    medidaCompletitudCol = 10.0 * (1.0 - (safe_div(num_col_porcent_null, df_columns) ** PENAL_QUAD_COMPLETITUD_COL))
+
+    # c) medidaColNoVacias = 10 * (num_cols_without_null / dfColumnas)
+    num_cols_no_null = int((df.isnull().sum() == 0).sum())
+    medidaColNoVacias = 10.0 * safe_div(num_cols_no_null, df_columns)
+
+    # promedio (0..10)
+    score_10 = float((medidaCompletitudDatos + medidaCompletitudCol + medidaColNoVacias) / 3.0)
+    return np.clip(score_10, 0.0, 10.0)
+
+# 4. Comprensibilidad (0..10) - requiere metadatos/diccionario; proxy con nombres y descripción
+def calc_comprehensibility(df: pd.DataFrame, metadata: Dict[str,Any]) -> float:
+    # si la metadata tiene description y title: 10
+    if metadata.get('title') and metadata.get('description'):
+        return 10.0
+    # si hay algunos nombres claros -> escalar parcialmente
+    col_names = list(df.columns)
+    if len(col_names) == 0:
+        return 0.0
+    understandable_count = sum(1 for c in col_names if re.match(r'^[a-z0-9_]+$', c.lower()) and len(c) <= 30)
+    score_10 = 10.0 * safe_div(understandable_count, len(col_names))
+    return float(score_10)
+
+# 5. Conformidad (0..10) - evaluación de estándares básicos (formato, licencias)
+def calc_conformity(df: pd.DataFrame, metadata: Dict[str,Any]) -> float:
+    # Si hay license y publisher -> 10
+    if metadata.get('license') and metadata.get('publisher'):
+        return 10.0
+    # si al menos la licencia está -> 5
+    if metadata.get('license'):
+        return 5.0
+    # si no, revisar nombres de columnas y formatos básicos -> pequeño puntaje
+    return 2.0 if df.shape[1] > 0 else 0.0
+
+# 6. Confidencialidad (0..10) - implementada con keywords y riesgo
+def calc_confidentiality(df: pd.DataFrame) -> float:
+    df_columns = df.shape[1]
+    pii = detect_pii_columns(df)
+    num_conf = pii['num_confidencial']
+    sum_risk = pii['sum_risk']
+    if num_conf == 0:
+        return 10.0
+    # Según la guía: se incorpora factor de riesgo. Implementación razonable:
+    # confid = 10 - ( (sum_risk / (3 * df_columns)) * 10 )
+    denom = max(1, 3 * max(1, df_columns))
+    penalty = (sum_risk / denom) * 10.0
+    score = 10.0 - penalty
+    return float(np.clip(score, 0.0, 10.0))
+
+# 7. Consistencia (0..10) - proporción columnas que cumplen varianza y unicidad (interpretación guía)
+def calc_consistency(df: pd.DataFrame) -> float:
+    df_columns = df.shape[1]
+    if df_columns == 0:
+        return 0.0
+    columns_cumplen = 0
+    for col in df.columns:
+        unique_vals = df[col].nunique(dropna=True)
+        cumple_unique = unique_vals >= MIN_UNIQUE_VALUES
+        cumple_var = True
+        if pd.api.types.is_numeric_dtype(df[col]):
+            # varianza only for numeric
+            try:
+                cumple_var = (df[col].dropna().astype(float).var() >= VARIANCE_THRESHOLD)
+            except Exception:
+                cumple_var = False
+        else:
+            # For text, we assume variability if number of unique > MIN_UNIQUE_VALUES
+            cumple_var = cumple_unique
+        if cumple_var and cumple_unique:
+            columns_cumplen += 1
+    score = safe_div(columns_cumplen, df_columns) * 10.0
+    return float(np.clip(score, 0.0, 10.0))
+
+# 8. Credibilidad (0..10)
+def calc_credibility(df: pd.DataFrame, metadata: Dict[str,Any]) -> float:
+    # medidaMetadatosCompletos: si title, description, publisher, license presentes -> 10
+    md_complete_count = sum(bool(metadata.get(k)) for k in ['title','description','publisher','license'])
+    medidaMetadatosCompletos = 10.0 * safe_div(md_complete_count, 4.0)
+    medidaPublicadorValido = 10.0 if metadata.get('publisher') else 0.0
+    # medidaColDescValida: si hay descripciones por columna en metadata (difícil), proxy usando comprehensibility
+    medidaColDescValida = calc_comprehensibility(df, metadata)
+    score_10 = (0.70 * medidaMetadatosCompletos) + (0.05 * medidaPublicadorValido) + (0.25 * medidaColDescValida)
+    return float(np.clip(score_10, 0.0, 10.0))
+
+# 9. Disponibilidad (0..10) = (accesibilidad + actualidad)/2
+def calc_availability(accessibility_score_10: float, actuality_score_10: float) -> float:
+    return float(np.clip((accessibility_score_10 + actuality_score_10) / 2.0, 0.0, 10.0))
+
+# 10. Eficiencia (0..10) - se compone de completitud, columnas no duplicadas y filas no duplicadas
+def calc_efficiency(df: pd.DataFrame, completeness_10: float) -> float:
+    # columnas no duplicadas: proportion of columns with all unique names (names always unique) -> measure duplicados en columnas clave: detectar columnas que son idénticas
+    df_cols = df.shape[1]
+    if df.shape[0] == 0 or df_cols == 0:
+        return 0.0
+    # filas no duplicadas
     unique_rows = len(df.drop_duplicates())
-    # Penalización simple: (Filas Únicas / Total de Filas) * 100
-    return (unique_rows / total_rows) * 100
+    filas_no_duplicadas_ratio = safe_div(unique_rows, len(df))
+    # columnas duplicadas (contenido idéntico)
+    # identificar pares de columnas con exactamente la misma serie (costoso para many cols)
+    equal_col_pairs = 0
+    checked = set()
+    cols = list(df.columns)
+    for i in range(len(cols)):
+        for j in range(i+1, len(cols)):
+            if cols[j] in checked:
+                continue
+            try:
+                if df[cols[i]].equals(df[cols[j]]):
+                    equal_col_pairs += 1
+            except Exception:
+                pass
+    # penalización por columnas idénticas
+    max_pairs = max(1, df_cols*(df_cols-1)/2)
+    col_dup_penalty = safe_div(equal_col_pairs, max_pairs)
+    # combine: 40% completitud, 30% filas no duplicadas, 30% no duplicados columnas
+    score_10 = (0.4 * completeness_10) + (0.3 * (filas_no_duplicadas_ratio * 10.0)) + (0.3 * ((1.0 - col_dup_penalty) * 10.0))
+    return float(np.clip(score_10, 0.0, 10.0))
 
-# Criterio 5. Conformidad (Lógica proxy de cumplimiento de estándares)
-def calculate_conformity(df: pd.DataFrame) -> float:
-    """Depende del cumplimiento de estándares, formatos y normativas."""
-    # Asumimos que si la columna 'resource_type' existe y tiene valores, cumple el estándar de metadatos.
-    col = 'resource_type'
-    if df.empty or col not in df.columns: return 0.0
-    
-    conforming_rows = df[col].notna().sum()
-    total_rows = len(df)
-    return (conforming_rows / total_rows) * 100
+# 11. Exactitud sintáctica (0..10)
+def calc_exactitud_sintactica(df: pd.DataFrame) -> float:
+    # Identificar columnas textuales y contar cuántas tienen "valores únicos muy similares".
+    # Implementación: para cada texto, normalizar y contar valores únicos relativos.
+    text_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+    if len(text_cols) == 0:
+        return 10.0
+    num_similar = 0
+    for c in text_cols:
+        vals = df[c].dropna().astype(str).str.lower().str.normalize('NFKD')
+        # quick normalization: strip punctuation / accents (approx)
+        vals = vals.str.replace(r'[^\w\s]', '', regex=True).str.strip()
+        unique_vals = vals.nunique()
+        # si menos del 3 valores únicos en una columna de texto, consideramos alto riesgo de similitud
+        if unique_vals <= 2:
+            num_similar += 1
+    df_text_cols = len(text_cols)
+    score_10 = 10.0 * (1.0 - (safe_div(num_similar, df_text_cols) ** 2))
+    return float(np.clip(score_10, 0.0, 10.0))
 
-# Criterio 4. Comprensibilidad (Lógica proxy de claridad de nombres)
-def calculate_comprehensibility(df: pd.DataFrame) -> float:
-    """Evalúa: nombres claros, glosarios, descripciones."""
-    col_names = df.columns.tolist()
-    # Puntuación: % de nombres de columna que son cortos, usan snake_case y son alfanuméricos
-    understandable_count = sum(1 for col in col_names if len(col) < 30 and re.match(r'^[a-z0-9_]+$', col))
-    return (understandable_count / len(col_names)) * 100
+# 11b. Exactitud semántica (0..10) - aproximación
+def calc_exactitud_semantica(df: pd.DataFrame) -> float:
+    # Requiere comparar título/description vs valores -> si no hay metadata, usamos proxy:
+    # Proxy: para columnas numéricas, porcentaje de celdas no numéricas reduce el score.
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    if len(num_cols) == 0:
+        return 10.0
+    bad_cols = 0
+    for c in num_cols:
+        non_numeric = df[c].apply(lambda x: False if (pd.isna(x) or isinstance(x,(int,float,np.integer,np.floating))) else True).sum()
+        # si >5% de valores no numéricos en columna numérica -> marca
+        if safe_div(non_numeric, max(1, len(df))) > 0.05:
+            bad_cols += 1
+    df_num_cols = len(num_cols)
+    # fórmula guía (exponencial para penalizar): sem = 10 - (1 - (bad/df)^2)
+    # ajustamos para que quede en 0..10:
+    frac_bad = safe_div(bad_cols, df_num_cols)
+    score_10 = 10.0 - (1.0 - (frac_bad ** 2))
+    # normalizar a 0..10
+    # if frac_bad==0 => 10 - (1 - 0 ) = 9 -> adjust: we prefer 10 when no bad columns
+    if bad_cols == 0:
+        score_10 = 10.0
+    return float(np.clip(score_10, 0.0, 10.0))
 
-# Criterio 10. Eficiencia (Fórmula compuesta sustituta)
-def calculate_efficiency(uniqueness_score: float, completeness_score: float) -> float:
-    """Se calcula como combinación de: completitud de datos, columnas no duplicadas, filas no duplicadas."""
-    # Usamos Unicidad y Completitud como proxies.
-    # Score 100% si ambas son perfectas, promedio si no.
-    return (uniqueness_score + completeness_score) / 2
+def calc_accuracy(df: pd.DataFrame) -> float:
+    s_sint = calc_exactitud_sintactica(df)
+    s_sem = calc_exactitud_semantica(df)
+    return float(np.clip((s_sint + s_sem) / 2.0, 0.0, 10.0))
 
-# Criterio 16. Trazabilidad (Lógica proxy)
-def calculate_traceability(actuality_score: float, credibility_score: float) -> float:
-    """Depende de que haya historial de versiones, creación y actualización."""
-    # Trazabilidad = (Actualidad + Credibilidad) / 2 (El proxy más fuerte)
-    return (actuality_score + credibility_score) / 2
+# 12. Portabilidad (0..10) = 0.50*portabilidad_base + 0.25*conformidad + 0.25*completitud
+def calc_portability(df: pd.DataFrame, completeness_10: float, conformity_10: float) -> float:
+    # portabilidad_base: puntaje por formato y tamaño. Proxy:
+    # formatos abiertos: si df has <= 1GB (we don't access size) -> assume ok: base=10
+    portabilidad_base = 10.0
+    score_10 = 0.50 * portabilidad_base + 0.25 * conformity_10 + 0.25 * completeness_10
+    return float(np.clip(score_10, 0.0, 10.0))
 
-# Criterio 12. Portabilidad
-def calculate_portability(completeness_score: float, conformity_score: float) -> float:
-    """FÓRMULA: 0.50 * portabilidad_base + 0.25 * conformidad + 0.25 * completitud"""
-    # Portabilidad base se asume 100% si el formato es estándar (JSON/CSV)
-    portabilidad_base = 100.0
-    
-    return (0.50 * portabilidad_base) + (0.25 * conformity_score) + (0.25 * completeness_score)
+# 13. Precisión (0..10) - proxy usando consistencia/variabilidad
+def calc_precision(df: pd.DataFrame, consistency_10: float) -> float:
+    # Usar consistency como proxy razonable
+    return float(np.clip(consistency_10, 0.0, 10.0))
 
-# Criterio 13. Precisión (Lógica proxy de variabilidad)
-def calculate_precision(df: pd.DataFrame, consistency_score: float) -> float:
-    """El criterio fue sustituido por medidas de variabilidad y valores únicos (vinculado a Consistencia)."""
-    # Usamos Consistencia como proxy principal, ya que mide la varianza y los valores únicos.
-    return consistency_score
+# 14. Recuperabilidad (0..10) = (accesibilidad + metadatosCompletos + metadatosAuditados)/3
+def calc_recoverability(access_10: float, metadata: Dict[str,Any]) -> float:
+    metadatos_completos = 10.0 if all(metadata.get(k) for k in ['title','description','publisher','license']) else 5.0 if any(metadata.get(k) for k in ['title','description','publisher','license']) else 0.0
+    metadatos_auditados = 10.0 if metadata.get('updated_at') else 0.0
+    return float(np.clip((access_10 + metadatos_completos + metadatos_auditados)/3.0, 0.0, 10.0))
 
-# Criterio 9. Disponibilidad
-def calculate_availability(accessibility_score: float, actuality_score: float) -> float:
-    """FÓRMULA: (accesibilidad + actualidad) / 2"""
-    return (accessibility_score + actuality_score) / 2
+# 15. Relevancia (0..10) = (medidaCategoria + medidaFilas)/2
+def calc_relevance(df: pd.DataFrame, metadata: Dict[str,Any]) -> float:
+    # medidaFilas:
+    medidaFilas = 10.0 if len(df) >= MIN_FILAS_RELEVANCIA and safe_div(df.isnull().sum().sum(), df.size) < 0.2 else 0.0
+    # medidaCategoria: requiere comparar metadata['description'] y 'title' con taxonomía; proxy:
+    medidaCategoria = 10.0 if metadata.get('description') and metadata.get('title') else 5.0 if metadata.get('title') else 0.0
+    return float(np.clip((medidaCategoria + medidaFilas) / 2.0, 0.0, 10.0))
 
+# 16. Trazabilidad (0..10) - proxy: (actualidad + credibilidad)/2
+def calc_traceability(actuality_10: float, credibility_10: float) -> float:
+    return float(np.clip((actuality_10 + credibility_10)/2.0, 0.0, 10.0))
 
-# --- FUNCIÓN PRINCIPAL DE CÁLCULO Y DISPLAY ---
+# 17. Unicidad (0..10) - proporción filas únicas y penalización por duplicados en columnas clave
+def calc_uniqueness(df: pd.DataFrame) -> float:
+    if df.shape[0] == 0:
+        return 0.0
+    unique_rows = len(df.drop_duplicates())
+    ratio = safe_div(unique_rows, len(df))
+    # penalización adicional: si hay columnas con muchos repeats exactos
+    return float(np.clip(ratio * 10.0, 0.0, 10.0))
 
+# --- FUNCIÓN PRINCIPAL: calcula todos los criterios y los muestra ---
 def calculate_and_display_metrics(df: pd.DataFrame):
-    """
-    Calcula y muestra las 17 métricas de calidad de datos usando las fórmulas de la Guía 2025.
-    """
+    st.subheader("Evaluación (alineada a Guía 2025)")
     if df.empty:
-        st.info("No hay datos cargados para calcular las métricas.")
+        st.info("No hay datos cargados.")
         return
 
-    # 1. CÁLCULO DE VARIABLES DE ENTRADA (Métricas internas)
-    measures = calculate_placeholder_measures(df)
-    
-    # 2. CÁLCULO DE CRITERIOS BASE E INTERMEDIOS
-    accessibility_score = calculate_accessibility(df) # Criterio 15 (Texto)
-    actuality_score = calculate_actuality(df)         # Criterio 2 (Texto)
-    uniqueness_score = calculate_uniqueness(df)       # Criterio 17 (Proxy)
-    
-    # Criterios con Fórmulas de la Guía 2025
-    completeness_score = calculate_completeness(df, measures)     # Criterio 4 (Fórmula)
-    confidentiality_score = calculate_confidentiality(df, measures) # Criterio 6 (Fórmula condicional)
-    relevance_score = calculate_relevance(df, measures)           # Criterio 15 (Fórmula compuesta)
-    consistency_score = calculate_consistency(df, measures)       # Criterio 7 (Fórmula)
-    credibility_score = calculate_credibility(df, measures)       # Criterio 8 (Fórmula ponderada)
-    accuracy_score = calculate_accuracy(df, measures)             # Criterio 11 (Fórmula compuesta)
-    
-    # Criterios Proxy / No Matemáticos
-    conformity_score = calculate_conformity(df)                   # Criterio 5 (Proxy)
-    comprehensibility_score = calculate_comprehensibility(df)     # Criterio 4 (Proxy)
+    stats = df_basic_stats(df)
+    metadata = read_metadata_from_df(df)  # intenta inferir metadata (si viene embebida)
 
-    # 3. CÁLCULO DE CRITERIOS COMPUESTOS / DEPENDIENTES
-    disponibility_score = calculate_availability(accessibility_score, actuality_score) # Criterio 9 (Fórmula)
-    efficiency_score = calculate_efficiency(uniqueness_score, completeness_score) # Criterio 10 (Proxy)
-    recoverability_score = calculate_recoverability(accessibility_score, measures) # Criterio 14 (Fórmula)
-    traceability_score = calculate_traceability(actuality_score, credibility_score) # Criterio 16 (Proxy)
-    portability_score = calculate_portability(completeness_score, conformity_score) # Criterio 12 (Fórmula)
-    precision_score = calculate_precision(df, consistency_score)  # Criterio 13 (Proxy)
-    
-    # 4. AGRUPACIÓN DE MÉTRICAS (Los 17 Criterios)
-    metrics = {
-        "1. Accesibilidad": accessibility_score,
-        "2. Actualidad": actuality_score,
-        "3. Completitud": completeness_score,
-        "4. Comprensibilidad": comprehensibility_score,
-        "5. Conformidad": conformity_score,
-        "6. Confidencialidad": confidentiality_score,
-        "7. Consistencia": consistency_score,
-        "8. Credibilidad": credibility_score,
-        "9. Disponibilidad": disponibility_score,
-        "10. Eficiencia": efficiency_score,
-        "11. Exactitud": accuracy_score,
-        "12. Portabilidad": portability_score,
-        "13. Precisión": precision_score,
-        "14. Recuperabilidad": recoverability_score,
-        "15. Relevancia": relevance_score,
-        "16. Trazabilidad": traceability_score,
-        "17. Unicidad": uniqueness_score,
+    # calcular criterios (todos en escala 0..10)
+    accessibility_10 = calc_accessibility(df, metadata)
+    actuality_10 = calc_actuality(df, metadata)
+    completeness_10 = calc_completeness(df, stats)
+    comprehensibility_10 = calc_comprehensibility(df, metadata)
+    conformity_10 = calc_conformity(df, metadata)
+    confidentiality_10 = calc_confidentiality(df)
+    consistency_10 = calc_consistency(df)
+    credibility_10 = calc_credibility(df, metadata)
+    availability_10 = calc_availability(accessibility_10, actuality_10)
+    efficiency_10 = calc_efficiency(df, completeness_10)
+    accuracy_10 = calc_accuracy(df)
+    portability_10 = calc_portability(df, completeness_10, conformity_10)
+    precision_10 = calc_precision(df, consistency_10)
+    recoverability_10 = calc_recoverability(accessibility_10, metadata)
+    relevance_10 = calc_relevance(df, metadata)
+    traceability_10 = calc_traceability(actuality_10, credibility_10)
+    uniqueness_10 = calc_uniqueness(df)
+
+    # agrupar y convertir a % para display (como tenías)
+    metrics_10 = {
+        "1. Accesibilidad": accessibility_10,
+        "2. Actualidad": actuality_10,
+        "3. Completitud": completeness_10,
+        "4. Comprensibilidad": comprehensibility_10,
+        "5. Conformidad": conformity_10,
+        "6. Confidencialidad": confidentiality_10,
+        "7. Consistencia": consistency_10,
+        "8. Credibilidad": credibility_10,
+        "9. Disponibilidad": availability_10,
+        "10. Eficiencia": efficiency_10,
+        "11. Exactitud": accuracy_10,
+        "12. Portabilidad": portability_10,
+        "13. Precisión": precision_10,
+        "14. Recuperabilidad": recoverability_10,
+        "15. Relevancia": relevance_10,
+        "16. Trazabilidad": traceability_10,
+        "17. Unicidad": uniqueness_10,
     }
 
-    # CÁLCULO DEL SCORE GLOBAL DE CALIDAD
-    overall_score = np.mean(list(metrics.values()))
-    st.markdown(f"## 🏆 Score Global de Calidad: **{overall_score:.2f}%**")
+    # Score global (en 0..10) y en %
+    overall_10 = float(np.mean(list(metrics_10.values())))
+    overall_pct = to_percent(overall_10)
 
-    # 5. VISUALIZACIÓN DE MÉTRICAS (KPIs)
-    st.subheader("Evaluación Detallada de los 17 Criterios (%)")
-    
-    cols = st.columns(8) 
-    
-    for i, (name, value) in enumerate(metrics.items()):
-        score = round(value, 2)
-        with cols[i % 8]:
-            st.metric(label=name, value=f"{score}%")
-            
+    st.markdown(f"## 🏆 Score Global de Calidad: **{overall_pct:.2f}%**  (equiv. {overall_10:.2f}/10)")
+
+    # Mostrar KPI's
+    st.subheader("Criterios individuales")
+    cols = st.columns(4)
+    i = 0
+    for name, val_10 in metrics_10.items():
+        with cols[i % 4]:
+            st.metric(label=name, value=f"{to_percent(val_10):.2f}%")
+        i += 1
+
     st.markdown("---")
-    
-    # 6. PERFILADO DETALLADO (Completitud por Columna)
-    st.subheader("Detalle de la Completitud por Atributo (No afecta el cálculo de Completitud 2025)")
+    st.subheader("Detalle de Completitud por Atributo")
     completeness_detail = pd.DataFrame({
         'Atributo': df.columns,
         'Valores No Nulos': df.count().values,
         'Total Filas': len(df),
-        'Completitud (%)': (df.count().values / len(df)) * 100
+        'Completitud (%)': (df.count().values / max(1, len(df))) * 100
     }).sort_values(by='Completitud (%)', ascending=False)
-    
     st.dataframe(completeness_detail, use_container_width=True)
 
     st.markdown("---")
-
-    # 7. TABLA DE DATOS (Muestra)
-    st.subheader("Vista Previa del Dataset")
+    st.subheader("Vista Previa del Dataset (primeras 10 filas)")
     st.dataframe(df.head(10), use_container_width=True)
 
+    # Mostrar advertencias sobre metadatos faltantes
+    missing_meta = [k for k,v in metadata.items() if not v]
+    if missing_meta:
+        st.warning(
+            "Algunas medidas requieren metadatos del recurso (ej. title, description, publisher, license, updated_at). "
+            "Los siguientes campos no se detectaron en la tabla: " + ", ".join(missing_meta) +
+            ". Para resultados 100% fieles a la guía, recupere los metadatos del Asset Inventory/API y cárguelos."
+        )
 
-# --- LAYOUT DE LA APLICACIÓN STREAMLIT (SIN CAMBIOS) ---
+    # Enlace de referencia al PDF (ruta local)
+    try:
+        st.download_button("📄 Descargar Guía 2025 (referencia)", GUIDE_PDF_PATH)
+    except Exception:
+        st.info(f"Ruta de referencia a la guía: {GUIDE_PDF_PATH}")
 
+# --- UI y flujo principal ---
 def main():
-    st.title("Sistema de Monitoreo de Calidad de Datos Abiertos")
-    st.caption("Implementación de la Guía de Calidad e Interoperabilidad 2025 para Asset Inventory.")
+    st.title("Sistema de Monitoreo de Calidad de Datos Abiertos — Versión Alineada a Guía 2025")
+    st.caption("Esta versión corrige los cálculos y normaliza a escala 0..10 (mostrado en %).")
 
-    # SIDEBAR: Opciones de Ingesta
-    st.sidebar.header("Opciones de Ingesta de Datos")
-    ingestion_mode = st.sidebar.radio(
-        "Seleccione el origen de datos:",
-        ('Asset Inventory (API)', 'Cargar CSV Local')
-    )
-    
-    df_data = pd.DataFrame()
-    
-    if ingestion_mode == 'Asset Inventory (API)':
-        st.sidebar.code(API_URL, language='text')
-        if st.sidebar.button("Cargar Datos desde API"):
-            df_data = fetch_api_data(API_URL)
-            
-    elif ingestion_mode == 'Cargar CSV Local':
-        uploaded_file = st.sidebar.file_uploader("Subir archivo CSV", type=["csv"])
-        if uploaded_file is not None:
-            df_data = handle_csv_upload(uploaded_file)
-            
-    # MAIN CONTENT
-    if not df_data.empty:
-        calculate_and_display_metrics(df_data)
+    st.sidebar.header("Opciones de Ingesta")
+    ingestion_mode = st.sidebar.radio("Origen:", ('API (Asset Inventory)', 'Cargar CSV Local'))
+
+    df = pd.DataFrame()
+    if ingestion_mode == 'API (Asset Inventory)':
+        api_url = st.sidebar.text_input("API URL (SocRata / datos.gov.co u otro):", value="")
+        if st.sidebar.button("Cargar desde API") and api_url.strip():
+            df = fetch_api_data(api_url.strip())
     else:
-        st.info("Utilice la barra lateral para cargar el Asset Inventory desde la API o un archivo CSV local.")
+        uploaded = st.sidebar.file_uploader("Subir CSV", type=['csv'])
+        if uploaded:
+            df = handle_csv_upload(uploaded)
 
+    if not df.empty:
+        calculate_and_display_metrics(df)
+    else:
+        st.info("Cargue un dataset desde la API o suba un CSV para evaluar.")
 
 if __name__ == "__main__":
     main()
