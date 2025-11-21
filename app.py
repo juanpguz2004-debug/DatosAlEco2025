@@ -78,7 +78,6 @@ def calculate_uniqueness(df: pd.DataFrame, id_col: str = 'item_id') -> float:
 def calculate_conformity(df: pd.DataFrame, conformity_col: str = 'resource_type') -> float:
     """Criterio 5: Cumplimiento de lineamientos y estándares vigentes."""
     if df.empty or conformity_col not in df.columns: return 0.0
-    # En el Asset Inventory, el tipo de recurso debe ser uno válido (e.g., 'dataset', 'map').
     # Se evalúa que la columna no sea nula y que los valores sean texto (conformidad simple).
     conforming_rows = df[conformity_col].apply(lambda x: isinstance(x, str) and len(str(x).strip()) > 0).sum()
     total_rows = len(df)
@@ -86,7 +85,6 @@ def calculate_conformity(df: pd.DataFrame, conformity_col: str = 'resource_type'
 
 def calculate_confidentiality(df: pd.DataFrame) -> float:
     """Criterio 6: Los datos solo deben ser accedidos por personal autorizado."""
-    # En el Asset Inventory (datos públicos), se evalúa la ausencia de columnas de PII.
     # Asumimos 100% si no se detectan columnas sensibles (ej: 'nombre_completo', 'cc').
     sensitive_indicators = ['nombre', 'cedula', 'email', 'identificacion']
     for col in df.columns:
@@ -99,10 +97,9 @@ def calculate_consistency(df: pd.DataFrame) -> float:
     """Criterio 7: Datos coherentes y sin contradicción (ej. fechas no desordenadas)."""
     if df.empty: return 0.0
     # Evaluación simple: consistencia de tipos de datos en columnas esperadas.
-    # Si las columnas críticas están presentes, se asume alta consistencia.
     present_cols = [col for col in EXPECTED_COLUMNS if col in df.columns]
     score = (len(present_cols) / len(EXPECTED_COLUMNS)) * 100
-    return min(100.0, score + 20) # Score base + 20% por estar presentes.
+    return min(100.0, score + 20) 
 
 def calculate_credibility(df: pd.DataFrame, source_col: str = 'department') -> float:
     """Criterio 8: Información veraz y confiable (Fuente oficial declarada)."""
@@ -114,9 +111,27 @@ def calculate_credibility(df: pd.DataFrame, source_col: str = 'department') -> f
 
 def calculate_efficiency(df: pd.DataFrame) -> float:
     """Criterio 10: Plataforma permite análisis y descargas con buen rendimiento."""
-    # Dado que se pudo descargar una muestra de 100,000 registros, el rendimiento es bueno.
-    # (En un ambiente real, se mediría el tiempo de respuesta de la API).
-    return 95.0 # Asumimos un buen rendimiento de la plataforma datos.gov.co.
+    # Asumimos un buen rendimiento de la plataforma datos.gov.co.
+    return 95.0 
+
+# INICIO DE LA FUNCIÓN FALTANTE (calculate_syntactic_accuracy)
+def calculate_syntactic_accuracy(df: pd.DataFrame) -> float:
+    """
+    Cálculo de Exactitud Sintáctica (Criterio 11 - Componente Sintáctica).
+    Valida si la columna de fecha principal es interpretable como fecha.
+    """
+    date_column = get_date_column(df)
+    if df.empty or date_column is None:
+        return 0.0
+
+    try:
+        # Intentamos convertir la columna a datetime. Si es posible, se considera sintácticamente correcta.
+        correct_format_count = pd.to_datetime(df[date_column], errors='coerce').notna().sum()
+        total_rows = len(df)
+        return (correct_format_count / total_rows) * 100
+    except Exception:
+        return 0.0
+# FIN DE LA FUNCIÓN FALTANTE
 
 def calculate_accuracy(df: pd.DataFrame) -> float:
     """Criterio 11: Datos diligenciados correctamente (Exactitud Sintáctica y Semántica)."""
@@ -132,37 +147,29 @@ def calculate_accuracy(df: pd.DataFrame) -> float:
 
 def calculate_portability(df: pd.DataFrame) -> float:
     """Criterio 12: Formatos sin restricciones para su reutilización (CSV, JSON, etc.)."""
-    # La API nos entrega JSON directamente y Streamlit permite exportar CSV, cumpliendo el requisito.
     return 100.0
 
 def calculate_precision(df: pd.DataFrame) -> float:
     """Criterio 13: Nivel de desagregación de los datos es adecuado al original."""
-    # En el Asset Inventory, esto es difícil de medir sin el conjunto original.
-    # Asumimos que si los metadatos tienen 'tags', la desagregación está implícita.
-    if 'tags' not in df.columns: return 50.0 # Penalización si no hay tags.
+    if 'tags' not in df.columns: return 50.0 
     tag_count = df['tags'].apply(lambda x: len(str(x).split(',')) if isinstance(x, str) else 0).mean()
     # Puntuación basada en el promedio de tags (mínimo 3 tags para 100%)
     return min(100.0, (tag_count / 3) * 100) 
 
 def calculate_recoverability(actuality_score: float) -> float:
     """Criterio 14: Capacidad de restaurar o recuperar datos (Copias de seguridad / Control de versiones)."""
-    # En la guía, la recuperabilidad suele estar ligada a la actualidad y consistencia.
-    # Usamos la Actualidad (proxy de mantenimiento activo) como indicador principal.
-    return actuality_score * 0.95 # Puntuación de actualidad con pequeña penalización.
+    return actuality_score * 0.95 
 
 def calculate_relevance(df: pd.DataFrame) -> float:
     """Criterio 15: Los datos publicados deben ser de utilidad (alineados con demandas ciudadanas)."""
-    # Relevancia: Proxy por número de vistas y descargas (demanda ciudadana).
     if 'views' not in df.columns or 'downloads' not in df.columns: return 50.0
     
-    # Normalización simple: score basado en que las vistas y descargas no sean cero.
     relevant_count = df[(df['views'].astype(float) > 0) & (df['downloads'].astype(float) > 0)].shape[0]
     total_rows = len(df)
     return (relevant_count / total_rows) * 100
 
 def calculate_traceability(actuality_score: float, credibility_score: float) -> float:
     """Criterio 16: Histórico del conjunto de datos (fechas de creación, publicación y actualizaciones)."""
-    # La trazabilidad es un indicador compuesto de la credibilidad de la fuente y la actualidad.
     # FÓRMULA COMPUESTA SUGERIDA: (Actualidad + Credibilidad) / 2.
     return (actuality_score + credibility_score) / 2
 
@@ -181,20 +188,18 @@ def calculate_actuality(df: pd.DataFrame) -> float:
         recent_count = df_copy[df_copy[date_column] >= three_months_ago].shape[0]
         
         # Ponderación: Cuanto más reciente el dataset, mayor la puntuación.
-        return min(100.0, (recent_count / len(df)) * 100 * 1.2) # Factor de ponderación 1.2
+        return min(100.0, (recent_count / len(df)) * 100 * 1.2) 
 
     except Exception:
         return 0.0
 
 def calculate_accessibility(df: pd.DataFrame) -> float:
     """Criterio 1: El conjunto puede ser consultado y descargado (Sin requisitos de registro)."""
-    # Si los datos se cargaron vía API sin autenticación, la accesibilidad es 100%.
     return 100.0 if not df.empty else 0.0
 
 def calculate_comprehensibility(df: pd.DataFrame, col_names: list) -> float:
     """Criterio 4: Los datos pueden ser interpretados fácilmente (Encabezados claros)."""
     # Evaluación: ¿Los nombres de las columnas son cortos, sin caracteres especiales y entendibles?
-    # Revisamos las 6 columnas clave.
     understandable_count = sum(1 for col in col_names if len(col) < 20 and all(c.isalnum() or c == '_' for c in col))
     return (understandable_count / len(col_names)) * 100
 
@@ -224,7 +229,7 @@ def calculate_and_display_metrics(df: pd.DataFrame):
     consistency_score = calculate_consistency(df)
     credibility_score = calculate_credibility(df)
     efficiency_score = calculate_efficiency(df)
-    accuracy_score = calculate_accuracy(df) # Combina sintáctica y semántica
+    accuracy_score = calculate_accuracy(df) 
     portability_score = calculate_portability(df)
     precision_score = calculate_precision(df)
     relevance_score = calculate_relevance(df)
@@ -232,9 +237,9 @@ def calculate_and_display_metrics(df: pd.DataFrame):
     comprehensibility_score = calculate_comprehensibility(df, df.columns.tolist())
     
     # Criterios compuestos/dependientes
-    availability_score = calculate_availability(accessibility_score, actuality_score) # Criterio 9
-    recoverability_score = calculate_recoverability(actuality_score) # Criterio 14
-    traceability_score = calculate_traceability(actuality_score, credibility_score) # Criterio 16
+    availability_score = calculate_availability(accessibility_score, actuality_score) 
+    recoverability_score = calculate_recoverability(actuality_score) 
+    traceability_score = calculate_traceability(actuality_score, credibility_score) 
 
     # 2. AGRUPACIÓN DE MÉTRICAS (Los 17 Criterios)
     metrics = {
@@ -269,7 +274,7 @@ def calculate_and_display_metrics(df: pd.DataFrame):
     
     for i, (name, value) in enumerate(metrics.items()):
         score = round(value, 2)
-        # Mostrar el valor en una caja
+        
         with cols[i % 8]:
             st.metric(label=name, value=f"{score}%")
             
