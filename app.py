@@ -28,7 +28,6 @@ def safe_get(url, headers=None, timeout=15):
     except:
         return None
 
-
 # ===============================================================
 # DESCARGA DE DATOS
 # ===============================================================
@@ -51,7 +50,7 @@ def fetch_resource_data(dataset_id: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # ===============================================================
-# METADATOS
+# METADATOS (MÍNIMO DISPONIBLE)
 # ===============================================================
 
 def fetch_metadata_from_view(view_id: str) -> Optional[Dict[str, Any]]:
@@ -69,7 +68,6 @@ def fetch_metadata_from_view(view_id: str) -> Optional[Dict[str, Any]]:
 
     categoria = meta.get("category", "")
     tags = meta.get("tags", [])
-
     custom = meta.get("metadata", {}).get("custom_fields", {})
 
     frecuencia = custom.get("Información de Datos", {}).get("Frecuencia de Actualización", "")
@@ -82,13 +80,12 @@ def fetch_metadata_from_view(view_id: str) -> Optional[Dict[str, Any]]:
         "frecuencia": frecuencia,
         "licencia": licencia,
         "publisher": publisher,
-        "fecha_datos": None,        # No existen en v3
-        "fecha_metadatos": None     # No existen en v3
+        "fecha_datos": None,
+        "fecha_metadatos": None
     }
 
-
 # ===============================================================
-# BUSCAR FECHAS DENTRO DEL DATAFRAME
+# EXTRAER FECHA MÁS RECIENTE DESDE EL DATASET
 # ===============================================================
 
 def get_internal_last_date(df: pd.DataFrame) -> Optional[datetime]:
@@ -103,8 +100,8 @@ def get_internal_last_date(df: pd.DataFrame) -> Optional[datetime]:
 
     if not fechas:
         return None
+    
     return max(fechas)
-
 
 # ===============================================================
 # FUNCIONES AUXILIARES
@@ -125,7 +122,6 @@ def df_stats(df):
         "col_con_mas_1pct": col_con_mas_1pct
     }
 
-
 # ===============================================================
 # CRITERIOS 0–10
 # ===============================================================
@@ -134,13 +130,12 @@ def c_accesibilidad(df, meta):
     return 10 if not df.empty else 0
 
 
+# --- ACTUALIDAD OPCIÓN B (fechas internas) ---
 def c_actualidad(meta, df):
-    """
-    Opción B: usar la fecha más reciente detectada dentro del dataset
-    """
     fecha = get_internal_last_date(df)
+
     if fecha is None:
-        return 2  # sin evidencia → mínimo razonable
+        return 2  # Sin evidencia: valor mínimo razonable
 
     dias = (datetime.now() - fecha).days
 
@@ -167,13 +162,8 @@ def c_comprensibilidad(df):
     return 10*(ok/len(df.columns))
 
 
+# --- CONFORMIDAD OPCIÓN A (mínima, estable, sin catálogos) ---
 def c_conformidad(meta):
-    """
-    Corrección:
-    - Si hay publisher → 8
-    - Si hay licencia → 6
-    - Nada → 0
-    """
     if meta.get("publisher"):
         return 8
     if meta.get("licencia"):
@@ -236,7 +226,6 @@ def c_relevancia(meta, df):
 def c_trazabilidad(act, cred):
     return (act+cred)/2
 
-
 # ===============================================================
 # EVALUACIÓN PRINCIPAL
 # ===============================================================
@@ -282,7 +271,6 @@ def evaluar(df, meta):
         "Unicidad": unic
     }
 
-
 # ===============================================================
 # INTERFAZ STREAMLIT
 # ===============================================================
@@ -316,6 +304,7 @@ def main():
         resultados = evaluar(df, meta)
 
         st.subheader("Criterios (en %)")
+
         cols = st.columns(4)
         for i,(k,v) in enumerate(resultados.items()):
             cols[i%4].metric(k, f"{v*10:.2f}%")
