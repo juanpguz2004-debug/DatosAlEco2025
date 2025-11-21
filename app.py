@@ -1,183 +1,251 @@
 import streamlit as st
 import pandas as pd
+import requests
+from io import StringIO
 import numpy as np
-import requests # Necesario para la conexión a la API
-from datetime import datetime
-import warnings
 
-# Ocultar advertencias de Pandas/Streamlit
-warnings.filterwarnings('ignore') 
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(
+    page_title="Dashboard de Calidad de Datos Abiertos",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# =================================================================
-# 0. VARIABLES GLOBALES Y CONFIGURACIÓN
-# =================================================================
+# --- CONSTANTES ---
+# URL para el Asset Inventory de datos.gov.co
+API_URL = "https://www.datos.gov.co/resource/uzcf-b9dh.json?$limit=100000"
 
-# --- NUEVA FUENTE DE DATOS: API Socrata ---
-API_URL = "https://www.datos.gov.co/resource/uzcf-b9dh.json"
-API_LIMIT = 100000 # Límite para obtener un conjunto grande de datos
+# --- FUNCIONES DE INGESTA DE DATOS ---
 
-# Mapeo de columnas: Nombre de la API (con acento/guion) -> Nombre Final Estándar
-COL_RENAME_MAP = {
-    't_tulo': 'titulo', 
-    'descripci_n': 'descripcion', 
-    'fecha_actualizaci_n': 'fecha_actualizacion' 
-}
-
-# Columnas finales esperadas para todo el sistema de evaluación (sin acentos)
-COLUMNAS_CLAVE = [
-    'uid', 'dueño', 'tema', 'titulo', 'descripcion', 
-    'fecha_actualizacion', 'formato', 'vistas', 'descargas'
-] 
-
-# =================================================================
-# 1. Funciones de Carga de Datos (Desde API)
-# =================================================================
-
-@st.cache_data(ttl=3600) # Caching por 1 hora para evitar recargar la API
-def load_data_from_api(url, limit):
+@st.cache_data(show_spinner="Conectando a la API y cargando datos...")
+def fetch_api_data(url: str) -> pd.DataFrame:
     """
-    Carga los datos directamente desde la API de Socrata.
-    Asegura la robustez de las columnas para evitar fallos.
+    Conecta a la API de Socrata y descarga los datos.
     """
-    st.info(f"Cargando datos de la API: {url}?$limit={limit}. Esto puede tardar unos segundos...")
     try:
-        response = requests.get(f"{url}?$limit={limit}")
-        response.raise_for_status() # Lanza una excepción para errores HTTP
-        
+        response = requests.get(url)
+        response.raise_for_status()  # Lanza excepción para códigos de error HTTP
         data = response.json()
         df = pd.DataFrame(data)
-        
-        if df.empty:
-            st.error("La API devolvió un conjunto de datos vacío.")
-            return pd.DataFrame()
-
-        # 1. Renombrar columnas
-        rename_map = {old: new for old, new in COL_RENAME_MAP.items() if old in df.columns}
-        df.rename(columns=rename_map, inplace=True)
-
-        # 2. GARANTIZAR LA EXISTENCIA de las columnas clave (Robustez)
-        for col in COLUMNAS_CLAVE:
-            if col not in df.columns:
-                if col == 'fecha_actualizacion':
-                    df[col] = pd.NaT 
-                elif col in ['vistas', 'descargas']:
-                    df[col] = 0.0 
-                else:
-                    df[col] = np.nan 
-        
-        # 3. Filtrar y ordenar las columnas clave
-        df = df[COLUMNAS_CLAVE] 
-        
-        st.success(f"Carga exitosa: {len(df)} activos procesados.")
+        st.success(f"Datos cargados exitosamente desde la API. Filas: {len(df)}")
         return df
-    
     except requests.exceptions.RequestException as e:
-        st.error(f"Error al conectar o recibir datos de la API: {e}")
+        st.error(f"Error al conectar con la API: {e}")
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error inesperado durante la carga o procesamiento: {e}")
+        st.error(f"Error al procesar los datos de la API: {e}")
         return pd.DataFrame()
 
-# =================================================================
-# 2. Funciones de Evaluación de Métricas Estrictas (Guía)
-# =================================================================
-
-@st.cache_data
-def calculate_quality_metrics(df_base):
+def handle_csv_upload(uploaded_file) -> pd.DataFrame:
     """
-    Calcula las métricas de calidad fundamentales basadas en la Guía.
-    Devuelve scores de 0 a 100 para Completitud, Unicidad y Actualidad.
-    Devuelve un score de 0 a 10 para Relevancia.
+    Maneja la carga de archivos CSV por parte del usuario.
     """
-    df = df_base.copy()
-    n_cols = df.shape[1]
-    today = datetime.now()
+    try:
+        df = pd.read_csv(uploaded_file)
+        st.success(f"CSV cargado exitosamente. Filas: {len(df)}")
+        return df
+    except Exception as e:
+        st.error(f"Error al leer el archivo CSV: {e}")
+        return pd.DataFrame()
 
-    # 1. CRITERIO DE COMPLETITUD (3.8 - Densidad de datos)
-    # Se evalúa el porcentaje de columnas no nulas por fila.
-    df['completitud_score'] = (df.notna().sum(axis=1) / n_cols) * 100
-    
-    # 2. CRITERIO DE UNICIDAD (3.15 - Duplicados semánticos)
-    # Se detectan duplicados en las columnas 'titulo' y 'dueño' (identificador)
-    df['es_duplicado_semantico'] = df.duplicated(subset=['titulo', 'dueño'], keep='first')
-    df['unicidad_score'] = np.where(df['es_duplicado_semantico'], 0.0, 100.0) # 0 si es duplicado, 100 si es único
+# --- FUNCIONES DE CÁLCULO DE MÉTRICAS DE CALIDAD (PLACEHOLDERS) ---
 
-    # 3. CRITERIO DE ACTUALIDAD (3.4 - Días desde la última actualización)
-    # Puntuación: 100 si es reciente, 0 si supera 365 días de antigüedad.
-    df['fecha_actualizacion'] = pd.to_datetime(df['fecha_actualizacion'], errors='coerce', utc=True)
-    
-    # Calcular días de antigüedad (maneja NaT/NaN)
-    antiguedad_dias = (today.replace(tzinfo=None) - df['fecha_actualizacion'].dt.tz_localize(None)).dt.days
-    antiguedad_dias.fillna(365, inplace=True) # Si la fecha es NaT/NaN, se asume la antigüedad máxima penalizable (o más)
-    df['dias_antiguedad'] = antiguedad_dias
-    
-    # Score de Actualidad: 100 - (Antigüedad / 365) * 100, con mínimo 0
-    df['actualidad_score'] = np.clip(100 - (df['dias_antiguedad'] / 365 * 100), 0, 100)
-    
-    # 4. CRITERIO DE RELEVANCIA/POTENCIAL DE USO (3.3 / 5.1.3 - CTR)
-    # CTR = Descargas / Vistas (ajustado para la guía)
-    df['vistas'] = pd.to_numeric(df['vistas'], errors='coerce').fillna(0)
-    df['descargas'] = pd.to_numeric(df['descargas'], errors='coerce').fillna(0)
-    
-    # CTR (tasa de conversión: descargas / vistas)
-    df['ctr'] = np.where(df['vistas'] > 0, df['descargas'] / df['vistas'], 0)
-    df['ctr'] = np.clip(df['ctr'], 0, 1) # Asegura que el CTR esté entre 0 y 1
-    
-    # El score de relevancia se calcula de 0 a 10 (multiplicando CTR por 10)
-    df['relevancia_score'] = df['ctr'] * 10 
-    
-    return df
+def calculate_completeness(df: pd.DataFrame) -> float:
+    """
+    Cálculo de Completitud.
+    FÓRMULA ESTÁNDAR: (Número de celdas no nulas) / (Número total de celdas)
 
-# =================================================================
-# 3. Lógica Principal de la Aplicación (Streamlit)
-# =================================================================
+    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía (e.g., completitud por atributo
+    o un promedio ponderado si la guía lo especifica).
+    """
+    if df.empty:
+        return 0.0
+    total_cells = df.size
+    non_null_cells = df.count().sum()
+    return (non_null_cells / total_cells) * 100
 
-def main_app_logic():
-    st.set_page_config(layout="wide", page_title="Evaluador Básico de Calidad de Datos (API)")
+def calculate_uniqueness(df: pd.DataFrame) -> float:
+    """
+    Cálculo de Unicidad.
+    FÓRMULA ESTÁNDAR: (Número de filas únicas) / (Número total de filas)
+    Se calcula sobre todas las filas, asumiendo unicidad de registro.
 
-    st.title("Paso 1: Carga desde API y Evaluación Estricta de Métricas 📊")
-    st.markdown("---")
+    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía. Podría ser unicidad
+    de una columna clave específica (ej: 'id') si la guía lo requiere.
+    """
+    if df.empty:
+        return 0.0
+    total_rows = len(df)
+    unique_rows = len(df.drop_duplicates())
+    return (unique_rows / total_rows) * 100
 
-    # 1. Carga de Datos desde la API
-    df_loaded = load_data_from_api(API_URL, API_LIMIT)
+def calculate_conformity(df: pd.DataFrame, column: str = 'entity_type') -> float:
+    """
+    Cálculo de Conformidad (Ejemplo basado en una columna).
+    FÓRMULA ESTÁNDAR: % de valores que cumplen un patrón o un conjunto de valores esperados.
+    Aquí se usa un ejemplo simple de si hay valores nulos en el 'entity_type'.
 
-    if df_loaded.empty:
-        st.error("No se pudo cargar la data de la API o la API está vacía. No se puede realizar la evaluación.")
+    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía. La conformidad requiere
+    reglas de negocio específicas (e.g., formato de fechas, rangos de valores).
+    """
+    if df.empty or column not in df.columns:
+        return 0.0
+    # Ejemplo: Si el tipo de entidad es un valor esperado (no nulo)
+    conforming_rows = df[column].notna().sum()
+    total_rows = len(df)
+    return (conforming_rows / total_rows) * 100
+
+def calculate_syntactic_accuracy(df: pd.DataFrame, column: str = 'updated_at') -> float:
+    """
+    Cálculo de Exactitud Sintáctica (Ejemplo de formato de fecha/hora).
+    FÓRMULA ESTÁNDAR: % de valores que cumplen un formato sintáctico esperado.
+
+    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía. Requiere validación de formatos.
+    """
+    if df.empty or column not in df.columns:
+        return 0.0
+    # Intentamos convertir la columna a datetime. Si es posible, se considera sintácticamente correcta.
+    try:
+        correct_format_count = pd.to_datetime(df[column], errors='coerce').notna().sum()
+        total_rows = len(df)
+        return (correct_format_count / total_rows) * 100
+    except Exception:
+        return 0.0 # Si falla la conversión general
+
+def calculate_availability(df: pd.DataFrame) -> float:
+    """
+    Cálculo de Disponibilidad.
+    En el contexto de un dataset, si se cargó exitosamente, se asume 100%.
+    Para una métrica real, esto mediría el tiempo de actividad del servicio (API).
+
+    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía.
+    """
+    return 100.0 if not df.empty else 0.0
+
+def calculate_actuality(df: pd.DataFrame, date_column: str = 'updated_at') -> float:
+    """
+    Cálculo de Actualidad (Timeliness).
+    FÓRMULA ESTÁNDAR: Se basa en la antigüedad del último registro.
+    Aquí se usa una métrica simple: si el 90% de los registros se actualizaron
+    en los últimos 365 días (1 año).
+
+    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía. Esto es una conjetura.
+    """
+    if df.empty or date_column not in df.columns:
+        return 0.0
+
+    try:
+        df_copy = df.copy()
+        df_copy[date_column] = pd.to_datetime(df_copy[date_column], errors='coerce')
+        one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
+
+        # Contar cuántos registros fueron actualizados en el último año
+        recent_count = df_copy[df_copy[date_column] >= one_year_ago].shape[0]
+        total_rows = len(df_copy)
+        return (recent_count / total_rows) * 100
+
+    except Exception:
+        return 0.0
+
+
+# --- FUNCIÓN PRINCIPAL DE CÁLCULO Y DISPLAY ---
+
+def calculate_and_display_metrics(df: pd.DataFrame):
+    """
+    Calcula y muestra las métricas de calidad de datos en Streamlit.
+    """
+    if df.empty:
+        st.info("No hay datos cargados para calcular las métricas.")
         return
 
-    # 2. Evaluación de Métricas de Calidad
-    st.header("Resultados de la Evaluación Estricta de Métricas")
-    st.markdown("Se han calculado los scores de: **Completitud**, **Unicidad**, **Actualidad** y **Relevancia** (CTR) de 0 a 100 (excepto Relevancia de 0 a 10).")
+    st.header("📊 Perfilado y Métricas de Calidad de Datos")
+
+    # 1. CÁLCULO DE MÉTRICAS
+    metrics = {
+        "Completitud": calculate_completeness(df),
+        "Unicidad": calculate_uniqueness(df),
+        "Conformidad": calculate_conformity(df),
+        "Exactitud Sintáctica": calculate_syntactic_accuracy(df),
+        "Actualidad": calculate_actuality(df),
+        "Disponibilidad": calculate_availability(df),
+        # **AÑADIR AQUÍ EL RESTO DE LAS 17 MÉTRICAS**
+        # 'Confidencialidad': formula_confidencialidad(df),
+        # 'Trazabilidad': formula_trazabilidad(df),
+        # 'Exactitud Semántica': formula_exactitud_semantica(df),
+        # 'Portabilidad': formula_portabilidad(df),
+        # etc.
+    }
+
+    # 2. VISUALIZACIÓN DE MÉTRICAS (KPIs)
+    st.subheader("Métricas Clave de Calidad (%)")
+    cols = st.columns(len(metrics))
     
-    df_metrics = calculate_quality_metrics(df_loaded)
+    i = 0
+    for name, value in metrics.items():
+        score = round(value, 2)
+        # Mostrar el valor en una caja (método más visual que el metric)
+        if score >= 90:
+            color = "green"
+        elif score >= 70:
+            color = "orange"
+        else:
+            color = "red"
+            
+        with cols[i % len(cols)]:
+            st.metric(label=name, value=f"{score}%")
+        i += 1
 
-    # 3. Mostrar las métricas calculadas
-    st.subheader("DataFrame con Scores de Calidad Agregados")
+    st.markdown("---")
     
-    # Seleccionamos las columnas clave y los scores para una vista limpia
-    cols_to_display = [
-        'titulo', 'dueño', 'completitud_score', 'unicidad_score', 
-        'actualidad_score', 'relevancia_score', 'dias_antiguedad', 'es_duplicado_semantico'
-    ]
+    # 3. PERFILADO DETALLADO (Ejemplo: Completitud por Columna)
+    st.subheader("Detalle: Completitud por Atributo")
+    completeness_detail = pd.DataFrame({
+        'Atributo': df.columns,
+        'Valores No Nulos': df.count().values,
+        'Total Filas': len(df),
+        'Completitud (%)': (df.count().values / len(df)) * 100
+    }).sort_values(by='Completitud (%)', ascending=True)
     
-    st.dataframe(df_metrics[cols_to_display].head(50), 
-                 use_container_width=True,
-                 column_config={
-                    "completitud_score": st.column_config.ProgressColumn("Completitud (%)", format="%f", min_value=0, max_value=100),
-                    "unicidad_score": st.column_config.ProgressColumn("Unicidad (%)", format="%f", min_value=0, max_value=100),
-                    "actualidad_score": st.column_config.ProgressColumn("Actualidad (%)", format="%f", min_value=0, max_value=100),
-                    "relevancia_score": st.column_config.ProgressColumn("Relevancia (0-10)", format="%f", min_value=0, max_value=10),
-                 })
+    st.dataframe(completeness_detail, use_container_width=True)
 
-    st.subheader("Estadísticas Resumen de Calidad")
+    st.markdown("---")
+
+    # 4. TABLA DE DATOS (Muestra)
+    st.subheader("Vista Previa del Dataset")
+    st.dataframe(df.head(10), use_container_width=True)
+
+
+# --- LAYOUT DE LA APLICACIÓN STREAMLIT ---
+
+def main():
+    st.title("Sistema de Monitoreo de Calidad de Datos Abiertos")
+    st.caption("Implementación de la Guía de Calidad e Interoperabilidad 2025 para Asset Inventory.")
+
+    # SIDEBAR: Opciones de Ingesta
+    st.sidebar.header("Opciones de Ingesta de Datos")
+    ingestion_mode = st.sidebar.radio(
+        "Seleccione el origen de datos:",
+        ('Asset Inventory (API)', 'Cargar CSV Local')
+    )
     
-    # Calculamos y mostramos los promedios de las métricas
-    resumen = df_metrics[['completitud_score', 'unicidad_score', 'actualidad_score', 'relevancia_score']].mean().to_frame().T
-    resumen.columns = ['Completitud Promedio (%)', 'Unicidad Promedio (%)', 'Actualidad Promedio (%)', 'Relevancia Promedio (0-10)']
+    df_data = pd.DataFrame()
+    
+    if ingestion_mode == 'Asset Inventory (API)':
+        st.sidebar.code(API_URL, language='text')
+        if st.sidebar.button("Cargar Datos desde API"):
+            df_data = fetch_api_data(API_URL)
+            
+    elif ingestion_mode == 'Cargar CSV Local':
+        uploaded_file = st.sidebar.file_uploader("Subir archivo CSV", type=["csv"])
+        if uploaded_file is not None:
+            df_data = handle_csv_upload(uploaded_file)
+            
+    # MAIN CONTENT
+    if not df_data.empty:
+        calculate_and_display_metrics(df_data)
+    else:
+        st.info("Utilice la barra lateral para cargar el Asset Inventory desde la API o un archivo CSV local.")
 
-    st.dataframe(resumen, use_container_width=True, hide_index=True)
 
-
-# Ejecución
 if __name__ == "__main__":
-    main_app_logic()
+    main()
