@@ -15,7 +15,7 @@ st.set_page_config(
 # URL para el Asset Inventory de datos.gov.co
 API_URL = "https://www.datos.gov.co/resource/uzcf-b9dh.json?$limit=100000"
 
-# --- FUNCIONES DE INGESTA DE DATOS ---
+# --- FUNCIONES DE INGESTA DE DATOS (SIN CAMBIOS) ---
 
 @st.cache_data(show_spinner="Conectando a la API y cargando datos...")
 def fetch_api_data(url: str) -> pd.DataFrame:
@@ -24,7 +24,7 @@ def fetch_api_data(url: str) -> pd.DataFrame:
     """
     try:
         response = requests.get(url)
-        response.raise_for_status()  # Lanza excepción para códigos de error HTTP
+        response.raise_for_status() 
         data = response.json()
         df = pd.DataFrame(data)
         st.success(f"Datos cargados exitosamente desde la API. Filas: {len(df)}")
@@ -48,15 +48,20 @@ def handle_csv_upload(uploaded_file) -> pd.DataFrame:
         st.error(f"Error al leer el archivo CSV: {e}")
         return pd.DataFrame()
 
-# --- FUNCIONES DE CÁLCULO DE MÉTRICAS DE CALIDAD (PLACEHOLDERS) ---
+# --- FUNCIONES DE CÁLCULO DE MÉTRICAS DE CALIDAD (ACTUALIZADAS) ---
+
+# Función auxiliar para manejar la columna de fecha (común en Socrata)
+def get_date_column(df: pd.DataFrame, potential_names=['updated_at', 'fecha_actualizacion', 'created_at']) -> str:
+    """Busca la columna de fecha más probable o retorna None."""
+    for col in potential_names:
+        if col in df.columns:
+            return col
+    return None
 
 def calculate_completeness(df: pd.DataFrame) -> float:
     """
-    Cálculo de Completitud.
+    Cálculo de Completitud (Criterio 3.8). 
     FÓRMULA ESTÁNDAR: (Número de celdas no nulas) / (Número total de celdas)
-
-    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía (e.g., completitud por atributo
-    o un promedio ponderado si la guía lo especifica).
     """
     if df.empty:
         return 0.0
@@ -66,12 +71,8 @@ def calculate_completeness(df: pd.DataFrame) -> float:
 
 def calculate_uniqueness(df: pd.DataFrame) -> float:
     """
-    Cálculo de Unicidad.
+    Cálculo de Unicidad (Criterio 3.15).
     FÓRMULA ESTÁNDAR: (Número de filas únicas) / (Número total de filas)
-    Se calcula sobre todas las filas, asumiendo unicidad de registro.
-
-    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía. Podría ser unicidad
-    de una columna clave específica (ej: 'id') si la guía lo requiere.
     """
     if df.empty:
         return 0.0
@@ -79,74 +80,88 @@ def calculate_uniqueness(df: pd.DataFrame) -> float:
     unique_rows = len(df.drop_duplicates())
     return (unique_rows / total_rows) * 100
 
-def calculate_conformity(df: pd.DataFrame, column: str = 'entity_type') -> float:
+def calculate_conformity(df: pd.DataFrame) -> float:
     """
-    Cálculo de Conformidad (Ejemplo basado en una columna).
-    FÓRMULA ESTÁNDAR: % de valores que cumplen un patrón o un conjunto de valores esperados.
-    Aquí se usa un ejemplo simple de si hay valores nulos en el 'entity_type'.
-
-    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía. La conformidad requiere
-    reglas de negocio específicas (e.g., formato de fechas, rangos de valores).
+    Cálculo de Conformidad (Criterio 3.6).
+    **¡ATENCIÓN!** Se debe implementar la función de penalización exponencial de la guía.
+    
+    Placeholder mejorado: Busca la columna 'resource_type' y valida si es no nula.
     """
+    column = 'resource_type'
     if df.empty or column not in df.columns:
         return 0.0
-    # Ejemplo: Si el tipo de entidad es un valor esperado (no nulo)
+    # Ejemplo: Si el tipo de recurso es un valor esperado (no nulo)
     conforming_rows = df[column].notna().sum()
     total_rows = len(df)
-    return (conforming_rows / total_rows) * 100
+    # Dejo un 50% de score base si existe el dataset. La lógica de penalización de la guía debe ir aquí.
+    return 50.0 * (conforming_rows / total_rows)
 
-def calculate_syntactic_accuracy(df: pd.DataFrame, column: str = 'updated_at') -> float:
+def calculate_syntactic_accuracy(df: pd.DataFrame) -> float:
     """
-    Cálculo de Exactitud Sintáctica (Ejemplo de formato de fecha/hora).
-    FÓRMULA ESTÁNDAR: % de valores que cumplen un formato sintáctico esperado.
-
-    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía. Requiere validación de formatos.
+    Cálculo de Exactitud Sintáctica (Criterio 3.7.1).
+    **¡ATENCIÓN!** Reemplazar con la validación de formatos específicos de la guía.
+    
+    Placeholder mejorado: Valida si la columna de fecha principal es interpretable como fecha.
     """
-    if df.empty or column not in df.columns:
+    date_column = get_date_column(df)
+    if df.empty or date_column is None:
         return 0.0
-    # Intentamos convertir la columna a datetime. Si es posible, se considera sintácticamente correcta.
+
     try:
-        correct_format_count = pd.to_datetime(df[column], errors='coerce').notna().sum()
+        # Intentamos convertir la columna a datetime. Si es posible, se considera sintácticamente correcta.
+        correct_format_count = pd.to_datetime(df[date_column], errors='coerce').notna().sum()
         total_rows = len(df)
         return (correct_format_count / total_rows) * 100
     except Exception:
         return 0.0 # Si falla la conversión general
 
-def calculate_availability(df: pd.DataFrame) -> float:
+def calculate_actuality(df: pd.DataFrame) -> float:
     """
-    Cálculo de Disponibilidad.
-    En el contexto de un dataset, si se cargó exitosamente, se asume 100%.
-    Para una métrica real, esto mediría el tiempo de actividad del servicio (API).
-
-    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía.
+    Cálculo de Actualidad (Criterio 3.4).
+    **¡ATENCIÓN!** Reemplazar con el criterio de antigüedad máximo aceptable de la guía.
+    
+    Placeholder mejorado: Evalúa qué porcentaje de fechas fueron actualizadas en el último año.
     """
-    return 100.0 if not df.empty else 0.0
-
-def calculate_actuality(df: pd.DataFrame, date_column: str = 'updated_at') -> float:
-    """
-    Cálculo de Actualidad (Timeliness).
-    FÓRMULA ESTÁNDAR: Se basa en la antigüedad del último registro.
-    Aquí se usa una métrica simple: si el 90% de los registros se actualizaron
-    en los últimos 365 días (1 año).
-
-    **¡ATENCIÓN!** Reemplazar con la fórmula de la guía. Esto es una conjetura.
-    """
-    if df.empty or date_column not in df.columns:
+    date_column = get_date_column(df)
+    if df.empty or date_column is None:
         return 0.0
 
     try:
         df_copy = df.copy()
-        df_copy[date_column] = pd.to_datetime(df_copy[date_column], errors='coerce')
+        # Forzar el formato, colocando NaT si hay error
+        df_copy[date_column] = pd.to_datetime(df_copy[date_column], errors='coerce') 
+        df_copy.dropna(subset=[date_column], inplace=True) # Solo filas con formato correcto
+
         one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
 
         # Contar cuántos registros fueron actualizados en el último año
         recent_count = df_copy[df_copy[date_column] >= one_year_ago].shape[0]
         total_rows = len(df_copy)
+        
+        if total_rows == 0:
+            return 0.0
+
         return (recent_count / total_rows) * 100
 
     except Exception:
         return 0.0
 
+# --- NUEVAS FUNCIONES SEGÚN LA GUÍA ---
+
+def calculate_accessibility(df: pd.DataFrame) -> float:
+    """
+    Cálculo del Criterio de Accesibilidad (Criterio 3.14).
+    En el contexto de un Asset Inventory cargado exitosamente, se asume el 100%.
+    """
+    # Para una implementación más completa, aquí se verificarían formatos abiertos, etc.
+    return 100.0 if not df.empty else 0.0
+
+def calculate_availability(accessibility_score: float, actuality_score: float) -> float:
+    """
+    Cálculo de Disponibilidad (Criterio 3.18).
+    FÓRMULA DE LA GUÍA: (accesibilidad + actualidad) / 2 
+    """
+    return (accessibility_score + actuality_score) / 2
 
 # --- FUNCIÓN PRINCIPAL DE CÁLCULO Y DISPLAY ---
 
@@ -160,45 +175,53 @@ def calculate_and_display_metrics(df: pd.DataFrame):
 
     st.header("📊 Perfilado y Métricas de Calidad de Datos")
 
-    # 1. CÁLCULO DE MÉTRICAS
+    # 1. CÁLCULO DE MÉTRICAS BASE
+    completeness_score = calculate_completeness(df)
+    uniqueness_score = calculate_uniqueness(df)
+    conformity_score = calculate_conformity(df)
+    syntactic_accuracy_score = calculate_syntactic_accuracy(df)
+    
+    # 2. CÁLCULO DE MÉTRICAS COMPUESTAS / NUEVAS
+    actuality_score = calculate_actuality(df) # Criterio 3.4
+    accessibility_score = calculate_accessibility(df) # Criterio 3.14
+    availability_score = calculate_availability(accessibility_score, actuality_score) # Criterio 3.18 (Corregido)
+
     metrics = {
-        "Completitud": calculate_completeness(df),
-        "Unicidad": calculate_uniqueness(df),
-        "Conformidad": calculate_conformity(df),
-        "Exactitud Sintáctica": calculate_syntactic_accuracy(df),
-        "Actualidad": calculate_actuality(df),
-        "Disponibilidad": calculate_availability(df),
-        # **AÑADIR AQUÍ EL RESTO DE LAS 17 MÉTRICAS**
-        # 'Confidencialidad': formula_confidencialidad(df),
-        # 'Trazabilidad': formula_trazabilidad(df),
-        # 'Exactitud Semántica': formula_exactitud_semantica(df),
-        # 'Portabilidad': formula_portabilidad(df),
-        # etc.
+        # 6 Métricas originales (algunas con lógica mejorada)
+        "Completitud": completeness_score,
+        "Unicidad": uniqueness_score,
+        "Conformidad": conformity_score,
+        "Exactitud Sintáctica": syntactic_accuracy_score,
+        "Actualidad": actuality_score,
+        "Accesibilidad": accessibility_score,
+        "Disponibilidad": availability_score,
+        
+        # FALTAN DE IMPLEMENTAR:
+        # Trazabilidad, Exactitud Semántica, Confidencialidad, Consistencia,
+        # Precisión, Portabilidad, Credibilidad, Comprensibilidad, Eficiencia, Recuperabilidad, Relevancia.
+        # **AÑADIR AQUÍ LOS 10 CRITERIOS RESTANTES**
     }
 
-    # 2. VISUALIZACIÓN DE MÉTRICAS (KPIs)
+    # 3. VISUALIZACIÓN DE MÉTRICAS (KPIs)
     st.subheader("Métricas Clave de Calidad (%)")
-    cols = st.columns(len(metrics))
     
+    # Mostrar todas las métricas implementadas
+    cols = st.columns(len(metrics))
     i = 0
     for name, value in metrics.items():
         score = round(value, 2)
-        # Mostrar el valor en una caja (método más visual que el metric)
-        if score >= 90:
-            color = "green"
-        elif score >= 70:
-            color = "orange"
-        else:
-            color = "red"
-            
+        
         with cols[i % len(cols)]:
             st.metric(label=name, value=f"{score}%")
         i += 1
+        
+    st.info("🚨 **AVISO:** Faltan por implementar 10 criterios (Confidencialidad, Relevancia, Trazabilidad, Exactitud Semántica, Consistencia, Precisión, Portabilidad, Credibilidad, Comprensibilidad, Eficiencia y Recuperabilidad).")
 
     st.markdown("---")
     
-    # 3. PERFILADO DETALLADO (Ejemplo: Completitud por Columna)
+    # 4. PERFILADO DETALLADO (Ejemplo: Completitud por Columna)
     st.subheader("Detalle: Completitud por Atributo")
+    # ... (código sin cambios)
     completeness_detail = pd.DataFrame({
         'Atributo': df.columns,
         'Valores No Nulos': df.count().values,
@@ -210,12 +233,12 @@ def calculate_and_display_metrics(df: pd.DataFrame):
 
     st.markdown("---")
 
-    # 4. TABLA DE DATOS (Muestra)
+    # 5. TABLA DE DATOS (Muestra)
     st.subheader("Vista Previa del Dataset")
     st.dataframe(df.head(10), use_container_width=True)
 
 
-# --- LAYOUT DE LA APLICACIÓN STREAMLIT ---
+# --- LAYOUT DE LA APLICACIÓN STREAMLIT (SIN CAMBIOS) ---
 
 def main():
     st.title("Sistema de Monitoreo de Calidad de Datos Abiertos")
