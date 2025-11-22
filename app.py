@@ -47,7 +47,7 @@ PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías popula
 RIESGO_MAXIMO_TEORICO_AVANZADO = 10.0
 
 # CLAVE SECRETA DE GEMINI
-GEMINI_API_SECRET_VALUE = "AIzaSyDvuJPAAK8AVIS-VQIe39pPgVNb8xlJw3g"
+GEMINI_API_SECRET_VALUE = "AIzaSyC-CCT-IZQwGp9oj_kYS7AQRrKSAv_mNiM"
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -1231,4 +1231,5 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
 
