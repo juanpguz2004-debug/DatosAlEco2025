@@ -633,7 +633,7 @@ try:
         # el resto de la lógica (ej. funciones de riesgo) no falle.
         if 'descripcion' not in df_analisis_completo.columns:
             df_analisis_completo['descripcion'] = ""
-            st.warning("ADVERTENCIA: La columna 'descripcion' no se encontró en el archivo CSV. Se ha añadido como una columna vacía para evitar un 'KeyError' fatal al iniciar la app.")
+           
         # --------------------------------------------------------------------------
 
         # ADICIÓN: APLICAR DETECCIÓN DE ANOMALÍAS CON ML
@@ -1322,3 +1322,4 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
