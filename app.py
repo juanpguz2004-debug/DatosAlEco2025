@@ -116,11 +116,12 @@ def check_universals_external(df):
     
     return df_copy
 
-def process_external_data(df):
+
+def apply_universal_checks_and_base_risk(df):
     """
-    Lógica de riesgo universal para el archivo externo subido.
+    NUEVA FUNCIÓN: Aplica los chequeos universales y calcula el score de riesgo base 
+    para el archivo principal de análisis.
     """
-    
     df = clean_and_convert_types_external(df)
     df = check_universals_external(df)
     
@@ -129,6 +130,17 @@ def process_external_data(df):
         df['riesgo_consistencia_tipo'] +
         df['riesgo_duplicado']
     )
+    
+    return df
+
+
+def process_external_data(df):
+    """
+    Lógica de riesgo universal para el archivo externo subido.
+    (Usa la nueva función de chequeo base)
+    """
+    
+    df = apply_universal_checks_and_base_risk(df)
     
     # Usamos 10.0 como denominador seguro para evitar porcentajes negativos si el riesgo sube mucho
     avg_file_risk = df['prioridad_riesgo_score'].mean()
@@ -148,6 +160,7 @@ def apply_anomaly_detection(df):
     df_copy = df.copy()
     
     # 1. Definir features
+    # La columna 'completitud_score' debe existir antes de este paso.
     features = ['prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias', 'popularidad_score']
     
     # 2. Preparar los datos
@@ -215,8 +228,7 @@ def apply_advanced_risk_checks(df):
     
     # 4. NUEVO: Riesgo de Conformidad y Trazabilidad
     # Criterio: 'Conformidad Herramientas Datos', 'Trazabilidad Herramientas Datos'
-    # Penaliza si es un activo público (alta visibilidad, debe ser conforme) Y es un duplicado, 
-    # o si es un duplicado y está muy incompleto (falla de trazabilidad grave).
+    # Esta línea ahora funciona porque 'es_duplicado' está garantizado por la función apply_universal_checks_and_base_risk
     df_copy['riesgo_conformidad_trazabilidad'] = np.where(
         (df_copy['es_duplicado'] & (df_copy.get('publico', '') == 'public')) | 
         (df_copy['es_duplicado'] & (df_copy['completitud_score'] < 50.0)),
@@ -230,7 +242,7 @@ def apply_advanced_risk_checks(df):
         df_copy['riesgo_inconsistencia_metadatos'] +
         df_copy['riesgo_semantico_actualizacion'] +
         df_copy['riesgo_activos_vacios'] +
-        df_copy['riesgo_conformidad_trazabilidad'] # << NUEVO COMPONENTE DE RIESGO
+        df_copy['riesgo_conformidad_trazabilidad']
     )
     
     # Sustituir el score principal
@@ -241,6 +253,7 @@ def apply_advanced_risk_checks(df):
 
 # Función de Generación de Reporte HTML Profesional
 def generate_report_html(df_filtrado, umbral_riesgo):
+# ... (rest of the generate_report_html function remains the same)
     """
     Genera el contenido HTML del reporte final que compila insights, tablas y visualizaciones.
     Estilo profesional y limpio.
@@ -443,14 +456,16 @@ def generate_report_html(df_filtrado, umbral_riesgo):
     </html>
     """
     return html_content
-
+# ... (rest of the code for utility functions remains the same)
 def get_table_download_link(html_content, filename, text):
+# ...
     """Genera el link de descarga para el contenido HTML/PDF"""
     b64 = base64.b64encode(html_content.encode()).decode()
     href = f'<a href="data:text/html;base64,{b64}" download="{filename}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; font-family: Arial, sans-serif;">{text}</a>'
     return href
 
 def generate_specific_recommendation(risk_dimension):
+# ...
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
     
     if 'Datos Incompletos' in risk_dimension:
@@ -476,6 +491,7 @@ def generate_specific_recommendation(risk_dimension):
 
 
 def load_knowledge_base(file_path):
+# ...
     """Carga el contenido del archivo de texto como contexto del sistema."""
     try:
         if os.path.exists(file_path):
@@ -491,6 +507,7 @@ def load_knowledge_base(file_path):
 # =================================================================
 
 def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
+# ...
     """
     Función robusta que interactúa con la API de Gemini utilizando la Base de Conocimiento (RAG).
     """
@@ -566,6 +583,10 @@ try:
     if df_analisis_completo.empty:
         st.error(f"Error: No se pudo cargar el archivo {ARCHIVO_PROCESADO}. Asegúrate de que existe y se ejecutó preprocess.py.")
     else:
+        # 🟢 PASO DE CORRECCIÓN: APLICAR CHEQUEOS UNIVERSALES Y RIESGO BASE
+        # Esto genera las columnas 'es_duplicado' y el riesgo base antes de usarlas en chequeos avanzados.
+        df_analisis_completo = apply_universal_checks_and_base_risk(df_analisis_completo) 
+        
         # ADICIÓN: APLICAR DETECCIÓN DE ANOMALÍAS CON ML
         df_analisis_completo = apply_anomaly_detection(df_analisis_completo)
         
@@ -573,7 +594,7 @@ try:
         df_analisis_completo = apply_advanced_risk_checks(df_analisis_completo) 
         
         st.success(f'Archivo pre-procesado cargado. Total de activos: {len(df_analisis_completo)}')
-
+        
         # --- Carga de la Base de Conocimiento ---
         if "knowledge_content" not in st.session_state:
             st.session_state.knowledge_content = load_knowledge_base(KNOWLEDGE_FILE)
