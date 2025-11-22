@@ -30,25 +30,28 @@ KNOWLEDGE_FILE = "knowledge_base.txt"
 # Umbral de Riesgo Alto (Crítico) - SE MANTIENE EN 3.5 COMO PEDISTE
 UMBRAL_RIESGO_ALTO = 3.5 
 
-# --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
-PENALIZACION_DATOS_INCOMPLETOS = 2.0  
-PENALIZACION_INCONSISTENCIA_TIPO = 0.5    
-PENALIZACION_DUPLICADO = 1.0          
-# RIESGO MÁXIMO TEÓRICO UNIVERSAL BASE: 3.5 (Variable según columnas afectadas)
+# --- CONFIGURACIÓN DE RIESGOS UNIVERSALES (Nuevas Penalizaciones Incluidas) ---
+PENALIZACION_DATOS_INCOMPLETOS = 2.0  # (Completitud/Eficiencia/Disponibilidad)
+PENALIZACION_INCONSISTENCIA_TIPO = 0.5    # (Consistencia/Exactitud/Precisión)
+PENALIZACION_DUPLICADO = 1.0          # (Unicidad)
+
+# --- NUEVAS PENALIZACIONES BASADAS EN METADATOS CLAVE ---
+PENALIZACION_FALTA_CLASIFICACION = 1.5 # (Confidencialidad/Conformidad/Credibilidad)
+PENALIZACION_FALTA_TRAZABILIDAD = 1.0 # (Trazabilidad/Comprensibilidad/Portabilidad)
+
+# RIESGO MÁXIMO TEÓRICO UNIVERSAL BASE: 5.5 (Variable según columnas afectadas)
 
 # --- CONFIGURACIÓN DE RIESGOS AVANZADOS ---
 PENALIZACION_INCONSISTENCIA_METADATOS = 1.5 # Inconsistencia de metadatos (ej. frecuencia vs. antigüedad)
-PENALIZACION_ANOMALIA_SILENCIOSA = 1.0     # Duplicidad semántica/Cambios abruptos (Anomalía + Baja Popularidad)
-PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías populares
-PENALIZACION_CONFORMIDAD_TRAZABILIDAD = 1.0 # Nuevo: Riesgo por duplicados públicos o muy incompletos
-                                        
+PENALIZACION_ANOMALIA_SILENCIOSA = 1.0     # Duplicidad semántica/Cambios abruptos (Anomalía + Baja Popularidad) - (Relevancia)
+PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías populares (Accesibilidad/Disponibilidad)
+
 # RIESGO MÁXIMO TEÓRICO AVANZADO 
-# Ajustado a 10.0 para tener margen dado que la inconsistencia de tipo es acumulativa por columna
-# ESTO ACTUALIZA AUTOMÁTICAMENTE TODOS LOS MENSAJES DE TEXTO EN LA APP
-RIESGO_MAXIMO_TEORICO_AVANZADO = 10.0
+# Ajustado a 15.0 para tener margen dado que la inconsistencia de tipo es acumulativa por columna y se agregaron más penalizaciones base.
+RIESGO_MAXIMO_TEORICO_AVANZADO = 15.0
 
 # CLAVE SECRETA DE GEMINI
-GEMINI_API_SECRET_VALUE = "AIzaSyC-CCT-IZQwGp9oj_kYS7AQRrKSAv_mNiM"
+GEMINI_API_SECRET_VALUE = "AIzaSyC-CCT-IZQwGp9oj_kYS1AQRrKSAv_mNiM"
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -67,7 +70,8 @@ def clean_and_convert_types_external(df):
     """Fuerza a las columnas a ser tipo string para asegurar la detección de inconsistencias."""
     
     # Columnas que suelen ser de tipo 'object' (string)
-    object_cols = ['titulo', 'descripcion', 'dueño'] 
+    # Se añaden columnas clave que pueden existir para los nuevos criterios
+    object_cols = ['titulo', 'descripcion', 'dueño', 'common_core_theme', 'confidencialidad_nivel'] 
     
     data_cols = [col for col in df.columns if col not in object_cols]
     
@@ -82,67 +86,69 @@ def clean_and_convert_types_external(df):
 
 def check_universals_external(df):
     """
-    Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad 
+    Calcula métricas de calidad universal: Completitud (Datos), Consistencia, Unicidad, 
+    Confidencialidad/Conformidad (Clasificación), Trazabilidad/Comprensibilidad (Dueño/Tema)
     para el diagnóstico rápido.
-    # CRITERIOS CUBIERTOS: Completitud Datos, Unicidad, Consistencia/Precisión Datos.
     """
     df_copy = df.copy() 
     n_cols = df_copy.shape[1]
     
     # --- 1. COMPLETITUD: Datos por Fila (Densidad) ---
-    # Criterio: 'Completitud Herramientas Datos'
     df_copy['datos_por_fila_score'] = (df_copy.notna().sum(axis=1) / n_cols) * 100
     df_copy['riesgo_datos_incompletos'] = np.where(
         df_copy['datos_por_fila_score'] < 70, PENALIZACION_DATOS_INCOMPLETOS, 0.0
     )
 
     # --- 2. CONSISTENCIA: Mezcla de Tipos ---
-    # Criterio: 'Consistencia Herramientas Datos', 'Precisión Herramientas Datos' (parcial)
-    # Nota: Esta penalización se acumula por columna, pudiendo superar el 0.5 base total
     df_copy['riesgo_consistencia_tipo'] = 0.0
     
-    object_cols_for_check = [col for col in df_copy.select_dtypes(include='object').columns if col not in ['titulo', 'descripcion', 'dueño']]
+    object_cols_for_check = [col for col in df_copy.select_dtypes(include='object').columns if col not in ['titulo', 'descripcion', 'dueño', 'common_core_theme', 'confidencialidad_nivel']]
     
     for col in object_cols_for_check:
         inconsistencies = df_copy[col].apply(lambda x: not isinstance(x, str) and pd.notna(x))
         df_copy.loc[inconsistencies, 'riesgo_consistencia_tipo'] += PENALIZACION_INCONSISTENCIA_TIPO
         
     # --- 3. UNICIDAD: Duplicados Exactos ---
-    # Criterio: 'Unicidad'
     df_copy['es_duplicado'] = df_copy.duplicated(keep=False) 
     df_copy['riesgo_duplicado'] = np.where(
         df_copy['es_duplicado'], PENALIZACION_DUPLICADO, 0.0
     )
+
+    # --- 4. CONFIDENCIALIDAD/CONFORMIDAD: Falta de Clasificación de Datos ---
+    # Asume que si 'confidencialidad_nivel' no está o está vacío/mal clasificado, es un riesgo de conformidad.
+    df_copy['riesgo_clasificacion'] = 0.0
+    if 'confidencialidad_nivel' in df_copy.columns:
+        # Penaliza si es nulo, o si contiene valores genéricos que sugieren falta de clasificación (ej. 'none', 'n/a', 'desconocido')
+        falta_clasif = df_copy['confidencialidad_nivel'].isnull() | df_copy['confidencialidad_nivel'].astype(str).str.lower().isin(['none', 'n/a', 'desconocido', ''])
+        df_copy.loc[falta_clasif, 'riesgo_clasificacion'] = PENALIZACION_FALTA_CLASIFICACION
     
+    # --- 5. TRAZABILIDAD/COMPRENSIBILIDAD: Falta de Dueño o Tema ---
+    df_copy['riesgo_trazabilidad'] = 0.0
+    # Penaliza si falta el DUEÑO (responsable) o si falta el TEMA (contexto)
+    falta_dueno = df_copy['dueño'].isnull() | (df_copy['dueño'] == '')
+    falta_tema = ('common_core_theme' in df_copy.columns) & (df_copy['common_core_theme'].isnull() | (df_copy['common_core_theme'] == ''))
+    
+    df_copy.loc[falta_dueno | falta_tema, 'riesgo_trazabilidad'] = PENALIZACION_FALTA_TRAZABILIDAD
+
     return df_copy
 
-
-def apply_universal_checks_and_base_risk(df):
+def process_external_data(df):
     """
-    NUEVA FUNCIÓN: Aplica los chequeos universales y calcula el score de riesgo base 
-    para el archivo principal de análisis.
+    Lógica de riesgo universal para el archivo externo subido.
     """
+    
     df = clean_and_convert_types_external(df)
     df = check_universals_external(df)
     
     df['prioridad_riesgo_score'] = (
         df['riesgo_datos_incompletos'] + 
         df['riesgo_consistencia_tipo'] +
-        df['riesgo_duplicado']
+        df['riesgo_duplicado'] +
+        df['riesgo_clasificacion'] + # NUEVO
+        df['riesgo_trazabilidad']    # NUEVO
     )
     
-    return df
-
-
-def process_external_data(df):
-    """
-    Lógica de riesgo universal para el archivo externo subido.
-    (Usa la nueva función de chequeo base)
-    """
-    
-    df = apply_universal_checks_and_base_risk(df)
-    
-    # Usamos 10.0 como denominador seguro para evitar porcentajes negativos si el riesgo sube mucho
+    # Usamos 15.0 como denominador seguro para evitar porcentajes negativos si el riesgo sube mucho
     avg_file_risk = df['prioridad_riesgo_score'].mean()
     quality_score = 100 - (avg_file_risk / RIESGO_MAXIMO_TEORICO_AVANZADO * 100)
     
@@ -160,11 +166,14 @@ def apply_anomaly_detection(df):
     df_copy = df.copy()
     
     # 1. Definir features
-    # La columna 'completitud_score' debe existir antes de este paso.
-    features = ['prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias', 'popularidad_score']
+    # Incluimos los nuevos riesgos base en el modelo ML para que las anomalías sean más representativas
+    features = ['riesgo_datos_incompletos', 'riesgo_consistencia_tipo', 'riesgo_duplicado', 'riesgo_clasificacion', 'riesgo_trazabilidad', 'completitud_score', 'antiguedad_datos_dias', 'popularidad_score']
     
     # 2. Preparar los datos
-    df_model = df_copy[features].dropna().astype(float)
+    # Solo tomamos las columnas que existen en el dataframe
+    existing_features = [f for f in features if f in df_copy.columns]
+    
+    df_model = df_copy[existing_features].dropna().astype(float)
     
     if len(df_model) < 10: 
         st.sidebar.warning("Advertencia: Menos de 10 filas de datos completos. ML Anomaly Detection se omitirá.")
@@ -196,28 +205,26 @@ def apply_advanced_risk_checks(df):
     """
     Calcula nuevos scores de riesgo avanzados (inconsistencias, semántica, vacíos) 
     y los añade al score de riesgo existente.
-    # CRITERIOS CUBIERTOS: Actualidad, Relevancia, Exactitud, Credibilidad, Conformidad, Trazabilidad.
     """
     df_copy = df.copy()
     
     # 1. Detección de Inconsistencia de Metadatos
-    # Criterio: 'Actualidad Herramientas Datos', 'Relevancia Herramientas Datos' (parcial)
+    # RIESGO AVANZADO DE ACTUALIDAD: El activo tiene un riesgo alto (mucha inconsistencia/duplicidad) pero es "joven" (antiguedad < 365).
     df_copy['riesgo_inconsistencia_metadatos'] = np.where(
         (df_copy['prioridad_riesgo_score'] > UMBRAL_RIESGO_ALTO) & (df_copy['antiguedad_datos_dias'] < 365), 
         PENALIZACION_INCONSISTENCIA_METADATOS, 
         0.0
     )
 
-    # 2. Duplicidad Semántica/Cambios Abruptos
-    # Criterio: 'Exactitud Herramientas Datos', 'Credibilidad Herramientas Datos'
+    # 2. Duplicidad Semántica/Cambios Abruptos (Riesgo de Relevancia/Credibilidad/Exactitud/Precisión)
+    # Una anomalía (dato que rompe el patrón) Y baja popularidad (nadie se da cuenta). RIESGO SILENCIOSO.
     df_copy['riesgo_semantico_actualizacion'] = np.where(
         (df_copy['anomalia_score'] == -1) & (df_copy['popularidad_score'] < 0.1),
         PENALIZACION_ANOMALIA_SILENCIOSA,
         0.0
     )
 
-    # 3. Activos Vacíos en Categorías Populares
-    # Criterio: 'Completitud Herramientas Datos', 'Relevancia Herramientas Datos'
+    # 3. Activos Vacíos en Categorías Populares (Riesgo de Accesibilidad/Disponibilidad/Eficiencia)
     top_categories = df_copy['categoria'].value_counts().nlargest(5).index.tolist()
     
     df_copy['riesgo_activos_vacios'] = np.where(
@@ -226,23 +233,24 @@ def apply_advanced_risk_checks(df):
         0.0
     )
     
-    # 4. NUEVO: Riesgo de Conformidad y Trazabilidad
-    # Criterio: 'Conformidad Herramientas Datos', 'Trazabilidad Herramientas Datos'
-    # Esta línea ahora funciona porque 'es_duplicado' está garantizado por la función apply_universal_checks_and_base_risk
-    df_copy['riesgo_conformidad_trazabilidad'] = np.where(
-        (df_copy['es_duplicado'] & (df_copy.get('publico', '') == 'public')) | 
-        (df_copy['es_duplicado'] & (df_copy['completitud_score'] < 50.0)),
-        PENALIZACION_CONFORMIDAD_TRAZABILIDAD,
-        0.0
+    # El score principal (riesgo universal) se calcula en 'check_universals_external'
+    # Ahora lo actualizamos para sumar los nuevos riesgos avanzados
+    
+    # Recalcular el score principal (con los nuevos universales)
+    df_copy['prioridad_riesgo_score'] = (
+        df_copy['riesgo_datos_incompletos'] + 
+        df_copy['riesgo_consistencia_tipo'] +
+        df_copy['riesgo_duplicado'] +
+        df_copy['riesgo_clasificacion'] + 
+        df_copy['riesgo_trazabilidad']
     )
-
-    # Actualizar el score de riesgo principal con el NUEVO COMPONENTE
+    
+    # Sumar los avanzados
     df_copy['prioridad_riesgo_score_v2'] = (
         df_copy['prioridad_riesgo_score'] +
         df_copy['riesgo_inconsistencia_metadatos'] +
         df_copy['riesgo_semantico_actualizacion'] +
-        df_copy['riesgo_activos_vacios'] +
-        df_copy['riesgo_conformidad_trazabilidad']
+        df_copy['riesgo_activos_vacios']
     )
     
     # Sustituir el score principal
@@ -253,7 +261,6 @@ def apply_advanced_risk_checks(df):
 
 # Función de Generación de Reporte HTML Profesional
 def generate_report_html(df_filtrado, umbral_riesgo):
-# ... (rest of the generate_report_html function remains the same)
     """
     Genera el contenido HTML del reporte final que compila insights, tablas y visualizaciones.
     Estilo profesional y limpio.
@@ -456,16 +463,14 @@ def generate_report_html(df_filtrado, umbral_riesgo):
     </html>
     """
     return html_content
-# ... (rest of the code for utility functions remains the same)
+
 def get_table_download_link(html_content, filename, text):
-# ...
     """Genera el link de descarga para el contenido HTML/PDF"""
     b64 = base64.b64encode(html_content.encode()).decode()
     href = f'<a href="data:text/html;base64,{b64}" download="{filename}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; font-family: Arial, sans-serif;">{text}</a>'
     return href
 
 def generate_specific_recommendation(risk_dimension):
-# ...
     """Genera pasos de acción específicos para la dimensión de riesgo más alta."""
     
     if 'Datos Incompletos' in risk_dimension:
@@ -486,12 +491,23 @@ def generate_specific_recommendation(risk_dimension):
 
 **Acción:** Normaliza el tipo de dato para la columna afectada. Si es una columna numérica, **elimina los valores de texto** o conviértelos a `NaN` para una limpieza posterior. Define el **tipo de dato esperado** (Schema) para cada columna y aplica una validación estricta al inicio del proceso.
         """
+    elif 'Clasificación/Conformidad' in risk_dimension:
+        return """
+**Identificación:** Ausencia de metadatos clave para **Confidencialidad** (ej. nivel de sensibilidad del dato). Esto viola las políticas de **Conformidad**.
+
+**Acción:** Implementa un proceso estricto de **etiquetado de metadatos**. Asegúrate de que las columnas `confidencialidad_nivel` y `dueño` estén llenas con valores válidos y revisados para cada activo.
+        """
+    elif 'Trazabilidad/Comprensibilidad' in risk_dimension:
+        return """
+**Identificación:** El activo carece de **Dueño** o **Tema Principal**. Sin esto, es imposible trazar su origen o entender su relevancia.
+
+**Acción:** **Asigna un Dueño (Entity Owner)** a cada activo. Define y rellena la columna `common_core_theme` (Tema Común) para catalogar el activo y mejorar su **Comprensibilidad** y **Portabilidad**.
+        """
     else:
         return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
 
 
 def load_knowledge_base(file_path):
-# ...
     """Carga el contenido del archivo de texto como contexto del sistema."""
     try:
         if os.path.exists(file_path):
@@ -507,7 +523,6 @@ def load_knowledge_base(file_path):
 # =================================================================
 
 def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
-# ...
     """
     Función robusta que interactúa con la API de Gemini utilizando la Base de Conocimiento (RAG).
     """
@@ -521,6 +536,7 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
         return
 
     try:
+        # Se asume que genai.Client está configurado correctamente en un entorno real
         client = genai.Client(api_key=GEMINI_API_SECRET_VALUE)
     except Exception as e:
         error_msg = f"Error al inicializar el Cliente Gemini. Verifica tu clave API. Detalle: {e}"
@@ -579,14 +595,17 @@ st.title("Dashboard de Priorización de Activos de Datos (Análisis Completo)")
 try:
     with st.spinner(f'Cargando archivo procesado: {ARCHIVO_PROCESADO}...'):
         df_analisis_completo = load_processed_data(ARCHIVO_PROCESADO) 
+    
+    # 1. Aplicar las funciones de riesgo universal (antes de los avanzados)
+    # Esto inicializa las nuevas columnas de riesgo: 'riesgo_clasificacion', 'riesgo_trazabilidad'
+    if not df_analisis_completo.empty:
+        df_analisis_completo = clean_and_convert_types_external(df_analisis_completo)
+        df_analisis_completo = check_universals_external(df_analisis_completo)
+
 
     if df_analisis_completo.empty:
         st.error(f"Error: No se pudo cargar el archivo {ARCHIVO_PROCESADO}. Asegúrate de que existe y se ejecutó preprocess.py.")
     else:
-        # 🟢 PASO DE CORRECCIÓN: APLICAR CHEQUEOS UNIVERSALES Y RIESGO BASE
-        # Esto genera las columnas 'es_duplicado' y el riesgo base antes de usarlas en chequeos avanzados.
-        df_analisis_completo = apply_universal_checks_and_base_risk(df_analisis_completo) 
-        
         # ADICIÓN: APLICAR DETECCIÓN DE ANOMALÍAS CON ML
         df_analisis_completo = apply_anomaly_detection(df_analisis_completo)
         
@@ -594,7 +613,7 @@ try:
         df_analisis_completo = apply_advanced_risk_checks(df_analisis_completo) 
         
         st.success(f'Archivo pre-procesado cargado. Total de activos: {len(df_analisis_completo)}')
-        
+
         # --- Carga de la Base de Conocimiento ---
         if "knowledge_content" not in st.session_state:
             st.session_state.knowledge_content = load_knowledge_base(KNOWLEDGE_FILE)
@@ -739,7 +758,7 @@ try:
                         **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** de la entidad **{filtro_dueño}**, ordenados por su Score de Riesgo (más alto primero).
                         * **Color Rojo:** Riesgo > {UMBRAL_RIESGO_ALTO:.1f} (Prioridad Máxima)
                         
-                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos**, **Activos Vacíos** y **Conformidad/Trazabilidad**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}** (para permitir múltiples inconsistencias por columna).
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos**, **Activos Vacíos** y los nuevos criterios **Clasificación/Trazabilidad**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                     """
                 elif filtro_tema != "Mostrar Todos": 
                     st.subheader(f"Detalle por Activo Individual para el Tema: {filtro_tema}")
@@ -747,7 +766,7 @@ try:
                         **Vista Detallada:** Se muestran los **{len(df_filtrado)} activos individuales** del tema **{filtro_tema}**, ordenados por su Score de Riesgo (más alto primero).
                         * **Color Rojo:** Riesgo > {UMBRAL_RIESGO_ALTO:.1f} (Prioridad Máxima)
                         
-                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos**, **Activos Vacíos** y **Conformidad/Trazabilidad**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}** (para permitir múltiples inconsistencias por columna).
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos**, **Activos Vacíos** y los nuevos criterios **Clasificación/Trazabilidad**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                     """
                 else:
                     st.subheader("Detalle por Activo Público (Priorización Individual)")
@@ -755,7 +774,7 @@ try:
                         **Vista Detallada:** Se muestran los **activos individuales públicos** filtrados, ordenados por su Score de Riesgo (más alto primero).
                         * **Color Rojo:** Riesgo > {UMBRAL_RIESGO_ALTO:.1f} (Prioridad Máxima)
                         
-                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos**, **Activos Vacíos** y **Conformidad/Trazabilidad**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}** (para permitir múltiples inconsistencias por columna).
+                        **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos**, **Activos Vacíos** y los nuevos criterios **Clasificación/Trazabilidad**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                     """
 
                 cols_common = ['titulo', 'prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias']
@@ -825,7 +844,7 @@ try:
                     * **Verde:** El riesgo promedio es **menor o igual a {UMBRAL_RIESGO_ALTO:.1f}**. Intervención no urgente.
                     * **Rojo:** El riesgo promedio es **mayor a {UMBRAL_RIESGO_ALTO:.1f}**. Se requiere **intervención/actualización prioritaria**.
 
-                    **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos**, **Activos Vacíos** y **Conformidad/Trazabilidad**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
+                    **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos**, **Activos Vacíos** y los nuevos criterios **Clasificación/Trazabilidad**. El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                 """)
 
                 resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
@@ -1114,7 +1133,7 @@ try:
 
             
             # ----------------------------------------------------------------------
-            # SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
+            # --- SECCIÓN 5: DIAGNÓSTICO DE ARCHIVO EXTERNO
             # ----------------------------------------------------------------------
             st.markdown("<hr style='border: 4px solid #f0f2f6;'>", unsafe_allow_html=True)
             st.header("Diagnóstico de Archivo CSV Externo (Calidad Universal)")
@@ -1158,14 +1177,18 @@ try:
                                 # Desglose de Riesgos Promedio
                                 riesgos_reporte = pd.DataFrame({
                                     'Dimensión de Riesgo': [
-                                        '1. Datos Incompletos (Completitud)',
+                                        '1. Datos Incompletos (Completitud/Eficiencia)',
                                         '2. Duplicados Exactos (Unicidad)',
-                                        '3. Consistencia de Tipo (Coherencia)',
+                                        '3. Consistencia de Tipo (Coherencia/Exactitud)',
+                                        '4. Falta Clasificación/Conformidad (Confidencialidad)', # NUEVO
+                                        '5. Falta Dueño/Tema (Trazabilidad/Comprensibilidad)',    # NUEVO
                                     ],
                                     'Riesgo Promedio (0-Máx)': [
                                         df_diagnostico['riesgo_datos_incompletos'].mean(),
                                         df_diagnostico['riesgo_duplicado'].mean(),
                                         df_diagnostico['riesgo_consistencia_tipo'].mean(),
+                                        df_diagnostico['riesgo_clasificacion'].mean(),
+                                        df_diagnostico['riesgo_trazabilidad'].mean(),
                                     ]
                                 })
                                 riesgos_reporte = riesgos_reporte.sort_values(by='Riesgo Promedio (0-Máx)', ascending=False)
