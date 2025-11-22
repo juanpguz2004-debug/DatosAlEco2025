@@ -570,7 +570,8 @@ def calculate_mintic_quality_score(df):
     """
     
     if df.empty:
-        return pd.Series(dtype=float)
+        # Se asegura de que el DataFrame no esté vacío antes de operar
+        return pd.Series(0.0, index=['Confidencialidad', 'Relevancia', 'Actualidad', 'Completitud', 'Comprensibilidad', 'Conformidad', 'Consistencia', 'Credibilidad', 'Disponibilidad', 'Eficiencia', 'Exactitud', 'Portabilidad', 'Precisión', 'Recuperabilidad', 'Accesibilidad', 'Trazabilidad', 'Unicidad', 'Score_Calidad_Normativa_Mintic'])
         
     dfColumnas = len(df.columns)
     totalCeldas = df.size
@@ -784,14 +785,23 @@ def display_mintic_analysis(df):
     
     results = calculate_mintic_quality_score(df)
     
-    if 'Score_Calidad_Normativa_Mintic' not in results:
+    if 'Score_Calidad_Normativa_Mintic' not in results or results.empty:
         st.error("No se pueden calcular las métricas: el DataFrame está vacío o la lógica falló.")
         return
 
     score = results['Score_Calidad_Normativa_Mintic']
     
+    st.markdown("---")
+    st.header("Análisis de Atributos de Calidad Normativa Mintic (Datos.gov.co)")
+    st.markdown("""
+        Esta sección calcula una Puntuación de Calidad basándose en el análisis de una **muestra de datos** obtenida directamente de la API abierta de datos.gov.co: 
+        `https://www.datos.gov.co/resource/uzcf-b9dh.json`.
+        
+        El cálculo utiliza las **17 fórmulas de criterios** definidas en la Guía de Calidad e Interoperabilidad 2025, usando lógica de `DataFrame` para las sub-métricas intrínsecas (nulos, varianza, unicidad, etc.).
+    """)
+    
     st.markdown(f"""
-        <div style='border: 3px solid #00A651; padding: 20px; border-radius: 8px; background-color: #e6fff0; text-align: center;'>
+        <div style='border: 3px solid #00A651; padding: 20px; border-radius: 8px; background-color: #e6fff0; text-align: center; margin-top: 20px;'>
             <h2 style='color: #00A651; margin-top: 0;'>Puntuación de Calidad Normativa Mintic</h2>
             <p style='font-size: 4em; font-weight: bold; margin: 0;'>{score:.2f} / 10.00</p>
             <p style='font-size: 1.2em; color: #333;'>Promedio de los 17 Criterios</p>
@@ -825,9 +835,10 @@ def display_mintic_analysis(df):
     st.dataframe(styled_df, use_container_width=True)
     
     st.info("""
-        **NOTA DE IMPLEMENTACIÓN:** Los cálculos reflejan las **fórmulas exactas** proporcionadas. 
-        Para sub-métricas que requieren análisis de metadatos externos, ML (ej. `medidaCategoria`, `medidaMetadatosCompletos`), se han utilizado **proxies razonables** o valores base altos, asumiendo una calidad decente de la fuente `datos.gov.co`.
+        **NOTA DE PROXY:** Para criterios que dependen de metadatos o análisis ML avanzado (ej. `medidaCategoria`, `metadatosAuditados`), se han utilizado **proxies razonables** o valores base, asumiendo una calidad decente de la fuente pública de datos.gov.co.
     """)
+    st.markdown("---")
+
 
 # =================================================================
 # 3. Ejecución Principal del Dashboard
@@ -940,6 +951,24 @@ try:
                 st.warning(f"No se encontraron activos para la entidad: {filtro_dueño}")
         
         st.markdown("---")
+
+        # --- BLOQUE DE ANÁLISIS NORMATIVO MINTIC (NUEVA SECCIÓN) ---
+        
+        with st.expander("▶️ Ver Score de Calidad Normativa Mintic (17 Criterios)", expanded=False):
+            with st.spinner("Conectando y recuperando datos de la API de datos.gov.co..."):
+                df_mintic, message = fetch_mintic_data()
+                
+            if not df_mintic.empty:
+                st.success(message)
+                display_mintic_analysis(df_mintic)
+            else:
+                st.error(f"Fallo al cargar la muestra de datos de la API: {message}")
+                st.warning("Asegúrate de tener conexión a Internet y que la API esté disponible.")
+                
+        # --- FIN DEL BLOQUE MINTIC ---
+        
+        st.markdown("---")
+
 
         # --- APLICAR FILTROS ---
         df_filtrado = df_analisis_completo.copy()
@@ -1059,44 +1088,15 @@ try:
             # --- BLOQUE CLAVE DE PESTAÑAS (GRÁFICOS) ---
             # ----------------------------------------------------------------------
             
-            # Nueva lógica de pestañas: siempre incluye el Análisis Mintic como la primera pestaña
-            
-            mintic_tab, *rest_tabs = st.tabs([
-                "Atributos según Calidad Normativa Mintic",
+            # Definición de pestañas (Mintic se ha movido)
+            tab1, tab2, tab3, tab4 = st.tabs([
                 "1. Ranking de Priorización (Riesgo/Incompletitud)", 
                 "2. K-Means Clustering (Priorización)", 
                 "3. Cobertura Temática", 
                 "4. Treemap de Cobertura y Calidad"
             ])
             
-            # Mapeo de pestañas restantes
-            tab1, tab2, tab3, tab4 = rest_tabs[0], rest_tabs[1], rest_tabs[2], rest_tabs[3]
 
-            # --- NUEVA PESTAÑA: ANÁLISIS NORMATIVO MINTIC ---
-            with mintic_tab:
-                st.header("Análisis de Atributos de Calidad Normativa Mintic (Datos.gov.co)")
-                
-                st.markdown("""
-                    Esta sección calcula una Puntuación de Calidad basándose en el análisis de una **muestra de datos** obtenida directamente de la API abierta de datos.gov.co: 
-                    `https://www.datos.gov.co/resource/uzcf-b9dh.json`.
-                    
-                    El cálculo utiliza las **17 fórmulas de criterios** definidas en la Guía de Calidad e Interoperabilidad 2025.
-                """)
-                
-                with st.spinner("Conectando y recuperando datos de la API de datos.gov.co..."):
-                    df_mintic, message = fetch_mintic_data()
-                    
-                if not df_mintic.empty:
-                    st.success(message)
-                    st.markdown("---")
-                    display_mintic_analysis(df_mintic)
-                else:
-                    st.error(f"Fallo al cargar la muestra de datos de la API: {message}")
-                    st.warning("Asegúrate de tener conexión a Internet y que la API esté disponible.")
-
-
-            # --- PESTAÑAS EXISTENTES ---
-            
             with tab1:
                 # 1. Ranking de Priorización (Riesgo/Incompletitud)
                 if filtro_acceso_publico:
