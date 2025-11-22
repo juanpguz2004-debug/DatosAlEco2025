@@ -43,12 +43,12 @@ PENALIZACION_ANOMALIA_SILENCIOSA = 1.0     # Duplicidad semántica/Cambios abrup
 PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías populares
 
 # **Nuevas Penalizaciones Basadas en Criterios Extendidos**
-PENALIZACION_CONFIDENCIALIDAD = 1.0      # Público + Falla de Descripción
-PENALIZACION_TRAZABILIDAD = 1.5          # Dueño desconocido
-PENALIZACION_CONFORMIDAD_ACTUALIDAD = 2.0 # Incumplimiento O Antigüedad > 1 año
-PENALIZACION_RELEVANCIA = 1.0           # Baja Popularidad + Alto Riesgo
-PENALIZACION_DISPONIBILIDAD = 1.5        # Riesgo Crítico O Incumplimiento
-PENALIZACION_COMPRENSIBILIDAD = 1.0      # Alto Riesgo + Baja Completitud
+PENALIZACION_CONFIDENCIALIDAD = 1.0      # Público + Falla de Descripción (Confidencialidad Herramientas Datos)
+PENALIZACION_TRAZABILIDAD = 1.5          # Dueño desconocido (Trazabilidad Herramientas Datos)
+PENALIZACION_CONFORMIDAD_ACTUALIDAD = 2.0 # Incumplimiento O Antigüedad > 1 año (Conformidad Herramientas Datos / Actualidad Herramientas Datos)
+PENALIZACION_RELEVANCIA = 1.0           # Baja Popularidad + Alto Riesgo (Relevancia Herramientas Datos)
+PENALIZACION_DISPONIBILIDAD = 1.5        # Riesgo Crítico O Incumplimiento (Disponibilidad Herramientas Datos / Recuperabilidad Herramientas Datos / Accesibilidad Herramientas Datos)
+PENALIZACION_COMPRENSIBILIDAD = 1.0      # Alto Riesgo + Baja Completitud (Credibilidad/Comprensibilidad/Eficiencia/Portabilidad Herramientas Datos)
 
 # RIESGO MÁXIMO TEÓRICO AVANZADO 
 # Ajustado a 15.0 para tener margen con todas las penalizaciones acumulativas
@@ -196,14 +196,14 @@ def apply_advanced_risk_checks(df):
     
     # Detección de Inconsistencia de Metadatos
     df_copy['riesgo_inconsistencia_metadatos'] = np.where(
-        (df_copy['prioridad_riesgo_score'] > UMBRAL_RIESGO_ALTO) & (df_copy['antiguedad_datos_dias'] < 365), 
+        (df_copy['prioridad_riesgo_score'] > UMBRAL_RIESGO_ALTO) & (df_copy.get('antiguedad_datos_dias', 0) < 365), 
         PENALIZACION_INCONSISTENCIA_METADATOS, 
         0.0
     )
 
     # Duplicidad Semántica/Cambios Abruptos (Cubre Exactitud/Precisión parcial)
     df_copy['riesgo_semantico_actualizacion'] = np.where(
-        (df_copy['anomalia_score'] == -1) & (df_copy['popularidad_score'] < 0.1),
+        (df_copy['anomalia_score'] == -1) & (df_copy.get('popularidad_score', 0.0) < 0.1),
         PENALIZACION_ANOMALIA_SILENCIOSA,
         0.0
     )
@@ -628,6 +628,14 @@ try:
     if df_analisis_completo.empty:
         st.error(f"Error: No se pudo cargar el archivo {ARCHIVO_PROCESADO}. Asegúrate de que existe y se ejecutó preprocess.py.")
     else:
+        # --- FIX RECOMENDADO: Manejo de Columna Faltante para evitar Error Fatal ---
+        # Si la columna 'descripcion' falta en el CSV, la añadimos como vacía para que 
+        # el resto de la lógica (ej. funciones de riesgo) no falle.
+        if 'descripcion' not in df_analisis_completo.columns:
+            df_analisis_completo['descripcion'] = ""
+            st.warning("ADVERTENCIA: La columna 'descripcion' no se encontró en el archivo CSV. Se ha añadido como una columna vacía para evitar un 'KeyError' fatal al iniciar la app.")
+        # --------------------------------------------------------------------------
+
         # ADICIÓN: APLICAR DETECCIÓN DE ANOMALÍAS CON ML
         df_analisis_completo = apply_anomaly_detection(df_analisis_completo)
         
