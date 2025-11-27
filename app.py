@@ -617,9 +617,9 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
 # 3. Ejecución Principal del Dashboard
 # =================================================================
 
-st.set_page_config(page_title="Asistente de Análisis de Inventario", layout="wide") 
+st.set_page_config(page_title="DataSentinel", layout="wide") 
 
-st.title("Dashboard de Priorización de Activos de Datos (Análisis Completo)")
+st.title("Data Sentinel : Priorización de Activos de Datos")
 
 try:
     with st.spinner(f'Cargando archivo procesado: {ARCHIVO_PROCESADO}...'):
@@ -1322,6 +1322,7 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
 
 
 
