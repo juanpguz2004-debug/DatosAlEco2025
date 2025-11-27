@@ -55,7 +55,7 @@ PENALIZACION_COMPRENSIBILIDAD = 1.0      # Alto Riesgo + Baja Completitud (Credi
 RIESGO_MAXIMO_TEORICO_AVANZADO = 15.0
 
 # CLAVE SECRETA DE GEMINI
-GEMINI_API_SECRET_VALUE = "AIzaSyC-CCT-IZQwGp9oj_kYS1AQRrKSAv_mNiM" # Clave ficticia, no es la original
+GEMINI_API_SECRET_VALUE = st.secrets("APIKEY") 
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -1322,4 +1322,5 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
 
