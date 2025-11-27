@@ -1,6 +1,6 @@
-## 📊 Dashboard de Priorización de Activos de Datos & Auditoría con IA
+## 📊 DataSentinel
 
-Data Asset Inventory Analysis es una plataforma analítica diseñada para auditar, clasificar y visualizar la calidad de inventarios de datos corporativos. Combina un motor de reglas heurísticas, algoritmos de aprendizaje no supervisado (Machine Learning) y un asistente de IA Generativa (RAG) para identificar activos críticos, obsoletos o en riesgo.
+DataSentinel es una plataforma analítica diseñada para auditar, clasificar y visualizar la calidad de inventarios de datos corporativos. Combina un motor de reglas heurísticas, algoritmos de aprendizaje no supervisado (Machine Learning) y un asistente de IA Generativa (RAG) para identificar activos críticos, obsoletos o en riesgo.
 
 Nota de Implementación: Debido a las restricciones de memoria en el entorno gratuito de Streamlit Community Cloud, los datos son pre-procesados externamente. Se utiliza la totalidad del dataset original, pero se han recortado columnas no prioritarias y pre-calculado métricas pesadas para optimizar el rendimiento en tiempo real.
 
