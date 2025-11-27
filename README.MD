@@ -1,4 +1,4 @@
-📊 Dashboard de Priorización de Activos de Datos & Auditoría con IA
+## 📊 Dashboard de Priorización de Activos de Datos & Auditoría con IA
 
 Data Asset Inventory Analysis es una plataforma analítica diseñada para auditar, clasificar y visualizar la calidad de inventarios de datos corporativos. Combina un motor de reglas heurísticas, algoritmos de aprendizaje no supervisado (Machine Learning) y un asistente de IA Generativa (RAG) para identificar activos críticos, obsoletos o en riesgo.
 
