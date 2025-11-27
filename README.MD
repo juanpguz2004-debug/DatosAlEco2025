@@ -53,9 +53,9 @@ Juan Pablo Guzman Molano,
 Karol Astrid Daza Gomez,
 Luis Mateo Guagua Cabezas
 
-##Repositorio: 
+## Repositorio: 
 https://github.com/juanpguz2004-debug/DatosAlEco2025/tree/main
-##Producto: 
+## Producto: 
 https://datosaleco2025-49evhfdenjucpqj7appcxpg.streamlit.app/#resultados-del-diagnostico-rapido
 
 Generado para el análisis de calidad de datos e inventarios.
