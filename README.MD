@@ -49,11 +49,11 @@ GenAI / LLM: google-genai (Cliente API para modelos Gemini).
 Estado del Proyecto: Desplegado (Versión Optimizada para Cloud Gratuito).
 
 Autores:
-Juan Pablo Guzman Molano
-Karol Astrid Daza Gomez
+Juan Pablo Guzman Molano,
+Karol Astrid Daza Gomez,
 Luis Mateo Guagua Cabezas
 
 Repositorio: https://github.com/juanpguz2004-debug/DatosAlEco2025/tree/main
-Dashboard: https://datosaleco2025-49evhfdenjucpqj7appcxpg.streamlit.app/#resultados-del-diagnostico-rapido
+, Dashboard: https://datosaleco2025-49evhfdenjucpqj7appcxpg.streamlit.app/#resultados-del-diagnostico-rapido
 
 Generado para el análisis de calidad de datos e inventarios.
