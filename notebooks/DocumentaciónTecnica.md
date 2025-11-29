@@ -14,8 +14,7 @@ Debido a las restricciones del entorno de despliegue gratuito (Streamlit Communi
 Pre-procesamiento de Datos:
 Los datos crudos se limpian y reducen en un script externo (preprocess.py - implícito) para minimizar el consumo de memoria RAM en tiempo de ejecución. Se eliminaron columnas no prioritarias y se pre-calcularon ciertos metadatos.
 
-RAG Optimizado (Context Window):
-En lugar de una base de datos vectorial compleja, se utiliza un enfoque de inyección de contexto (Context Injection) mediante un archivo de conocimiento pre-generado (knowledge_base.txt) para mantenerse dentro de los límites de tokens y latencia gratuitos.
+RAG Dinámico en Tiempo Real (Dynamic Context Injection): A diferencia de los sistemas RAG tradicionales que dependen de bases de datos vectoriales estáticas o archivos de texto pre-generados, este sistema implementa un motor de contexto dinámico. El sistema genera un contexto de "memoria a corto plazo" basado exclusivamente en los datos que el usuario está visualizando en ese momento (filtrados por entidad, categoría, etc.), garantizando que las respuestas de la IA estén siempre sincronizadas con la vista del dashboard.
 
 
 ---
@@ -45,8 +44,7 @@ sklearn.cluster.KMeans: Segmentación de activos.
 sklearn.preprocessing.StandardScaler: Normalización de datos para los modelos.
 
 Inteligencia Artificial Generativa
-
-Google GenAI SDK (google-genai): Conector con la API de modelos Gemini (versión gemini-2.5-flash) para el asistente chatbot.
+Google GenAI SDK: Conector con la API de modelos Gemini (versión gemini-2.0-flash) para el asistente chatbot, utilizando una temperatura baja (0.1) para maximizar la precisión analítica.
 
 
 ---
@@ -123,80 +121,43 @@ Los centroides se ordenan dinámicamente restando Riesgo menos Completitud, asig
 Aquí tienes tu sección completa, totalmente limpia sin asteriscos ni numerales, integrada en formato Markdown, sin alterar contenido y lista para pegar directamente en tu documentación.
 
 
----
+5. Arquitectura de Agente de IA (RAG Dinámico)
 
-Arquitectura RAG (Retrieval-Augmented Generation)
+Para el asistente "Experto en Datos", se implementó una arquitectura de generación aumentada por recuperación (RAG) dinámica, diseñada para operar sobre datos filtrados en tiempo real.
 
-Para el asistente Experto en Datos, se implementó una arquitectura RAG ligera optimizada para ambientes sin infraestructura vectorial ni almacenamiento persistente.
+5.1. Generación de Contexto Dinámico
 
-5.1. Fuente de Conocimiento
+En lugar de consultar una base de conocimiento estática, el sistema ejecuta la función generate_dynamic_context cada vez que el usuario realiza una pregunta. Este proceso:
 
-Se carga un archivo de texto plano llamado knowledge_base.txt.
-Este archivo contiene:
+Captura el Estado: Toma el DataFrame actual con los filtros activos aplicados por el usuario (por ejemplo, solo activos de una entidad específica).
 
-Pre-cálculos
+Calcula KPIs al Vuelo: Genera estadísticas descriptivas instantáneas, incluyendo:
 
-Resúmenes estadísticos
+Promedios de riesgo y completitud de la vista actual.
 
-Descripciones de metadatos
+Conteos de activos en incumplimiento y anomalías detectadas.
 
-Métricas consolidadas
+Top 5 de entidades o categorías con mayor riesgo.
 
-Listados categorizados
+Distribución por grupos de riesgo (Bajo, Medio, Alto, Crítico).
 
-Estadísticos esenciales generados durante el pre-procesamiento
-
-
-El propósito es evitar que el modelo LLM tenga que recalcular promedios, percentiles o correlaciones sobre miles de filas en tiempo real, lo cual incrementa el riesgo de errores numéricos o alucinaciones matemáticas.
+Construye el Prompt: Serializa estos cálculos en un bloque de texto estructurado (Markdown/JSON) que sirve como la "verdad absoluta" para el modelo.
 
 5.2. Inyección de Contexto (System Prompting)
 
-En lugar de utilizar embeddings vectoriales, índices FAISS o bases de datos externas como ChromaDB o Pinecone, se opta por un enfoque minimalista utilizando System Prompt Injection.
+El contexto generado se inyecta en el System Instruction del modelo con instrucciones estrictas:
 
-El contenido completo de knowledge_base.txt se incrusta directamente dentro del prompt del sistema al momento de realizar la consulta.
+Rol: Analista de Inventario de Datos experto.
 
-Estructura del Prompt
+Restricción de Verdad: Responder única y exclusivamente basándose en el "CONTEXTO DE DATOS EN VIVO" suministrado.
 
-Rol del Sistema:
-Eres un Analista de Inventario de Datos experto, especializado en la calidad, riesgo y priorización de activos de datos corporativos.
+Cero Alucinaciones: Si la respuesta no se puede derivar de las estadísticas suministradas, el modelo debe indicarlo honestamente.
 
-Restricción Principal:
-Responde única y exclusivamente basándote en la siguiente base de conocimiento. No inventes información adicional y no realices cálculos que no aparezcan explícitamente en ella.
+5.3. Modelo y Configuración
 
-Contexto:
-[Contenido íntegro de knowledge_base.txt] disponible en el repositorio 
+Modelo: gemini-2.0-flash. Se eligió por su ventana de contexto amplia y su capacidad de razonamiento lógico superior sobre datos estructurados.
 
-Instrucciones de Salida:
-
-Citar elementos cuando corresponda
-
-Mantener tono profesional y técnico
-
-Responder únicamente con datos provenientes del archivo
-
-Admitir explícitamente cuando una parte de la información no está contenida en la base de conocimiento
-
-
-Este enfoque asegura trazabilidad, auditabilidad y evita alucinación del modelo.
-
-5.3. Modelo
-
-Se usa el modelo gemini-2.5-flash del SDK de Google GenAI.
-
-Parámetros relevantes:
-
-Temperatura: 0.1
-Una temperatura muy baja prioriza precisión numérica y fidelidad al contexto.
-
-Max Output Tokens: ajustado dinámicamente según carga del usuario
-
-Top-k y Top-p: valores por defecto para minimizar la variabilidad
-
-
-Este modelo se eligió por su velocidad, bajo costo y excelente rendimiento para tareas de análisis estructurado.
-
-
-
+Temperatura: 0.1. Configuración casi determinista para asegurar que el modelo cite las cifras exactas calculadas por el motor de Python sin variaciones creativas.
 6. Generación de Reportes
 
 El sistema incluye un generador de reportes HTML autocontenido que permite descargar análisis completos sin depender de infraestructura externa.
