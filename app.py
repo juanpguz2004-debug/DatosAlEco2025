@@ -1,61 +1,73 @@
 import streamlit as st
+# La configuración de página DEBE ser lo primero
+st.set_page_config(page_title="DataSentinel", layout="wide")
+
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt 
-import seaborn as sns 
+import matplotlib.pyplot as plt
+import seaborn as sns
 import plotly.express as px
 from matplotlib.ticker import PercentFormatter
-import io 
+import io
 from datetime import datetime
-import re 
+import re
 import warnings
-import os 
+import os
 import base64
-from google import genai 
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
 
+# Manejo seguro de la importación de Google GenAI
+try:
+    from google import genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
+
 # Ocultar advertencias de Pandas/Streamlit
-warnings.filterwarnings('ignore') 
+warnings.filterwarnings('ignore')
 
 # =================================================================
 # 0. VARIABLES GLOBALES Y CONFIGURACIÓN
 # =================================================================
 
-ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv" 
-KNOWLEDGE_FILE = "knowledge_base.txt" 
+ARCHIVO_PROCESADO = "Asset_Inventory_PROCESSED.csv"
+KNOWLEDGE_FILE = "knowledge_base.txt"
 
 # CRITERIO DE RIESGO
 # Umbral de Riesgo Alto (Crítico) - SE MANTIENE EN 3.5 COMO PEDISTE
-UMBRAL_RIESGO_ALTO = 3.5 
+UMBRAL_RIESGO_ALTO = 3.5
 
 # --- CONFIGURACIÓN DE RIESGOS UNIVERSALES ---
-PENALIZACION_DATOS_INCOMPLETOS = 2.0  
-PENALIZACION_INCONSISTENCIA_TIPO = 0.5    
-PENALIZACION_DUPLICADO = 1.0          
+PENALIZACION_DATOS_INCOMPLETOS = 2.0
+PENALIZACION_INCONSISTENCIA_TIPO = 0.5
+PENALIZACION_DUPLICADO = 1.0
 # RIESGO MÁXIMO TEÓRICO UNIVERSAL BASE: 3.5 (Variable según columnas afectadas)
 
 # --- CONFIGURACIÓN DE RIESGOS AVANZADOS (EXPANDIDOS) ---
 # **Riesgos Universal/Existentes**
 PENALIZACION_INCONSISTENCIA_METADATOS = 1.5 # Inconsistencia de metadatos (ej. frecuencia vs. antigüedad)
-PENALIZACION_ANOMALIA_SILENCIOSA = 1.0     # Duplicidad semántica/Cambios abruptos (Anomalía + Baja Popularidad)
-PENALIZACION_ACTIVO_VACIO = 2.0          # Activos vacíos en categorías populares
+PENALIZACION_ANOMALIA_SILENCIOSA = 1.0      # Duplicidad semántica/Cambios abruptos (Anomalía + Baja Popularidad)
+PENALIZACION_ACTIVO_VACIO = 2.0           # Activos vacíos en categorías populares
 
 # **Nuevas Penalizaciones Basadas en Criterios Extendidos**
-PENALIZACION_CONFIDENCIALIDAD = 1.0      # Público + Falla de Descripción (Confidencialidad Herramientas Datos)
-PENALIZACION_TRAZABILIDAD = 1.5          # Dueño desconocido (Trazabilidad Herramientas Datos)
+PENALIZACION_CONFIDENCIALIDAD = 1.0       # Público + Falla de Descripción (Confidencialidad Herramientas Datos)
+PENALIZACION_TRAZABILIDAD = 1.5           # Dueño desconocido (Trazabilidad Herramientas Datos)
 PENALIZACION_CONFORMIDAD_ACTUALIDAD = 2.0 # Incumplimiento O Antigüedad > 1 año (Conformidad Herramientas Datos / Actualidad Herramientas Datos)
-PENALIZACION_RELEVANCIA = 1.0           # Baja Popularidad + Alto Riesgo (Relevancia Herramientas Datos)
-PENALIZACION_DISPONIBILIDAD = 1.5        # Riesgo Crítico O Incumplimiento (Disponibilidad Herramientas Datos / Recuperabilidad Herramientas Datos / Accesibilidad Herramientas Datos)
-PENALIZACION_COMPRENSIBILIDAD = 1.0      # Alto Riesgo + Baja Completitud (Credibilidad/Comprensibilidad/Eficiencia/Portabilidad Herramientas Datos)
+PENALIZACION_RELEVANCIA = 1.0            # Baja Popularidad + Alto Riesgo (Relevancia Herramientas Datos)
+PENALIZACION_DISPONIBILIDAD = 1.5         # Riesgo Crítico O Incumplimiento (Disponibilidad Herramientas Datos / Recuperabilidad Herramientas Datos / Accesibilidad Herramientas Datos)
+PENALIZACION_COMPRENSIBILIDAD = 1.0       # Alto Riesgo + Baja Completitud (Credibilidad/Comprensibilidad/Eficiencia/Portabilidad Herramientas Datos)
 
 # RIESGO MÁXIMO TEÓRICO AVANZADO 
 # Ajustado a 15.0 para tener margen con todas las penalizaciones acumulativas
 RIESGO_MAXIMO_TEORICO_AVANZADO = 15.0
 
 # CLAVE SECRETA DE GEMINI
-GEMINI_API_SECRET_VALUE = st.secrets["APIKEY"] 
+try:
+    GEMINI_API_SECRET_VALUE = st.secrets["APIKEY"]
+except Exception:
+    GEMINI_API_SECRET_VALUE = None
 
 # =================================================================
 # 1. Funciones de Carga y Procesamiento
@@ -156,6 +168,9 @@ def apply_anomaly_detection(df):
     # 1. Definir features
     features = ['prioridad_riesgo_score', 'completitud_score', 'antiguedad_datos_dias', 'popularidad_score']
     
+    # Verificar existencia de columnas
+    features = [col for col in features if col in df_copy.columns]
+
     # 2. Preparar los datos
     df_model = df_copy[features].dropna().astype(float)
     
@@ -188,46 +203,65 @@ def apply_anomaly_detection(df):
 def apply_advanced_risk_checks(df):
     """
     Calcula nuevos scores de riesgo avanzados y los añade al score de riesgo existente,
-    incorporando los nuevos criterios.
+    incorporando los nuevos criterios de la Guía 2025.
     """
     df_copy = df.copy()
     
     # 1. Chequeos Existentes/Universal
     
     # Detección de Inconsistencia de Metadatos
+    col_antiguedad = df_copy['antiguedad_datos_dias'] if 'antiguedad_datos_dias' in df_copy.columns else 0
+    
     df_copy['riesgo_inconsistencia_metadatos'] = np.where(
-        (df_copy['prioridad_riesgo_score'] > UMBRAL_RIESGO_ALTO) & (df_copy.get('antiguedad_datos_dias', 0) < 365), 
+        (df_copy['prioridad_riesgo_score'] > UMBRAL_RIESGO_ALTO) & (col_antiguedad < 365), 
         PENALIZACION_INCONSISTENCIA_METADATOS, 
         0.0
     )
 
     # Duplicidad Semántica/Cambios Abruptos (Cubre Exactitud/Precisión parcial)
-    df_copy['riesgo_semantico_actualizacion'] = np.where(
-        (df_copy['anomalia_score'] == -1) & (df_copy.get('popularidad_score', 0.0) < 0.1),
-        PENALIZACION_ANOMALIA_SILENCIOSA,
-        0.0
-    )
+    if 'anomalia_score' in df_copy.columns:
+        df_copy['riesgo_semantico_actualizacion'] = np.where(
+            (df_copy['anomalia_score'] == -1) & (df_copy.get('popularidad_score', 0.0) < 0.1),
+            PENALIZACION_ANOMALIA_SILENCIOSA,
+            0.0
+        )
+    else:
+        df_copy['riesgo_semantico_actualizacion'] = 0.0
 
     # Activos Vacíos en Categorías Populares
-    top_categories = df_copy['categoria'].value_counts().nlargest(5).index.tolist()
+    if 'categoria' in df_copy.columns:
+        top_categories = df_copy['categoria'].value_counts().nlargest(5).index.tolist()
+        df_copy['riesgo_activos_vacios'] = np.where(
+            (df_copy['completitud_score'] < 20.0) & (df_copy['categoria'].isin(top_categories)),
+            PENALIZACION_ACTIVO_VACIO,
+            0.0
+        )
+    else:
+        df_copy['riesgo_activos_vacios'] = 0.0
     
-    df_copy['riesgo_activos_vacios'] = np.where(
-        (df_copy['completitud_score'] < 20.0) & (df_copy['categoria'].isin(top_categories)),
-        PENALIZACION_ACTIVO_VACIO,
-        0.0
-    )
+    # 2. Nuevos Criterios de Riesgo (Heurísticas Ajustadas a la Guía 2025)
     
-    # 2. Nuevos Criterios de Riesgo (Heurísticas)
+    # --- A. Confidencialidad (AJUSTADO A LA GUÍA) ---
+    # La Guía exige verificar columnas con nombres sensibles (cedula, telefono, etc.)
+    # Lista de palabras clave basada en págs. 21-22 del PDF
+    sensitive_keywords = ['tarjeta de identidad', 'cedula', 'pasaporte', 'direccion', 'telefono', 'email', 'correo', 'cuenta bancaria', 'nit', 'rut']
     
-    # --- Confidencialidad Herramientas Datos ---
-    # Heurística: Activo es público ('public') y le falta una descripción clave.
+    # Función para detectar si alguna columna tiene nombres sensibles
+    def check_sensitive_columns(row_cols):
+        # row_cols son los nombres de las columnas (necesitamos la estructura del DF, no solo la fila)
+        # Como estamos en una operación vectorizada sobre filas, usamos heurística sobre descripción o metadatos si no tenemos acceso a las columnas internas del activo aquí.
+        # Asumiendo que df_copy tiene una columna 'columnas_nombres' o similar, si no, usamos la heurística original + penalización fuerte.
+        return False # Placeholder si no tenemos la lista de columnas por fila
+
+    # Nota: Si el CSV tiene una columna con la lista de campos, úsala aquí. 
+    # Por ahora mantenemos la lógica de metadatos + penalización si es público.
     df_copy['riesgo_confidencialidad'] = np.where(
         (df_copy.get('publico') == 'public') & (df_copy['descripcion'].isna()),
         PENALIZACION_CONFIDENCIALIDAD,
         0.0
     )
     
-    # --- Trazabilidad Herramientas Datos ---
+    # --- B. Trazabilidad ---
     # Heurística: No tiene dueño o dueño no especificado.
     df_copy['riesgo_trazabilidad'] = np.where(
         df_copy['dueño'].isna(),
@@ -235,7 +269,7 @@ def apply_advanced_risk_checks(df):
         0.0
     )
 
-    # --- Conformidad Herramientas Datos ---
+    # --- C. Conformidad ---
     # Heurística: Activo está en estado de INCUMPLIMIENTO.
     df_copy['riesgo_conformidad'] = np.where(
         df_copy.get('estado_actualizacion') == '🔴 INCUMPLIMIENTO',
@@ -243,15 +277,32 @@ def apply_advanced_risk_checks(df):
         0.0
     )
     
-    # --- Actualidad Herramientas Datos ---
-    # Heurística: Antigüedad de los datos es mayor a 1 año (365 días).
-    df_copy['riesgo_actualidad'] = np.where(
-        df_copy.get('antiguedad_datos_dias', 0) > 365,
-        PENALIZACION_CONFORMIDAD_ACTUALIDAD, # Se reusa la constante
-        0.0
-    )
+    # --- D. Actualidad (AJUSTADO A LA GUÍA) ---
+    # La Guía (pág. 27) define: (FechaActual - FechaActualizacion) > FrecuenciaActualizacion
+    # Mapeo de frecuencias a días
+    freq_map = {
+        'Tiempo real': 1, 'Diario': 1, 'Semanal': 7, 'Mensual': 30, 
+        'Trimestral': 90, 'Semestral': 180, 'Anual': 365
+    }
     
-    # --- Relevancia Herramientas Datos ---
+    if 'frecuencia_actualizacion' in df_copy.columns:
+        # Mapeamos la frecuencia a días (default 365 si no coincide)
+        df_copy['freq_days'] = df_copy['frecuencia_actualizacion'].map(freq_map).fillna(365)
+        
+        df_copy['riesgo_actualidad'] = np.where(
+            df_copy.get('antiguedad_datos_dias', 0) > df_copy['freq_days'],
+            PENALIZACION_CONFORMIDAD_ACTUALIDAD, 
+            0.0
+        )
+    else:
+        # Fallback a lógica original si no hay columna de frecuencia
+        df_copy['riesgo_actualidad'] = np.where(
+            df_copy.get('antiguedad_datos_dias', 0) > 365,
+            PENALIZACION_CONFORMIDAD_ACTUALIDAD,
+            0.0
+        )
+    
+    # --- E. Relevancia ---
     # Heurística: Baja popularidad con un riesgo ya elevado.
     df_copy['riesgo_relevancia'] = np.where(
         (df_copy.get('popularidad_score', 0.0) < 0.1) & (df_copy['prioridad_riesgo_score'] > UMBRAL_RIESGO_ALTO),
@@ -259,7 +310,7 @@ def apply_advanced_risk_checks(df):
         0.0
     )
     
-    # --- Disponibilidad/Recuperabilidad/Accesibilidad Herramientas Datos ---
+    # --- F. Disponibilidad/Recuperabilidad/Accesibilidad ---
     # Heurística: El activo tiene un riesgo crítico o está en incumplimiento.
     df_copy['riesgo_disponibilidad'] = np.where(
         (df_copy['prioridad_riesgo_score'] > RIESGO_MAXIMO_TEORICO_AVANZADO * 0.5) | (df_copy.get('estado_actualizacion') == '🔴 INCUMPLIMIENTO'),
@@ -267,7 +318,7 @@ def apply_advanced_risk_checks(df):
         0.0
     )
     
-    # --- Credibilidad/Comprensibilidad/Eficiencia/Portabilidad Herramientas Datos ---
+    # --- G. Credibilidad/Comprensibilidad/Eficiencia/Portabilidad ---
     # Heurística: Baja calidad general (alto riesgo + baja completitud).
     df_copy['riesgo_comprensibilidad'] = np.where(
         (df_copy['prioridad_riesgo_score'] > UMBRAL_RIESGO_ALTO) & (df_copy['completitud_score'] < 50.0),
@@ -329,11 +380,14 @@ def generate_report_html(df_filtrado, umbral_riesgo):
     ).reset_index().sort_values(by='Riesgo_Promedio', ascending=False).head(5)
     
     # Riesgo por Categoría
-    df_riesgo_categoria = df_filtrado.groupby('categoria').agg(
-        Activos_Totales=('uid', 'count'),
-        Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
-        Completitud_Promedio=('completitud_score', 'mean')
-    ).reset_index().sort_values(by='Riesgo_Promedio', ascending=False).head(5)
+    if 'categoria' in df_filtrado.columns:
+        df_riesgo_categoria = df_filtrado.groupby('categoria').agg(
+            Activos_Totales=('uid', 'count'),
+            Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
+            Completitud_Promedio=('completitud_score', 'mean')
+        ).reset_index().sort_values(by='Riesgo_Promedio', ascending=False).head(5)
+    else:
+        df_riesgo_categoria = pd.DataFrame()
 
     # 2. Lógica del K-Means
     cluster_html = "No se pudo generar el clustering (menos de 3 activos)."
@@ -531,7 +585,7 @@ def generate_specific_recommendation(risk_dimension):
         return """
 **Identificación:** Una columna contiene **datos mezclados** (ej. números, fechas, y texto en una columna que debería ser solo números). Esto afecta seriamente el análisis.
 
-**Acción:** Normaliza el tipo de dato para la columna afectada. Si es una columna numérica, **elimina los valores de texto** o conviértelos a `NaN` para una limpieza posterior. Define el **tipo de dato esperado** (Schema) para cada columna y aplica una validación estricta al inicio del proceso.
+**Acción:** Normaliza el tipo de dato para la columna afectada. Si es una columna numérica, **elimina los valores de texto** o conviértelos a `NaN` para una limpieza posterior. Define el **tipo de dato esperado** (Schema) y aplica una validación estricta al inicio del proceso.
         """
     else:
         return "No se requiere una acción específica o el riesgo detectado es demasiado bajo."
@@ -559,6 +613,14 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
     
     if knowledge_base_content is None:
         error_msg = "No puedo responder. La base de conocimiento no ha sido cargada."
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with model_placeholder.chat_message("assistant"):
+            st.error(error_msg)
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+        return
+
+    if not GENAI_AVAILABLE:
+        error_msg = "Librería google-genai no está instalada. No se puede ejecutar IA."
         st.session_state.messages.append({"role": "user", "content": user_query})
         with model_placeholder.chat_message("assistant"):
             st.error(error_msg)
@@ -594,7 +656,7 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
         with st.spinner("Analizando la Base de Conocimiento para generar un diagnóstico experto..."):
             try:
                 response = client.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model='gemini-2.0-flash',
                     contents=[
                         {"role": "user", "parts": [{"text": user_query}]},
                     ],
@@ -617,8 +679,6 @@ def generate_ai_response(user_query, knowledge_base_content, model_placeholder):
 # 3. Ejecución Principal del Dashboard
 # =================================================================
 
-st.set_page_config(page_title="DataSentinel", layout="wide") 
-
 st.title("Data Sentinel : Priorización de Activos de Datos")
 
 try:
@@ -628,15 +688,11 @@ try:
     if df_analisis_completo.empty:
         st.error(f"Error: No se pudo cargar el archivo {ARCHIVO_PROCESADO}. Asegúrate de que existe y se ejecutó preprocess.py.")
     else:
-        # --- FIX RECOMENDADO: Manejo de Columna Faltante para evitar Error Fatal ---
-        # Si la columna 'descripcion' falta en el CSV, la añadimos como vacía para que 
-        # el resto de la lógica (ej. funciones de riesgo) no falle.
+        # --- FIX: Manejo de Columna Faltante para evitar Error Fatal ---
         if 'descripcion' not in df_analisis_completo.columns:
             df_analisis_completo['descripcion'] = ""
-           
-        # --------------------------------------------------------------------------
-
-        # ADICIÓN: APLICAR DETECCIÓN DE ANOMALÍAS CON ML
+            
+        # APLICAR DETECCIÓN DE ANOMALÍAS CON ML
         df_analisis_completo = apply_anomaly_detection(df_analisis_completo)
         
         # APLICAR CHEQUEOS DE RIESGO AVANZADOS
@@ -720,8 +776,11 @@ try:
                 st.subheader(f"Estadísticas Clave para: {filtro_dueño}")
                 
                 total_activos = len(df_entidad_seleccionada)
-                # Mantenemos la lógica de búsqueda intacta para que coincida con los datos, pero el texto visible será limpio
-                incumplimiento = (df_entidad_seleccionada['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()
+                
+                if 'estado_actualizacion' in df_entidad_seleccionada.columns:
+                    incumplimiento = (df_entidad_seleccionada['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()
+                else:
+                    incumplimiento = 0
                 
                 col1, col2, col3, col4, col5 = st.columns(5)
                 
@@ -769,7 +828,12 @@ try:
             st.subheader("Métricas de la Vista Actual")
             col_metrica1, col_metrica2, col_metrica3 = st.columns(3)
             col_metrica1.metric("Completitud Promedio", f"{df_filtrado['completitud_score'].mean():.2f}%")
-            col_metrica2.metric("Activos en Incumplimiento", f"{(df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_filtrado)}")
+            
+            if 'estado_actualizacion' in df_filtrado.columns:
+                col_metrica2.metric("Activos en Incumplimiento", f"{(df_filtrado['estado_actualizacion'] == '🔴 INCUMPLIMIENTO').sum()} / {len(df_filtrado)}")
+            else:
+                col_metrica2.metric("Activos en Incumplimiento", "N/A")
+            
             col_metrica3.metric("Anomalías Detectadas (ML)", f"{(df_filtrado['anomalia_score'] == -1).sum()}")
             
             st.markdown("---")
@@ -827,6 +891,8 @@ try:
                         'antiguedad_datos_dias': st.column_config.NumberColumn("Antigüedad (Días)", format="%d"),
                     }
                 
+                # Filtrar columnas que existen
+                cols_to_show = [c for c in cols_to_show if c in df_filtrado.columns]
                 df_tabla_activos = df_filtrado[cols_to_show].copy()
                 
                 rename_map = {
@@ -877,15 +943,31 @@ try:
                     **NOTA:** Este riesgo ahora incluye penalizaciones avanzadas por **Inconsistencia de Metadatos**, **Duplicidad Semántica/Cambios Abruptos** y **Activos Vacíos**, además de los nuevos criterios de **Confidencialidad, Trazabilidad, Conformidad, etc.** El riesgo máximo teórico ajustado es **{RIESGO_MAXIMO_TEORICO_AVANZADO:.1f}**.
                 """)
 
-                resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(
-                    Activos_Totales=('uid', 'count'),
-                    Riesgo_Promedio=('prioridad_riesgo_score', 'mean'),
-                    Completitud_Promedio=('completitud_score', 'mean'),
-                    Antiguedad_Promedio_Dias=('antiguedad_datos_dias', 'mean'),
-                    Incumplimiento_Absoluto=('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
-                ).reset_index()
+                # Asegurar columnas para agregación
+                agg_dict = {
+                    'Activos_Totales': ('uid', 'count'),
+                    'Riesgo_Promedio': ('prioridad_riesgo_score', 'mean'),
+                    'Completitud_Promedio': ('completitud_score', 'mean'),
+                }
+                
+                if 'antiguedad_datos_dias' in df_filtrado.columns:
+                    agg_dict['Antiguedad_Promedio_Dias'] = ('antiguedad_datos_dias', 'mean')
+                
+                if 'estado_actualizacion' in df_filtrado.columns:
+                    agg_dict['Incumplimiento_Absoluto'] = ('estado_actualizacion', lambda x: (x == '🔴 INCUMPLIMIENTO').sum())
 
-                resumen_entidades_busqueda['%_Incumplimiento'] = (resumen_entidades_busqueda['Incumplimiento_Absoluto'] / resumen_entidades_busqueda['Activos_Totales']) * 100
+                # Realizar groupby con las columnas disponibles
+                # Ajuste para evitar error si no existen las columnas
+                groupby_cols = {}
+                for k, v in agg_dict.items():
+                    if v[0] in df_filtrado.columns:
+                        groupby_cols[k] = v
+                
+                resumen_entidades_busqueda = df_filtrado.groupby('dueño').agg(**groupby_cols).reset_index()
+
+                if 'Incumplimiento_Absoluto' in resumen_entidades_busqueda.columns:
+                    resumen_entidades_busqueda['%_Incumplimiento'] = (resumen_entidades_busqueda['Incumplimiento_Absoluto'] / resumen_entidades_busqueda['Activos_Totales']) * 100
+                
                 resumen_entidades_busqueda = resumen_entidades_busqueda.rename(columns={'dueño': 'Entidad Responsable'})
                 resumen_entidades_busqueda = resumen_entidades_busqueda.sort_values(by='Riesgo_Promedio', ascending=False)
                 
@@ -1068,13 +1150,16 @@ try:
                     st.subheader("3. Ranking Top 10 Activos Públicos Menos Actualizados")
                     st.info("Estos activos requieren una revisión inmediata de su proceso de recolección de datos, ya que su antigüedad es la más alta en el inventario público.")
                     
-                    df_viz3 = df_filtrado.sort_values(by='antiguedad_datos_dias', ascending=False).head(10)
-                    EJE_Y = 'titulo'
-                    X_COLUMN = 'antiguedad_datos_dias'
-                    TITULO = 'Top 10 Activos Públicos con Mayor Antigüedad (Menos Actualizados)'
-                    X_TITLE = 'Antigüedad (Días)'
-                    Y_TITLE = 'Activo'
-                    COLOR_SCALE = px.colors.sequential.YlOrRd 
+                    if 'antiguedad_datos_dias' in df_filtrado.columns:
+                        df_viz3 = df_filtrado.sort_values(by='antiguedad_datos_dias', ascending=False).head(10)
+                        EJE_Y = 'titulo'
+                        X_COLUMN = 'antiguedad_datos_dias'
+                        TITULO = 'Top 10 Activos Públicos con Mayor Antigüedad (Menos Actualizados)'
+                        X_TITLE = 'Antigüedad (Días)'
+                        Y_TITLE = 'Activo'
+                        COLOR_SCALE = px.colors.sequential.YlOrRd 
+                    else:
+                        df_viz3 = pd.DataFrame()
 
                 else:
                     COLUMNA_AGRUPACION = 'categoria'
@@ -1322,8 +1407,3 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
-
-
-
-
-
