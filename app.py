@@ -1,5 +1,4 @@
 import streamlit as st
-# La configuración de página DEBE ser lo primero
 st.set_page_config(page_title="DataSentinel", layout="wide")
 
 import pandas as pd
@@ -18,7 +17,6 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
 
-# Manejo seguro de la importación de Google GenAI
 try:
     from google import genai
     GENAI_AVAILABLE = True
@@ -1407,3 +1405,4 @@ El riesgo más alto es por **{riesgo_dimension_max}** ({riesgo_max_reportado:.2f
 
 except Exception as e:
     st.error(f"ERROR FATAL: Ocurrió un error inesperado al iniciar la aplicación: {e}")
+
