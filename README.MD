@@ -35,7 +35,7 @@ Implementación RAG Dinámico: A diferencia de los sistemas tradicionales estát
 
 Ventaja Técnica: Esto garantiza que el asistente responda con precisión sobre la "vista actual" de los datos, eliminando alucinaciones y evitando la necesidad de bases de conocimiento estáticas desactualizadas.
 
-Herramientas y Librerías 🛠️
+## Herramientas y Librerías 🛠️
 
 El proyecto fue construido utilizando el siguiente stack tecnológico en Python:
 
