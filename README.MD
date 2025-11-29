@@ -28,11 +28,12 @@ Algoritmos de aprendizaje no supervisado para segmentación y detección:
 K-Means Clustering: Segmentación de activos en 3 grupos (Riesgo Alto, Medio, Bajo) basado en la relación Riesgo vs. Completitud.
 Isolation Forest: Detección de anomalías estadísticas ("outliers") en activos que presentan comportamientos inusuales en sus métricas de calidad.
 
-### 3. IA Generativa con RAG (Retrieval-Augmented Generation)
+## 3. IA Generativa con RAG Dinámico (Retrieval-Augmented Generation)
+Asistente virtual integrado utilizando Google Gemini 2.0 Flash.
 
-Asistente virtual integrado utilizando Google Gemini 2.5 Flash.
-Implementación RAG: Se utiliza inyección de contexto mediante una base de conocimiento (knowledge_base.txt) que contiene resúmenes estadísticos pre-calculados.
-Limitación Técnica: El alcance del razonamiento complejo se limitó para optimizar el uso de tokens y ajustarse a las cuotas de facturación de Google AI Studio, priorizando respuestas basadas en métricas pre-existentes sobre cálculos en tiempo real.
+Implementación RAG Dinámico: A diferencia de los sistemas tradicionales estáticos, este sistema utiliza inyección de contexto en tiempo real. Se genera una "memoria a corto plazo" calculando estadísticas y KPIs basados exclusivamente en los filtros activos del usuario (por ejemplo, filtrado por entidad o categoría).
+
+Ventaja Técnica: Esto garantiza que el asistente responda con precisión sobre la "vista actual" de los datos, eliminando alucinaciones y evitando la necesidad de bases de conocimiento estáticas desactualizadas.
 
 Herramientas y Librerías 🛠️
 
